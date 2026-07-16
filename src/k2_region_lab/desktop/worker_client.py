@@ -49,8 +49,10 @@ class ExternalWorkerClient(QObject):
         environment.remove("PYTHONHOME")
         environment.insert("VIRTUAL_ENV", str(worker_environment))
         environment.insert("K2LAB_DATA_DIR", str(self.settings.data_directory))
-        if not environment.contains("PYTORCH_CUDA_ALLOC_CONF"):
-            environment.insert("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+        if not environment.contains("PYTORCH_ALLOC_CONF") and not environment.contains(
+            "PYTORCH_CUDA_ALLOC_CONF"
+        ):
+            environment.insert("PYTORCH_ALLOC_CONF", "expandable_segments:True")
         environment.insert(
             "PATH",
             os.pathsep.join(

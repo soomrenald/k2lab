@@ -245,6 +245,21 @@ class DesktopSmokeTests(unittest.TestCase):
             self.assertIn("offloaded_to_ram", window.memory_status.text())
             window.close()
 
+    def test_oom_event_surfaces_in_app_16gb_guidance(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            window = self.make_window(Path(directory))
+            window._worker_event(
+                {
+                    "state": "error",
+                    "message": "critical GPU memory pressure after denoising step 1/8",
+                    "payload": {"exception_type": "CriticalGpuMemoryPressure"},
+                }
+            )
+            messages = [window.events.item(row).text() for row in range(window.events.count())]
+            self.assertTrue(any("16 GB guidance" in message for message in messages))
+            self.assertIn("exceeded the 16 GB limit", window.statusBar().currentMessage())
+            window.close()
+
     def test_safe_worker_payload_enforces_four_gib_floor(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             window = self.make_window(Path(directory))

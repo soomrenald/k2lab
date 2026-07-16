@@ -988,6 +988,16 @@ class MainWindow(QMainWindow):
             self.load_model_button.setEnabled(self._accelerator_available)
             self.generate_button.setEnabled(False)
             self._set_memory_controls_enabled(True)
+            normalized_message = message.casefold()
+            if "out of memory" in normalized_message or "gpu memory pressure" in normalized_message:
+                self.events.addItem(
+                    "16 GB guidance: use Release K2 GPU memory, restart the worker, "
+                    "and reduce the canvas on ROCm 6.4; native scaled FP8 requires ROCm 6.5+"
+                )
+                self.statusBar().showMessage(
+                    "Generation exceeded the 16 GB limit — release the K2 worker before retrying",
+                    15000,
+                )
 
     def _worker_stderr(self, output: str) -> None:
         logging.getLogger(__name__).debug("worker stderr received: %s", output)
