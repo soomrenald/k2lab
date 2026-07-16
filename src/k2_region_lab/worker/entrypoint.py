@@ -85,12 +85,47 @@ def main() -> int:
                     artifacts = discover_model_artifacts(directories)
                 emit(WorkerState.LOADING, "Loading Krea 2 baseline components", command_id=command_id)
                 runtime = runtime or ComfyBaselineRuntime(comfyui_root)
-                loaded = runtime.load(artifacts)
+                loaded = runtime.load(
+                    artifacts,
+                    reserve_vram_gb=float(payload.get("reserve_vram_gb", 2.0)),
+                )
                 emit(
                     WorkerState.READY,
                     "Krea 2 baseline components loaded",
                     command_id=command_id,
                     payload=loaded,
+                )
+            elif kind == CommandKind.GENERATE_BASELINE:
+                if runtime is None or not runtime.loaded:
+                    raise RuntimeError("load the Krea 2 baseline before generating")
+                emit(
+                    WorkerState.RUNNING,
+                    "Baseline generation started",
+                    command_id=command_id,
+                )
+
+                def progress(step: int, total: int) -> None:
+                    emit(
+                        WorkerState.RUNNING,
+                        f"Denoising step {step}/{total}",
+                        command_id=command_id,
+                        payload={"step": step, "total_steps": total},
+                    )
+
+                generated = runtime.generate(
+                    prompt=str(payload.get("prompt", "")),
+                    width=int(payload.get("width", 1024)),
+                    height=int(payload.get("height", 1024)),
+                    steps=int(payload.get("steps", 8)),
+                    seed=int(payload.get("seed", 0)),
+                    output_directory=Path(payload["output_directory"]),
+                    progress=progress,
+                )
+                emit(
+                    WorkerState.READY,
+                    "Baseline generation complete",
+                    command_id=command_id,
+                    payload=generated,
                 )
             elif kind == CommandKind.SHUTDOWN:
                 emit(WorkerState.COMPLETE, "GPU worker stopped", command_id=command_id)

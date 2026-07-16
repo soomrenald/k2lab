@@ -4,9 +4,10 @@ from collections.abc import Callable
 from uuid import uuid4
 
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import QBrush, QColor, QPainter, QPen
+from PySide6.QtGui import QBrush, QColor, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QGraphicsItem,
+    QGraphicsPixmapItem,
     QGraphicsRectItem,
     QGraphicsScene,
     QGraphicsView,
@@ -206,6 +207,7 @@ class RegionCanvas(QGraphicsView):
         self._draft: QGraphicsRectItem | None = None
         self._drawing_enabled = False
         self._items: dict[str, ResizableRegionItem] = {}
+        self._image_item: QGraphicsPixmapItem | None = None
         self.setScene(QGraphicsScene(self))
         self.scene().selectionChanged.connect(self._selection_changed)
         self.setBackgroundBrush(QBrush(QColor("#202225")))
@@ -229,6 +231,23 @@ class RegionCanvas(QGraphicsView):
     def begin_region(self) -> None:
         self._drawing_enabled = True
         self.setCursor(Qt.CursorShape.CrossCursor)
+
+    def set_image(self, path: str) -> bool:
+        pixmap = QPixmap(path)
+        if pixmap.isNull():
+            return False
+        scaled = pixmap.scaled(
+            self._canvas_width,
+            self._canvas_height,
+            Qt.AspectRatioMode.IgnoreAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        if self._image_item is None:
+            self._image_item = self.scene().addPixmap(scaled)
+            self._image_item.setZValue(-100.0)
+        else:
+            self._image_item.setPixmap(scaled)
+        return True
 
     def add_region_box(self, region_id: str, rect: QRectF) -> ResizableRegionItem:
         if region_id in self._items:

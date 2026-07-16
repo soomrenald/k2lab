@@ -43,6 +43,7 @@ class AppSettings:
     )
     comfyui_root: Path = field(default_factory=lambda: Path("~/ComfyUI").expanduser())
     auto_start_worker: bool = True
+    reserve_vram_gb: float = 2.0
     default_width: int = 1024
     default_height: int = 1024
 
@@ -57,4 +58,5 @@ class AppSettings:
             comfyui_root=_configured_path("K2LAB_COMFYUI_ROOT", "~/ComfyUI"),
             auto_start_worker=os.environ.get("K2LAB_AUTO_START_WORKER", "1")
             not in {"0", "false", "False"},
+            reserve_vram_gb=float(os.environ.get("K2LAB_RESERVE_VRAM_GB", "2.0")),
         )

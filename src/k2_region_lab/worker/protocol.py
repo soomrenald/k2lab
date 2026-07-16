@@ -11,6 +11,7 @@ class CommandKind(StrEnum):
     VALIDATE_MODELS = "validate_models"
     LOAD_MODEL = "load_model"
     INITIALIZE_RUN = "initialize_run"
+    GENERATE_BASELINE = "generate_baseline"
     NEXT_BLOCK = "next_block"
     NEXT_STEP = "next_step"
     CONTINUE = "continue"

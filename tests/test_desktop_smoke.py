@@ -7,6 +7,7 @@ import struct
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import Mock
 
 
 PYSIDE_AVAILABLE = importlib.util.find_spec("PySide6") is not None
@@ -14,6 +15,7 @@ PYSIDE_AVAILABLE = importlib.util.find_spec("PySide6") is not None
 if PYSIDE_AVAILABLE:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     from PySide6.QtCore import QRectF, Qt
+    from PySide6.QtGui import QColor, QPixmap
     from PySide6.QtWidgets import QApplication
 
     from k2_region_lab.config import AppSettings, ModelDirectories
@@ -123,6 +125,42 @@ class DesktopSmokeTests(unittest.TestCase):
             window.canvas.delete_selected_regions()
             self.application.processEvents()
             self.assertTrue(window.lora_library.binding_for(lora_id).global_scope)
+            window.close()
+
+    def test_baseline_request_uses_aligned_canvas_and_result_becomes_background(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            window = self.make_window(root)
+            window.global_prompt.setPlainText("a red ceramic teapot")
+            window.width_input.setValue(513)
+            window.height_input.setValue(517)
+            window.steps_input.setValue(8)
+            window.seed_input.setValue(1234)
+            window.worker_client.send = Mock()
+
+            window._generate_baseline()
+            command, payload = window.worker_client.send.call_args.args
+            self.assertEqual(command.value, "generate_baseline")
+            self.assertEqual(payload["prompt"], "a red ceramic teapot")
+            self.assertEqual(payload["width"] % 16, 0)
+            self.assertEqual(payload["height"] % 16, 0)
+            self.assertEqual(payload["steps"], 8)
+            self.assertEqual(payload["seed"], 1234)
+
+            image_path = root / "baseline.png"
+            pixmap = QPixmap(32, 32)
+            pixmap.fill(QColor("#b32318"))
+            self.assertTrue(pixmap.save(str(image_path)))
+            window._worker_event(
+                {
+                    "state": "ready",
+                    "message": "Baseline generation complete",
+                    "payload": {"image_path": str(image_path)},
+                }
+            )
+            self.assertIsNotNone(window.canvas._image_item)
+            self.assertEqual(window.canvas._image_item.zValue(), -100.0)
+            self.assertTrue(window.generate_button.isEnabled())
             window.close()
 
 

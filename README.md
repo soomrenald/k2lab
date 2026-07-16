@@ -9,9 +9,10 @@ The implementation is at the foundation milestone. It currently provides:
 - area-fraction box rasterization and immutable spatial layouts;
 - a PySide6 desktop shell with movable, corner-resizable, and deletable pixel-space boxes;
 - a LoRA file browser and loaded-LoRA library with Global or multi-region scope assignment;
-- a typed worker protocol ready for isolated GPU execution;
+- a typed worker protocol with isolated baseline GPU execution;
 - a configurable external ROCm worker using the existing ComfyUI interpreter;
 - full transformer, Qwen, and VAE tensor manifests with Krea-specific shape validation;
+- fixed-seed Krea 2 Turbo baseline generation with progress events and PNG metadata;
 - dependency-light unit tests for the geometry and artifact-discovery contracts.
 
 The configured default model locations are:
@@ -48,7 +49,10 @@ The desktop starts its GPU worker with `~/ComfyUI/venv_rocm/bin/python` by defau
 K2LAB_WORKER_PYTHON
 K2LAB_COMFYUI_ROOT
 K2LAB_AUTO_START_WORKER
+K2LAB_RESERVE_VRAM_GB
 ```
 
-Use **Validate tensors** before **Load Krea 2 baseline**. Validation reads only safetensors headers and writes complete manifests under the configured K2 Lab data directory.
+Use **Validate tensors** before **Load Krea 2 baseline**. Validation reads only safetensors headers and writes complete manifests under the configured K2 Lab data directory. After loading, **Generate baseline** runs an eight-step Euler/simple Turbo pass by default and displays the saved image behind the editable region boxes.
+
+The tested local stack uses PyTorch 2.9.1 with ROCm 6.4. Because scaled FP8 execution is native only on ROCm 6.5 or newer, the worker automatically uses ComfyUI's low-VRAM fallback on ROCm 6.4 and reserves 2 GiB of VRAM by default. Change the reserve with `K2LAB_RESERVE_VRAM_GB` if another desktop workload needs a different margin.
 

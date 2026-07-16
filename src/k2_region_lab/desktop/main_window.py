@@ -146,6 +146,18 @@ class MainWindow(QMainWindow):
         self.load_model_button.clicked.connect(self._load_worker_model)
         self.load_model_button.setEnabled(False)
         layout.addRow(self.load_model_button)
+        self.steps_input = QSpinBox()
+        self.steps_input.setRange(1, 100)
+        self.steps_input.setValue(8)
+        self.seed_input = QSpinBox()
+        self.seed_input.setRange(0, 2_147_483_647)
+        self.seed_input.setValue(0)
+        layout.addRow("Turbo steps", self.steps_input)
+        layout.addRow("Seed", self.seed_input)
+        self.generate_button = QPushButton("Generate baseline")
+        self.generate_button.setEnabled(False)
+        self.generate_button.clicked.connect(self._generate_baseline)
+        layout.addRow(self.generate_button)
         dock.setWidget(body)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
 
@@ -418,7 +430,7 @@ class MainWindow(QMainWindow):
         scope = "Global" if binding.global_scope else ", ".join(binding.region_ids)
         self.events.addItem(f"Assigned {entry.display_name} to {scope}")
 
-    def _worker_payload(self) -> dict[str, str]:
+    def _worker_payload(self) -> dict[str, object]:
         directories = self.settings.model_directories
         return {
             "comfyui_root": str(self.settings.comfyui_root),
@@ -426,6 +438,7 @@ class MainWindow(QMainWindow):
             "text_encoders": str(directories.text_encoders),
             "vae": str(directories.vae),
             "manifest_directory": str(self.settings.data_directory / "manifests"),
+            "reserve_vram_gb": self.settings.reserve_vram_gb,
         }
 
     def _start_worker(self) -> None:
@@ -446,6 +459,22 @@ class MainWindow(QMainWindow):
         if self.worker_client.running:
             self.load_model_button.setEnabled(False)
             self.worker_client.send(CommandKind.LOAD_MODEL, self._worker_payload())
+
+    def _generate_baseline(self) -> None:
+        geometry = CanvasGeometry.resolve(self.width_input.value(), self.height_input.value())
+        payload = self._worker_payload()
+        payload.update(
+            {
+                "prompt": self.global_prompt.toPlainText(),
+                "width": geometry.aligned_width,
+                "height": geometry.aligned_height,
+                "steps": self.steps_input.value(),
+                "seed": self.seed_input.value(),
+                "output_directory": str(self.settings.data_directory / "baseline_outputs"),
+            }
+        )
+        self.generate_button.setEnabled(False)
+        self.worker_client.send(CommandKind.GENERATE_BASELINE, payload)
 
     def _worker_event(self, event: dict) -> None:
         state = event.get("state", "unknown")
@@ -473,6 +502,15 @@ class MainWindow(QMainWindow):
                 )
         if message == "Krea 2 baseline components loaded":
             self.statusBar().showMessage("Krea 2 baseline loaded in GPU worker")
+            self.generate_button.setEnabled(True)
+        elif message == "Baseline generation complete":
+            image_path = payload.get("image_path")
+            if image_path and self.canvas.set_image(image_path):
+                self.statusBar().showMessage(f"Baseline saved to {image_path}")
+            self.generate_button.setEnabled(True)
+        elif state == "error":
+            self.load_model_button.setEnabled(self._accelerator_available)
+            self.generate_button.setEnabled(False)
 
     def _worker_stderr(self, output: str) -> None:
         for line in output.splitlines():
