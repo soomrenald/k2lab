@@ -1,0 +1,47 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from enum import StrEnum
+from typing import Any
+
+
+class CommandKind(StrEnum):
+    PROBE = "probe"
+    DISCOVER_MODELS = "discover_models"
+    VALIDATE_MODELS = "validate_models"
+    LOAD_MODEL = "load_model"
+    INITIALIZE_RUN = "initialize_run"
+    NEXT_BLOCK = "next_block"
+    NEXT_STEP = "next_step"
+    CONTINUE = "continue"
+    PAUSE = "pause"
+    CANCEL = "cancel"
+    SHUTDOWN = "shutdown"
+
+
+class WorkerState(StrEnum):
+    UNLOADED = "unloaded"
+    LOADING = "loading"
+    PROBING = "probing"
+    VALIDATING = "validating"
+    READY = "ready"
+    RUNNING = "running"
+    PAUSED = "paused"
+    COMPLETE = "complete"
+    CANCELLED = "cancelled"
+    ERROR = "error"
+
+
+@dataclass(frozen=True, slots=True)
+class WorkerCommand:
+    command_id: str
+    kind: CommandKind
+    payload: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class WorkerEvent:
+    command_id: str | None
+    state: WorkerState
+    message: str
+    payload: dict[str, Any] = field(default_factory=dict)

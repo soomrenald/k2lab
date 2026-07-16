@@ -1,0 +1,46 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "k2-region-lab"
+version = "0.1.0"
+description = "Local pixel-space regional prompting, LoRA, and attention research for Krea 2"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "numpy>=2.1",
+    "pillow>=11.0",
+    "pydantic>=2.10",
+    "PySide6>=6.8,<7",
+    "safetensors>=0.5",
+]
+
+[project.optional-dependencies]
+model = [
+    "diffusers>=0.32",
+    "torch>=2.9.0",
+    "transformers==4.57.1",
+]
+diagnostics = [
+    "pyqtgraph>=0.13.7",
+    "zarr>=3.0",
+]
+dev = [
+    "pytest>=8.3",
+    "ruff>=0.9",
+]
+
+[project.scripts]
+k2lab = "k2_region_lab.app:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/k2_region_lab"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
