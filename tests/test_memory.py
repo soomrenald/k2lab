@@ -5,8 +5,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock
 
-from k2_region_lab.memory import MEMORY_POLICIES, memory_policy
-from k2_region_lab.worker.runtime import ComfyBaselineRuntime
+from k2_region_lab.memory import (
+    MEMORY_POLICIES,
+    effective_reserve_vram_gb,
+    memory_policy,
+)
+from k2_region_lab.worker.runtime import CriticalGpuMemoryPressure, ComfyBaselineRuntime
 
 
 class MemoryPolicyTests(unittest.TestCase):
@@ -19,6 +23,16 @@ class MemoryPolicyTests(unittest.TestCase):
     def test_policy_keys_are_unique(self) -> None:
         keys = [policy.key for policy in MEMORY_POLICIES]
         self.assertEqual(len(keys), len(set(keys)))
+
+    def test_saved_value_cannot_weaken_policy_floor(self) -> None:
+        self.assertEqual(effective_reserve_vram_gb("safe_16gb", 2.0), 4.0)
+        self.assertEqual(effective_reserve_vram_gb("emergency", 4.0), 5.5)
+        self.assertEqual(effective_reserve_vram_gb("balanced", 3.5), 3.5)
+
+    def test_critical_pressure_uses_the_single_oom_recovery_path(self) -> None:
+        self.assertTrue(
+            ComfyBaselineRuntime._is_oom(CriticalGpuMemoryPressure("1.4 GiB free"))
+        )
 
     def test_generation_retries_only_once_with_same_request_after_oom(self) -> None:
         runtime = ComfyBaselineRuntime(Path("/unused"))

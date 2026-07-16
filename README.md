@@ -16,6 +16,7 @@ The implementation is at the foundation milestone. It currently provides:
 - full transformer, Qwen, and VAE tensor manifests with Krea-specific shape validation;
 - fixed-seed Krea 2 Turbo baseline generation with progress events and PNG metadata;
 - selectable 16 GB memory policies, live VRAM/RAM telemetry, boundary offload, and OOM retry;
+- confirmed cleanup of current-user K2 workers without terminating unrelated ROCm applications;
 - in-app ROCm diagnostics with device permissions, runtime identity, and remediation hints;
 - dependency-light unit tests for the geometry and artifact-discovery contracts.
 
@@ -66,7 +67,9 @@ Use **Validate tensors** before **Load Krea 2 baseline**. Validation reads only 
 
 If the accelerator probe fails, **Diagnose accelerator…** appears below the status. It restarts the worker with a clean environment and reports the interpreter, Torch/ROCm versions, device-file access, visibility variables, initialization errors, and suggested fixes without closing the application.
 
+Use **Release K2 GPU memory…** if a failed run leaves a K2 worker holding VRAM. The confirmation dialog lists every matching current-user K2 worker PID, then stops only those processes. It deliberately does not terminate ComfyUI or other ROCm applications.
+
 Launch with `DEBUG=1 k2lab` to write bounded rotating logs under `~/.local/share/k2-region-lab/logs/` (or the configured `K2LAB_DATA_DIR`). The desktop and GPU worker use separate `desktop-debug.log` and `worker-debug.log` files.
 
-The tested local stack uses PyTorch 2.9.1 with ROCm 6.4. Because scaled FP8 execution is native only on ROCm 6.5 or newer, the worker automatically uses ComfyUI's low-VRAM fallback on ROCm 6.4. **Safe 16 GB** is the default policy: it keeps a 4 GiB VRAM floor, requires 14 GiB of available system RAM before offloading, reports memory at each generation boundary and denoising step, and retries once after a GPU OOM with a 5 GiB reserve and CPU VAE decode. Memory controls are locked while a model is loaded so the active worker configuration remains explicit.
+The tested local stack uses PyTorch 2.9.1 with ROCm 6.4. Because scaled FP8 execution is native only on ROCm 6.5 or newer, the worker automatically uses ComfyUI's low-VRAM fallback on ROCm 6.4. **Safe 16 GB** is the default policy: its 4 GiB VRAM floor cannot be reduced by an older saved project, it requires 14 GiB of available system RAM before offloading, and it reports memory at each generation boundary and denoising step. If free VRAM crosses the critical floor between denoising steps, the worker stops before the next allocation and makes its single deterministic retry with a 5 GiB reserve and CPU VAE decode. Memory controls are locked while a model is loaded so the active worker configuration remains explicit. The worker also enables PyTorch expandable allocator segments when the environment does not specify an allocator policy.
 

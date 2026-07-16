@@ -34,8 +34,13 @@ from k2_region_lab.config import AppSettings, ModelDirectories
 from k2_region_lab.desktop.region_canvas import RegionCanvas
 from k2_region_lab.desktop.worker_client import ExternalWorkerClient
 from k2_region_lab.lora import LoraLibrary
-from k2_region_lab.memory import MEMORY_POLICIES, memory_policy
+from k2_region_lab.memory import (
+    MEMORY_POLICIES,
+    effective_reserve_vram_gb,
+    memory_policy,
+)
 from k2_region_lab.model import ArtifactSet, discover_model_artifacts
+from k2_region_lab.processes import find_owned_k2_workers, terminate_workers
 from k2_region_lab.project import ProjectState, SavedLora, load_project, save_project
 from k2_region_lab.regions import CanvasGeometry, PixelBox, RegionDefinition
 from k2_region_lab.worker.protocol import CommandKind
@@ -191,6 +196,12 @@ class MainWindow(QMainWindow):
         worker_buttons.addWidget(start_worker)
         worker_buttons.addWidget(validate)
         layout.addRow(worker_buttons)
+        self.release_worker_button = QPushButton("Release K2 GPU memory…")
+        self.release_worker_button.setToolTip(
+            "Stop this user's K2 Region Lab GPU workers; other ROCm apps are untouched"
+        )
+        self.release_worker_button.clicked.connect(self._release_k2_gpu_memory)
+        layout.addRow(self.release_worker_button)
         self.load_model_button = QPushButton("Load Krea 2 baseline")
         self.load_model_button.clicked.connect(self._load_worker_model)
         self.load_model_button.setEnabled(False)
@@ -763,14 +774,17 @@ class MainWindow(QMainWindow):
 
     def _worker_payload(self) -> dict[str, object]:
         directories = self.settings.model_directories
+        policy_key = self.memory_policy_input.currentData()
         return {
             "comfyui_root": str(self.settings.comfyui_root),
             "diffusion_models": str(directories.diffusion_models),
             "text_encoders": str(directories.text_encoders),
             "vae": str(directories.vae),
             "manifest_directory": str(self.settings.data_directory / "manifests"),
-            "memory_policy": self.memory_policy_input.currentData(),
-            "reserve_vram_gb": self.reserve_vram_input.value(),
+            "memory_policy": policy_key,
+            "reserve_vram_gb": effective_reserve_vram_gb(
+                policy_key, self.reserve_vram_input.value()
+            ),
             "minimum_system_ram_gb": self.minimum_ram_input.value(),
             "cpu_vae": self.cpu_vae_input.isChecked(),
             "oom_recovery": self.oom_recovery_input.isChecked(),
@@ -796,6 +810,67 @@ class MainWindow(QMainWindow):
             self.events.addItem("Diagnostic worker did not start within three seconds")
             return
         self.worker_client.send(CommandKind.DIAGNOSE_ACCELERATOR, self._worker_payload())
+
+    def _release_k2_gpu_memory(self) -> None:
+        workers = find_owned_k2_workers()
+        if not workers:
+            QMessageBox.information(
+                self,
+                "No K2 GPU worker found",
+                "No K2 Region Lab worker owned by your user is currently running. "
+                "Other ROCm applications were not inspected or stopped.",
+            )
+            self.events.addItem("GPU memory release: no K2 workers found")
+            return
+
+        process_lines = "\n".join(
+            f"PID {worker.pid}: {' '.join(worker.command[:4])}" for worker in workers
+        )
+        answer = QMessageBox.question(
+            self,
+            "Release K2 GPU memory?",
+            "This will stop the following K2 Region Lab GPU worker processes:\n\n"
+            f"{process_lines}\n\n"
+            "Unsaved GUI configuration is unaffected. Other ROCm applications, "
+            "including ComfyUI, will not be stopped.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+
+        current_pid = self.worker_client.kill_immediately()
+        remaining = find_owned_k2_workers()
+        terminated, failed = terminate_workers(remaining)
+        stopped = set(terminated)
+        if current_pid is not None:
+            stopped.add(current_pid)
+
+        self._accelerator_available = False
+        self.worker_status.setText("Stopped")
+        self.accelerator_status.setText("Not probed")
+        self.memory_status.setText("K2 workers stopped; GPU allocations released")
+        self.load_model_button.setEnabled(False)
+        self.generate_button.setEnabled(False)
+        self._set_memory_controls_enabled(True)
+        if stopped:
+            self.events.addItem(
+                "Released K2 GPU workers: " + ", ".join(map(str, sorted(stopped)))
+            )
+        if failed:
+            self.events.addItem(
+                "Could not stop K2 GPU workers: " + ", ".join(map(str, failed))
+            )
+            QMessageBox.warning(
+                self,
+                "Some K2 workers remain",
+                "These K2 worker PIDs could not be stopped: "
+                + ", ".join(map(str, failed)),
+            )
+        else:
+            self.statusBar().showMessage(
+                "K2 GPU workers stopped; click Start worker when ready", 8000
+            )
 
     def _validate_worker_models(self) -> None:
         if not self.worker_client.running:
@@ -895,6 +970,8 @@ class MainWindow(QMainWindow):
             report.exec()
         elif message == "Krea 2 baseline components loaded":
             self.statusBar().showMessage("Krea 2 baseline loaded in GPU worker")
+            if "reserve_vram_gb" in payload:
+                self.reserve_vram_input.setValue(float(payload["reserve_vram_gb"]))
             self._set_memory_controls_enabled(False)
             self.generate_button.setEnabled(True)
         elif message == "Baseline generation complete":

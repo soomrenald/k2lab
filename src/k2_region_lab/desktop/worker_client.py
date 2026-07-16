@@ -49,6 +49,8 @@ class ExternalWorkerClient(QObject):
         environment.remove("PYTHONHOME")
         environment.insert("VIRTUAL_ENV", str(worker_environment))
         environment.insert("K2LAB_DATA_DIR", str(self.settings.data_directory))
+        if not environment.contains("PYTORCH_CUDA_ALLOC_CONF"):
+            environment.insert("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
         environment.insert(
             "PATH",
             os.pathsep.join(
@@ -106,6 +108,14 @@ class ExternalWorkerClient(QObject):
             if self.running:
                 self.process.kill()
                 self.process.waitForFinished(1000)
+
+    def kill_immediately(self) -> int | None:
+        if not self.running:
+            return None
+        pid = int(self.process.processId())
+        self.process.kill()
+        self.process.waitForFinished(1500)
+        return pid
 
     def _read_stdout(self) -> None:
         self._stdout_buffer += bytes(self.process.readAllStandardOutput()).decode(

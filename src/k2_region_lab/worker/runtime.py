@@ -5,6 +5,7 @@ import gc
 import os
 import platform
 import sys
+import traceback
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable
@@ -12,7 +13,11 @@ from typing import Any, Callable
 from k2_region_lab.config import ModelDirectories
 from k2_region_lab.model import ArtifactSet, discover_model_artifacts
 from k2_region_lab.model.manifests import build_tensor_manifest
-from k2_region_lab.memory import GIB, memory_policy
+from k2_region_lab.memory import GIB, effective_reserve_vram_gb, memory_policy
+
+
+class CriticalGpuMemoryPressure(RuntimeError):
+    """Raised only between denoising steps so recovery starts before a hard OOM."""
 
 
 def probe_runtime(comfyui_root: Path) -> dict[str, Any]:
@@ -226,7 +231,9 @@ class ComfyBaselineRuntime:
 
         policy = memory_policy(memory_policy_key)
         self.memory_policy_key = policy.key
-        self.reserve_vram_gb = max(0.5, reserve_vram_gb)
+        self.reserve_vram_gb = effective_reserve_vram_gb(
+            policy.key, reserve_vram_gb
+        )
         self.warning_free_gb = max(self.reserve_vram_gb, policy.warning_free_gb)
         self.critical_free_gb = min(self.warning_free_gb, policy.critical_free_gb)
         self.minimum_system_ram_gb = max(4.0, minimum_system_ram_gb)
@@ -324,6 +331,8 @@ class ComfyBaselineRuntime:
 
     @staticmethod
     def _is_oom(error: BaseException) -> bool:
+        if isinstance(error, CriticalGpuMemoryPressure):
+            return True
         try:
             import torch
 
@@ -344,8 +353,17 @@ class ComfyBaselineRuntime:
         import comfy.sd
         import comfy.utils
 
-        comfy.model_management.unload_all_models()
+        old_vae = self.vae
+        if old_vae is not None:
+            try:
+                comfy.model_management.unload_model_and_clones(
+                    old_vae.patcher,
+                    all_devices=True,
+                )
+            except (AttributeError, RuntimeError):
+                pass
         self.vae = None
+        del old_vae
         gc.collect()
         comfy.model_management.soft_empty_cache()
         args.cpu_vae = True
@@ -370,7 +388,9 @@ class ComfyBaselineRuntime:
                 "GPU OOM recovery stopped because available system RAM is below "
                 f"the {self.minimum_system_ram_gb:.1f} GiB guard"
             )
-        comfy.model_management.unload_all_models()
+        device = comfy.model_management.get_torch_device()
+        target_free = int(max(self.reserve_vram_gb, 5.0) * GIB)
+        comfy.model_management.free_memory(target_free, device)
         gc.collect()
         comfy.model_management.soft_empty_cache(force=True)
         self.reserve_vram_gb = max(self.reserve_vram_gb, 5.0)
@@ -424,6 +444,8 @@ class ComfyBaselineRuntime:
             if not self.oom_recovery or not self._is_oom(error):
                 raise
             oom_message = str(error)
+            if error.__traceback__ is not None:
+                traceback.clear_frames(error.__traceback__)
             error.__traceback__ = None
         gc.collect()
         if event is not None:
@@ -483,11 +505,18 @@ class ComfyBaselineRuntime:
 
         def callback(step: int, denoised, current, total: int) -> None:
             del denoised, current
+            snapshot = self.memory_snapshot(f"denoising step {step + 1}/{total}")
             if progress is not None:
                 progress(
                     step + 1,
                     total,
-                    self.memory_snapshot(f"denoising step {step + 1}/{total}"),
+                    snapshot,
+                )
+            if snapshot["gpu_free_bytes"] < snapshot["critical_free_bytes"]:
+                raise CriticalGpuMemoryPressure(
+                    "critical GPU memory pressure after denoising step "
+                    f"{step + 1}/{total}: "
+                    f"{snapshot['gpu_free_bytes'] / GIB:.2f} GiB free"
                 )
 
         samples = comfy.sample.sample(

@@ -7,7 +7,7 @@ import struct
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 
 PYSIDE_AVAILABLE = importlib.util.find_spec("PySide6") is not None
@@ -16,10 +16,11 @@ if PYSIDE_AVAILABLE:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     from PySide6.QtCore import QRectF, Qt
     from PySide6.QtGui import QColor, QPixmap
-    from PySide6.QtWidgets import QApplication
+    from PySide6.QtWidgets import QApplication, QMessageBox
 
     from k2_region_lab.config import AppSettings, ModelDirectories
     from k2_region_lab.desktop.main_window import GLOBAL_SCOPE_ID, MainWindow
+    from k2_region_lab.processes import WorkerProcess
 
 
 def write_lora(path: Path) -> None:
@@ -242,6 +243,50 @@ class DesktopSmokeTests(unittest.TestCase):
             )
             self.assertIn("VRAM 4.0/16.0 GiB free", window.memory_status.text())
             self.assertIn("offloaded_to_ram", window.memory_status.text())
+            window.close()
+
+    def test_safe_worker_payload_enforces_four_gib_floor(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            window = self.make_window(Path(directory))
+            window.memory_policy_input.setCurrentIndex(
+                window.memory_policy_input.findData("safe_16gb")
+            )
+            window.reserve_vram_input.setValue(2.0)
+
+            payload = window._worker_payload()
+
+            self.assertEqual(payload["reserve_vram_gb"], 4.0)
+            window.close()
+
+    def test_release_gpu_memory_only_targets_discovered_k2_workers(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            window = self.make_window(Path(directory))
+            worker = WorkerProcess(
+                8123,
+                100,
+                ("python", "-m", "k2_region_lab.worker.entrypoint"),
+            )
+            window.worker_client.kill_immediately = Mock(return_value=None)
+            with (
+                patch(
+                    "k2_region_lab.desktop.main_window.find_owned_k2_workers",
+                    side_effect=[(worker,), (worker,)],
+                ),
+                patch(
+                    "k2_region_lab.desktop.main_window.terminate_workers",
+                    return_value=((8123,), ()),
+                ) as terminate,
+                patch.object(
+                    QMessageBox,
+                    "question",
+                    return_value=QMessageBox.StandardButton.Yes,
+                ),
+            ):
+                window._release_k2_gpu_memory()
+
+            terminate.assert_called_once_with((worker,))
+            self.assertEqual(window.worker_status.text(), "Stopped")
+            self.assertIn("allocations released", window.memory_status.text())
             window.close()
 
     def test_baseline_request_uses_aligned_canvas_and_result_becomes_background(self) -> None:
