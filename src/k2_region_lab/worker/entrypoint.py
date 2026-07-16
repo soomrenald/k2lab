@@ -1,16 +1,19 @@
 from __future__ import annotations
 
 import json
+import logging
 import sys
 import traceback
 from pathlib import Path
 from typing import Any
 
 from k2_region_lab.config import ModelDirectories
+from k2_region_lab.debug import configure_debug_logging
 from k2_region_lab.model import discover_model_artifacts
 from k2_region_lab.worker.protocol import CommandKind, WorkerState
 from k2_region_lab.worker.runtime import (
     ComfyBaselineRuntime,
+    diagnose_accelerator,
     probe_runtime,
     validate_model_artifacts,
 )
@@ -46,6 +49,9 @@ def model_directories(payload: dict[str, Any]) -> ModelDirectories:
 
 
 def main() -> int:
+    configure_debug_logging("worker")
+    logger = logging.getLogger("k2_region_lab.worker.entrypoint")
+    logger.debug("worker starting with executable=%s argv=%r", sys.executable, sys.argv)
     runtime: ComfyBaselineRuntime | None = None
     artifacts = None
     emit(WorkerState.UNLOADED, "GPU worker started")
@@ -56,6 +62,7 @@ def main() -> int:
             command_id = command.get("command_id")
             kind = CommandKind(command["kind"])
             payload = command.get("payload", {})
+            logger.debug("received worker command id=%s kind=%s", command_id, kind.value)
             comfyui_root = Path(payload.get("comfyui_root", "~/ComfyUI")).expanduser()
             if kind == CommandKind.PROBE:
                 emit(WorkerState.PROBING, "Probing worker runtime", command_id=command_id)
@@ -63,6 +70,16 @@ def main() -> int:
                 emit(
                     WorkerState.UNLOADED,
                     "Worker runtime probe complete",
+                    command_id=command_id,
+                    payload=result,
+                )
+            elif kind == CommandKind.DIAGNOSE_ACCELERATOR:
+                emit(WorkerState.PROBING, "Running accelerator diagnostics", command_id=command_id)
+                result = diagnose_accelerator(comfyui_root)
+                logger.debug("accelerator diagnostics: %r", result)
+                emit(
+                    WorkerState.READY if result.get("accelerator_available") else WorkerState.ERROR,
+                    "Accelerator diagnostics complete",
                     command_id=command_id,
                     payload=result,
                 )
@@ -83,7 +100,11 @@ def main() -> int:
                 if artifacts is None:
                     directories = model_directories(payload)
                     artifacts = discover_model_artifacts(directories)
-                emit(WorkerState.LOADING, "Loading Krea 2 baseline components", command_id=command_id)
+                emit(
+                    WorkerState.LOADING,
+                    "Loading Krea 2 baseline components",
+                    command_id=command_id,
+                )
                 runtime = runtime or ComfyBaselineRuntime(comfyui_root)
                 loaded = runtime.load(
                     artifacts,
@@ -133,6 +154,7 @@ def main() -> int:
             else:
                 raise ValueError(f"unsupported worker command: {kind.value}")
         except Exception as error:
+            logger.exception("worker command failed")
             traceback.print_exc(file=sys.stderr)
             emit(
                 WorkerState.ERROR,

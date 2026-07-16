@@ -8,11 +8,14 @@ The implementation is at the foundation milestone. It currently provides:
 - exact output-pixel to 16×16 Krea image-token geometry;
 - area-fraction box rasterization and immutable spatial layouts;
 - a PySide6 desktop shell with movable, corner-resizable, and deletable pixel-space boxes;
+- editable, unique region names propagated through region and LoRA scope controls;
 - a LoRA file browser and loaded-LoRA library with Global or multi-region scope assignment;
+- JSON project save/load for prompts, generation settings, boxes, names, LoRAs, and runtime paths;
 - a typed worker protocol with isolated baseline GPU execution;
 - a configurable external ROCm worker using the existing ComfyUI interpreter;
 - full transformer, Qwen, and VAE tensor manifests with Krea-specific shape validation;
 - fixed-seed Krea 2 Turbo baseline generation with progress events and PNG metadata;
+- in-app ROCm diagnostics with device permissions, runtime identity, and remediation hints;
 - dependency-light unit tests for the geometry and artifact-discovery contracts.
 
 The configured default model locations are:
@@ -43,6 +46,8 @@ After installing the desktop dependencies, launch the application with:
 k2lab
 ```
 
+Do not resolve or replace the ComfyUI worker interpreter symlink: its venv path is required so Python finds the ROCm environment's `pyvenv.cfg`. The application preserves this path automatically.
+
 The desktop starts its GPU worker with `~/ComfyUI/venv_rocm/bin/python` by default. Override the runtime without changing GUI dependencies using:
 
 ```text
@@ -53,6 +58,10 @@ K2LAB_RESERVE_VRAM_GB
 ```
 
 Use **Validate tensors** before **Load Krea 2 baseline**. Validation reads only safetensors headers and writes complete manifests under the configured K2 Lab data directory. After loading, **Generate baseline** runs an eight-step Euler/simple Turbo pass by default and displays the saved image behind the editable region boxes.
+
+If the accelerator probe fails, **Diagnose accelerator…** appears below the status. It restarts the worker with a clean environment and reports the interpreter, Torch/ROCm versions, device-file access, visibility variables, initialization errors, and suggested fixes without closing the application.
+
+Launch with `DEBUG=1 k2lab` to write bounded rotating logs under `~/.local/share/k2-region-lab/logs/` (or the configured `K2LAB_DATA_DIR`). The desktop and GPU worker use separate `desktop-debug.log` and `worker-debug.log` files.
 
 The tested local stack uses PyTorch 2.9.1 with ROCm 6.4. Because scaled FP8 execution is native only on ROCm 6.5 or newer, the worker automatically uses ComfyUI's low-VRAM fallback on ROCm 6.4 and reserves 2 GiB of VRAM by default. Change the reserve with `K2LAB_RESERVE_VRAM_GB` if another desktop workload needs a different margin.
 

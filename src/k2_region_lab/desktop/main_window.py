@@ -1,15 +1,21 @@
 from __future__ import annotations
 
+import json
+import logging
+import os
+import re
 from dataclasses import replace
 from pathlib import Path
 
 from PySide6.QtCore import QRectF, Qt
+from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
     QDockWidget,
     QFileDialog,
     QFormLayout,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMainWindow,
@@ -21,11 +27,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from k2_region_lab.config import AppSettings
+from k2_region_lab.config import AppSettings, ModelDirectories
 from k2_region_lab.desktop.region_canvas import RegionCanvas
 from k2_region_lab.desktop.worker_client import ExternalWorkerClient
 from k2_region_lab.lora import LoraLibrary
 from k2_region_lab.model import ArtifactSet, discover_model_artifacts
+from k2_region_lab.project import ProjectState, SavedLora, load_project, save_project
 from k2_region_lab.regions import CanvasGeometry, PixelBox, RegionDefinition
 from k2_region_lab.worker.protocol import CommandKind
 
@@ -43,8 +50,12 @@ class MainWindow(QMainWindow):
         self._region_number = 0
         self._loading_region_form = False
         self._syncing_lora_scope = False
+        self._models_compatible = False
+        self._current_project_path: Path | None = None
+        self._background_image_path: Path | None = None
         self.setWindowTitle("K2 Region Lab")
         self.resize(1550, 950)
+        self._build_file_menu()
 
         self.canvas = RegionCanvas(settings.default_width, settings.default_height)
         self.setCentralWidget(self.canvas)
@@ -62,10 +73,34 @@ class MainWindow(QMainWindow):
         self.worker_client.stderr_received.connect(self._worker_stderr)
         self.worker_client.process_status.connect(self._worker_process_status)
         self._accelerator_available = False
-        self.statusBar().showMessage("Foundation milestone — model not loaded")
+        self.statusBar().showMessage("Ready — model not loaded")
+        if os.environ.get("DEBUG", "").strip() == "1":
+            log_path = self.settings.data_directory / "logs" / "desktop-debug.log"
+            self.events.addItem(f"DEBUG logging enabled: {log_path}")
         self.discover_models()
         if settings.auto_start_worker:
             self._start_worker()
+
+    def _build_file_menu(self) -> None:
+        menu = self.menuBar().addMenu("&File")
+        open_action = QAction("&Open project…", self)
+        open_action.setShortcut(QKeySequence.StandardKey.Open)
+        open_action.triggered.connect(self._open_project)
+        save_action = QAction("&Save project", self)
+        save_action.setShortcut(QKeySequence.StandardKey.Save)
+        save_action.triggered.connect(self._save_project)
+        save_as_action = QAction("Save project &as…", self)
+        save_as_action.setShortcut(QKeySequence.StandardKey.SaveAs)
+        save_as_action.triggered.connect(self._save_project_as)
+        exit_action = QAction("E&xit", self)
+        exit_action.setShortcut(QKeySequence.StandardKey.Quit)
+        exit_action.triggered.connect(self.close)
+        menu.addAction(open_action)
+        menu.addSeparator()
+        menu.addAction(save_action)
+        menu.addAction(save_as_action)
+        menu.addSeparator()
+        menu.addAction(exit_action)
 
     def _build_prompt_dock(self) -> None:
         dock = QDockWidget("Prompt and regions", self)
@@ -107,6 +142,12 @@ class MainWindow(QMainWindow):
         self.region_list = QListWidget()
         self.region_list.currentRowChanged.connect(self._selected_region_changed)
         layout.addWidget(self.region_list)
+        layout.addWidget(QLabel("Selected region name"))
+        self.region_name = QLineEdit()
+        self.region_name.setPlaceholderText("A unique region name…")
+        self.region_name.setEnabled(False)
+        self.region_name.editingFinished.connect(self._region_name_edited)
+        layout.addWidget(self.region_name)
         layout.addWidget(QLabel("Selected region prompt"))
         self.region_prompt = QTextEdit()
         self.region_prompt.setPlaceholderText("Describe only the content controlled by this box...")
@@ -134,6 +175,10 @@ class MainWindow(QMainWindow):
         self.accelerator_status = QLabel("Not probed")
         layout.addRow("GPU worker", self.worker_status)
         layout.addRow("Accelerator", self.accelerator_status)
+        self.diagnostic_button = QPushButton("Diagnose accelerator…")
+        self.diagnostic_button.setVisible(False)
+        self.diagnostic_button.clicked.connect(self._diagnose_accelerator)
+        layout.addRow(self.diagnostic_button)
         worker_buttons = QHBoxLayout()
         start_worker = QPushButton("Start worker")
         start_worker.clicked.connect(self._start_worker)
@@ -222,22 +267,33 @@ class MainWindow(QMainWindow):
         self.vae_status.setText(self._artifact_label(self.artifacts.vae))
         state = "complete" if self.artifacts.complete else "incomplete"
         self.events.addItem(f"Model discovery {state}")
-        self.statusBar().showMessage(f"Local model set: {state}; model loading not yet enabled")
+        self.statusBar().showMessage(f"Local model set: {state}")
+
+    def _next_default_region_name(self) -> str:
+        existing = {region.name.casefold() for region in self.regions}
+        while True:
+            self._region_number += 1
+            candidate = f"Region {self._region_number}"
+            if candidate.casefold() not in existing:
+                return candidate
 
     def _region_created(
         self, region_id: str, x0: float, y0: float, x1: float, y1: float
     ) -> None:
-        self._region_number += 1
         region = RegionDefinition(
             region_id=region_id,
-            name=f"Region {self._region_number}",
+            name=self._next_default_region_name(),
             box=PixelBox(x0, y0, x1, y1),
         )
         self.regions.append(region)
         list_item = QListWidgetItem(self._region_label(region))
         list_item.setData(Qt.ItemDataRole.UserRole, region_id)
         self.region_list.addItem(list_item)
-        self.canvas.add_region_box(region_id, QRectF(x0, y0, x1 - x0, y1 - y0))
+        self.canvas.add_region_box(
+            region_id,
+            QRectF(x0, y0, x1 - x0, y1 - y0),
+            region.name,
+        )
         self.region_list.setCurrentItem(list_item)
         self._refresh_lora_scope()
         self.events.addItem(f"Created {region.name}")
@@ -285,17 +341,47 @@ class MainWindow(QMainWindow):
 
     def _selected_region_changed(self, row: int) -> None:
         selected = 0 <= row < len(self.regions)
+        self.region_name.setEnabled(selected)
         self.region_prompt.setEnabled(selected)
         self._loading_region_form = True
         try:
             if selected:
                 region = self.regions[row]
+                self.region_name.setText(region.name)
                 self.region_prompt.setPlainText(region.prompt)
                 self.canvas.select_region(region.region_id)
             else:
+                self.region_name.clear()
                 self.region_prompt.clear()
         finally:
             self._loading_region_form = False
+
+    def _region_name_edited(self) -> None:
+        if self._loading_region_form:
+            return
+        row = self.region_list.currentRow()
+        if not 0 <= row < len(self.regions):
+            return
+        region = self.regions[row]
+        name = self.region_name.text().strip()
+        duplicate = any(
+            index != row and candidate.name.casefold() == name.casefold()
+            for index, candidate in enumerate(self.regions)
+        )
+        if not name or duplicate:
+            self.region_name.setText(region.name)
+            reason = "cannot be empty" if not name else "must be unique"
+            self.statusBar().showMessage(f"Region name {reason}", 5000)
+            return
+        if name == region.name:
+            return
+        self.regions[row] = replace(region, name=name)
+        item = self._region_list_item(region.region_id)
+        if item is not None:
+            item.setText(self._region_label(self.regions[row]))
+        self.canvas.set_region_name(region.region_id, name)
+        self._refresh_lora_scope()
+        self.events.addItem(f"Renamed {region.name} to {name}")
 
     def _region_form_edited(self) -> None:
         if self._loading_region_form:
@@ -427,8 +513,186 @@ class MainWindow(QMainWindow):
             binding = self.lora_library.assign_regions(lora_id, selected_regions)
         self._refresh_lora_scope()
         entry = self.lora_library.get(lora_id)
-        scope = "Global" if binding.global_scope else ", ".join(binding.region_ids)
+        names = {
+            region.region_id: region.name
+            for region in self.regions
+        }
+        scope = (
+            "Global"
+            if binding.global_scope
+            else ", ".join(names.get(region_id, region_id) for region_id in binding.region_ids)
+        )
         self.events.addItem(f"Assigned {entry.display_name} to {scope}")
+
+    def _project_state(self) -> ProjectState:
+        directories = self.settings.model_directories
+        runtime = {
+            "diffusion_models": str(directories.diffusion_models),
+            "text_encoders": str(directories.text_encoders),
+            "vae": str(directories.vae),
+            "worker_python": str(self.settings.worker_python),
+            "comfyui_root": str(self.settings.comfyui_root),
+            "data_directory": str(self.settings.data_directory),
+            "reserve_vram_gb": self.settings.reserve_vram_gb,
+        }
+        saved_loras = tuple(
+            SavedLora(
+                path=entry.path,
+                global_scope=(binding := self.lora_library.binding_for(entry.lora_id)).global_scope,
+                region_ids=binding.region_ids,
+            )
+            for entry in self.lora_library.entries()
+        )
+        return ProjectState(
+            canvas_width=self.width_input.value(),
+            canvas_height=self.height_input.value(),
+            global_prompt=self.global_prompt.toPlainText(),
+            steps=self.steps_input.value(),
+            seed=self.seed_input.value(),
+            regions=tuple(self.regions),
+            loras=saved_loras,
+            runtime=runtime,
+            background_image=self._background_image_path,
+        )
+
+    def _open_project(self) -> None:
+        selected, _ = QFileDialog.getOpenFileName(
+            self,
+            "Open K2 Region Lab project",
+            str(self._current_project_path.parent if self._current_project_path else Path.home()),
+            "K2 Region Lab project (*.k2lab.json *.json)",
+        )
+        if selected:
+            self._load_project_from(Path(selected), show_error_dialog=True)
+
+    def _save_project(self) -> None:
+        if self._current_project_path is None:
+            self._save_project_as()
+            return
+        self._save_project_to(self._current_project_path, show_error_dialog=True)
+
+    def _save_project_as(self) -> None:
+        start = self._current_project_path or (Path.home() / "untitled.k2lab.json")
+        selected, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save K2 Region Lab project",
+            str(start),
+            "K2 Region Lab project (*.k2lab.json);;JSON (*.json)",
+        )
+        if not selected:
+            return
+        path = Path(selected)
+        if path.suffix.lower() != ".json":
+            path = path.with_suffix(path.suffix + ".json")
+        self._save_project_to(path, show_error_dialog=True)
+
+    def _save_project_to(self, path: Path, *, show_error_dialog: bool = False) -> bool:
+        try:
+            save_project(path, self._project_state())
+        except (OSError, TypeError, ValueError) as error:
+            logging.getLogger(__name__).exception("project save failed")
+            self.events.addItem(f"Project save failed: {error}")
+            if show_error_dialog:
+                QMessageBox.warning(self, "Project save failed", str(error))
+            return False
+        self._current_project_path = path.expanduser().resolve()
+        self.setWindowTitle(f"K2 Region Lab — {self._current_project_path.name}")
+        self.statusBar().showMessage(f"Project saved to {self._current_project_path}", 5000)
+        self.events.addItem(f"Saved project {self._current_project_path}")
+        return True
+
+    def _settings_from_project(self, state: ProjectState) -> AppSettings:
+        runtime = state.runtime or {}
+        current = self.settings
+        current_directories = current.model_directories
+        return AppSettings(
+            model_directories=ModelDirectories(
+                Path(
+                    runtime.get("diffusion_models", current_directories.diffusion_models)
+                ).expanduser(),
+                Path(runtime.get("text_encoders", current_directories.text_encoders)).expanduser(),
+                Path(runtime.get("vae", current_directories.vae)).expanduser(),
+            ),
+            data_directory=Path(
+                runtime.get("data_directory", current.data_directory)
+            ).expanduser(),
+            worker_python=Path(runtime.get("worker_python", current.worker_python)).expanduser(),
+            comfyui_root=Path(runtime.get("comfyui_root", current.comfyui_root)).expanduser(),
+            auto_start_worker=current.auto_start_worker,
+            reserve_vram_gb=float(runtime.get("reserve_vram_gb", current.reserve_vram_gb)),
+            default_width=state.canvas_width,
+            default_height=state.canvas_height,
+        )
+
+    def _load_project_from(self, path: Path, *, show_error_dialog: bool = False) -> bool:
+        try:
+            state = load_project(path)
+        except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+            logging.getLogger(__name__).exception("project load failed")
+            self.events.addItem(f"Project load failed: {error}")
+            if show_error_dialog:
+                QMessageBox.warning(self, "Project load failed", str(error))
+            return False
+
+        self.worker_client.stop()
+        self.settings = self._settings_from_project(state)
+        self.worker_client.settings = self.settings
+        self.width_input.setValue(state.canvas_width)
+        self.height_input.setValue(state.canvas_height)
+        self.canvas.set_canvas_size(state.canvas_width, state.canvas_height)
+        self.global_prompt.setPlainText(state.global_prompt)
+        self.steps_input.setValue(state.steps)
+        self.seed_input.setValue(state.seed)
+
+        self.canvas.clear_regions()
+        self.region_list.clear()
+        self.regions = list(state.regions)
+        self._region_number = max(
+            (
+                int(match.group(1))
+                for region in self.regions
+                if (match := re.fullmatch(r"Region (\d+)", region.name))
+            ),
+            default=0,
+        )
+        for region in self.regions:
+            item = QListWidgetItem(self._region_label(region))
+            item.setData(Qt.ItemDataRole.UserRole, region.region_id)
+            self.region_list.addItem(item)
+            box = region.box
+            self.canvas.add_region_box(
+                region.region_id,
+                QRectF(box.x0, box.y0, box.width, box.height),
+                region.name,
+            )
+
+        self.lora_library = LoraLibrary()
+        self.lora_list.clear()
+        for saved_lora in state.loras:
+            if not self._add_lora_path(saved_lora.path):
+                continue
+            lora_id = self.lora_list.currentItem().data(Qt.ItemDataRole.UserRole)
+            if saved_lora.global_scope:
+                self.lora_library.assign_global(lora_id)
+            else:
+                self.lora_library.assign_regions(lora_id, saved_lora.region_ids)
+        self._refresh_lora_scope()
+
+        self.canvas.clear_image()
+        self._background_image_path = None
+        if state.background_image and state.background_image.is_file():
+            if self.canvas.set_image(str(state.background_image)):
+                self._background_image_path = state.background_image
+        if self.region_list.count():
+            self.region_list.setCurrentRow(0)
+        self._current_project_path = path.expanduser().resolve()
+        self.setWindowTitle(f"K2 Region Lab — {self._current_project_path.name}")
+        self.discover_models()
+        self.events.addItem(f"Opened project {self._current_project_path}")
+        self.statusBar().showMessage(f"Opened {self._current_project_path.name}", 5000)
+        if self.settings.auto_start_worker:
+            self._start_worker()
+        return True
 
     def _worker_payload(self) -> dict[str, object]:
         directories = self.settings.model_directories
@@ -448,6 +712,19 @@ class MainWindow(QMainWindow):
             self.events.addItem("GPU worker did not start within three seconds")
             return
         self.worker_client.send(CommandKind.PROBE, self._worker_payload())
+
+    def _diagnose_accelerator(self) -> None:
+        self.events.addItem("Restarting the GPU worker for a clean accelerator diagnostic")
+        self.worker_client.stop()
+        self._accelerator_available = False
+        self.load_model_button.setEnabled(False)
+        self.accelerator_status.setText("Diagnosing…")
+        if not self.worker_client.start():
+            return
+        if not self.worker_client.process.waitForStarted(3000):
+            self.events.addItem("Diagnostic worker did not start within three seconds")
+            return
+        self.worker_client.send(CommandKind.DIAGNOSE_ACCELERATOR, self._worker_payload())
 
     def _validate_worker_models(self) -> None:
         if not self.worker_client.running:
@@ -490,22 +767,57 @@ class MainWindow(QMainWindow):
                     ", ".join(device.get("name", "unknown") for device in devices)
                 )
             else:
-                self.accelerator_status.setText("Unavailable")
+                self.accelerator_status.setText("Unavailable — run diagnostic")
+            self.diagnostic_button.setVisible(not self._accelerator_available)
+            self.load_model_button.setEnabled(
+                bool(self._models_compatible and self._accelerator_available)
+            )
+            self.events.addItem(
+                "Worker runtime: "
+                f"{payload.get('python_executable', 'unknown')}; "
+                f"Torch {payload.get('torch_version', 'unavailable')}; "
+                f"ROCm {payload.get('hip_version', 'unavailable')}"
+            )
+            if not self._accelerator_available:
+                error = payload.get("initialization_error") or payload.get("error")
+                if error:
+                    self.events.addItem(f"Accelerator probe error: {error}")
         if "manifests" in payload:
             compatible = payload.get("complete") and all(
                 manifest.get("compatible") for manifest in payload["manifests"]
             )
+            self._models_compatible = bool(compatible)
             self.load_model_button.setEnabled(bool(compatible and self._accelerator_available))
             for manifest in payload["manifests"]:
                 self.events.addItem(
                     f"{manifest['kind']} manifest: {manifest['manifest_path']}"
                 )
-        if message == "Krea 2 baseline components loaded":
+        if message == "Accelerator diagnostics complete":
+            recommendations = payload.get("recommendations", [])
+            for recommendation in recommendations:
+                self.events.addItem(f"Diagnostic: {recommendation}")
+            report = QMessageBox(self)
+            report.setWindowTitle("Accelerator diagnostic")
+            report.setIcon(
+                QMessageBox.Icon.Information
+                if self._accelerator_available
+                else QMessageBox.Icon.Warning
+            )
+            report.setText(
+                "ROCm accelerator detected. Model loading is available."
+                if self._accelerator_available
+                else "The worker still cannot initialize a ROCm accelerator."
+            )
+            report.setInformativeText("\n".join(recommendations))
+            report.setDetailedText(json.dumps(payload, indent=2, sort_keys=True))
+            report.exec()
+        elif message == "Krea 2 baseline components loaded":
             self.statusBar().showMessage("Krea 2 baseline loaded in GPU worker")
             self.generate_button.setEnabled(True)
         elif message == "Baseline generation complete":
             image_path = payload.get("image_path")
             if image_path and self.canvas.set_image(image_path):
+                self._background_image_path = Path(image_path)
                 self.statusBar().showMessage(f"Baseline saved to {image_path}")
             self.generate_button.setEnabled(True)
         elif state == "error":
@@ -513,6 +825,7 @@ class MainWindow(QMainWindow):
             self.generate_button.setEnabled(False)
 
     def _worker_stderr(self, output: str) -> None:
+        logging.getLogger(__name__).debug("worker stderr received: %s", output)
         for line in output.splitlines():
             self.events.addItem(f"Worker stderr: {line}")
 

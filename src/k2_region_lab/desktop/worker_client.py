@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from pathlib import Path
 from uuid import uuid4
@@ -44,6 +45,19 @@ class ExternalWorkerClient(QObject):
             return False
         project_root = Path(__file__).resolve().parents[3]
         environment = QProcessEnvironment.systemEnvironment()
+        worker_environment = self.settings.worker_python.parent.parent
+        environment.remove("PYTHONHOME")
+        environment.insert("VIRTUAL_ENV", str(worker_environment))
+        environment.insert("K2LAB_DATA_DIR", str(self.settings.data_directory))
+        environment.insert(
+            "PATH",
+            os.pathsep.join(
+                (
+                    str(self.settings.worker_python.parent),
+                    environment.value("PATH"),
+                )
+            ),
+        )
         existing_pythonpath = environment.value("PYTHONPATH")
         path_entries = [str(project_root / "src"), str(self.settings.comfyui_root)]
         if existing_pythonpath:
@@ -53,6 +67,13 @@ class ExternalWorkerClient(QObject):
         self.process.setWorkingDirectory(str(project_root))
         self.process.setProgram(str(self.settings.worker_python))
         self.process.setArguments(["-m", "k2_region_lab.worker.entrypoint"])
+        logging.getLogger(__name__).debug(
+            "starting worker program=%s cwd=%s virtual_env=%s pythonpath=%s",
+            self.settings.worker_python,
+            project_root,
+            worker_environment,
+            os.pathsep.join(path_entries),
+        )
         self.process.start()
         self.process_status.emit("starting")
         return True
@@ -70,6 +91,9 @@ class ExternalWorkerClient(QObject):
             separators=(",", ":"),
         )
         self.process.write((encoded + "\n").encode("utf-8"))
+        logging.getLogger(__name__).debug(
+            "sent worker command id=%s kind=%s", command_id, kind.value
+        )
         return command_id
 
     def stop(self, timeout_ms: int = 3000) -> None:
@@ -96,6 +120,7 @@ class ExternalWorkerClient(QObject):
             except json.JSONDecodeError:
                 self.stderr_received.emit(f"non-protocol worker output: {encoded}")
                 continue
+            logging.getLogger(__name__).debug("worker event: %r", event)
             self.event_received.emit(event)
 
     def _read_stderr(self) -> None:
@@ -103,9 +128,13 @@ class ExternalWorkerClient(QObject):
             "utf-8", errors="replace"
         )
         if output:
+            logging.getLogger(__name__).debug("worker stderr: %s", output.rstrip())
             self.stderr_received.emit(output.rstrip())
 
     def _finished(self, exit_code: int, exit_status) -> None:
+        logging.getLogger(__name__).debug(
+            "worker finished exit_code=%s exit_status=%s", exit_code, exit_status.name
+        )
         self.process_status.emit(
             f"stopped (exit {exit_code}, {exit_status.name})"
         )

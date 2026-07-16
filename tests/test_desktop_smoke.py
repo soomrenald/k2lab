@@ -127,6 +127,92 @@ class DesktopSmokeTests(unittest.TestCase):
             self.assertTrue(window.lora_library.binding_for(lora_id).global_scope)
             window.close()
 
+    def test_region_names_are_editable_unique_and_propagate_to_lora_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            lora_path = root / "named.safetensors"
+            write_lora(lora_path)
+            window = self.make_window(root)
+            window.canvas.region_created.emit("region-one", 0.0, 0.0, 128.0, 128.0)
+            window.canvas.region_created.emit("region-two", 256.0, 256.0, 512.0, 512.0)
+            window._add_lora_path(lora_path)
+
+            window.region_list.setCurrentRow(0)
+            window.region_name.setText("Beach subject")
+            window._region_name_edited()
+            self.assertEqual(window.regions[0].name, "Beach subject")
+            self.assertEqual(window.lora_scope_list.item(1).text(), "Beach subject")
+            self.assertEqual(
+                window.canvas.region_item("region-one")._label.text(),
+                "Beach subject",
+            )
+
+            window.region_list.setCurrentRow(1)
+            window.region_name.setText("Beach subject")
+            window._region_name_edited()
+            self.assertEqual(window.regions[1].name, "Region 2")
+            self.assertEqual(window.region_name.text(), "Region 2")
+            window.close()
+
+    def test_project_save_and_load_restores_prompts_boxes_loras_and_names(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            lora_path = root / "project_lora.safetensors"
+            write_lora(lora_path)
+            window = self.make_window(root)
+            window.global_prompt.setPlainText("a sunny beach")
+            window.width_input.setValue(768)
+            window.height_input.setValue(512)
+            window.canvas.set_canvas_size(768, 512)
+            window.steps_input.setValue(6)
+            window.seed_input.setValue(42)
+            window.canvas.region_created.emit("subject", 32.0, 48.0, 320.0, 480.0)
+            window.region_name.setText("Main subject")
+            window._region_name_edited()
+            window.region_prompt.setPlainText("a person by the water")
+            window._add_lora_path(lora_path)
+            window.lora_scope_list.item(1).setCheckState(Qt.CheckState.Checked)
+            project_path = root / "beach.k2lab.json"
+            self.assertTrue(window._save_project_to(project_path))
+            window.close()
+
+            restored = self.make_window(root)
+            self.assertTrue(restored._load_project_from(project_path))
+            self.assertEqual(restored.global_prompt.toPlainText(), "a sunny beach")
+            self.assertEqual(restored.width_input.value(), 768)
+            self.assertEqual(restored.height_input.value(), 512)
+            self.assertEqual(restored.steps_input.value(), 6)
+            self.assertEqual(restored.seed_input.value(), 42)
+            self.assertEqual(restored.regions[0].name, "Main subject")
+            self.assertEqual(restored.regions[0].prompt, "a person by the water")
+            self.assertEqual(restored.lora_list.count(), 1)
+            lora_id = restored.lora_list.currentItem().data(Qt.ItemDataRole.UserRole)
+            self.assertEqual(
+                restored.lora_library.binding_for(lora_id).region_ids,
+                ("subject",),
+            )
+            restored.close()
+
+    def test_unavailable_accelerator_exposes_diagnostic_action(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            window = self.make_window(Path(directory))
+            window._worker_event(
+                {
+                    "state": "unloaded",
+                    "message": "Worker runtime probe complete",
+                    "payload": {
+                        "accelerator_available": False,
+                        "python_executable": "/worker/python",
+                        "torch_version": "2.9.1",
+                        "hip_version": "6.4",
+                        "devices": [],
+                    },
+                }
+            )
+            self.assertFalse(window.diagnostic_button.isHidden())
+            self.assertIn("run diagnostic", window.accelerator_status.text())
+            window.close()
+
     def test_baseline_request_uses_aligned_canvas_and_result_becomes_background(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

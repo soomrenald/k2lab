@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QGraphicsPixmapItem,
     QGraphicsRectItem,
     QGraphicsScene,
+    QGraphicsSimpleTextItem,
     QGraphicsView,
     QStyleOptionGraphicsItem,
     QWidget,
@@ -37,6 +38,15 @@ class ResizableRegionItem(QGraphicsRectItem):
         self._geometry_changed = geometry_changed
         self._resize_corner: str | None = None
         self._resize_start: QRectF | None = None
+        self._label = QGraphicsSimpleTextItem(self)
+        self._label.setBrush(QBrush(QColor("#f2fbff")))
+        self._label.setPos(6.0, 4.0)
+        self._label.setZValue(1.0)
+        self._label.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+        self._label.setFlag(
+            QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations,
+            True,
+        )
         self.setPos(normalized.topLeft())
         self.setPen(QPen(QColor("#53d6ff"), 3))
         self.setBrush(QBrush(QColor(83, 214, 255, 35)))
@@ -46,6 +56,9 @@ class ResizableRegionItem(QGraphicsRectItem):
             | QGraphicsItem.GraphicsItemFlag.ItemSendsGeometryChanges
         )
         self.setAcceptHoverEvents(True)
+
+    def set_label(self, label: str) -> None:
+        self._label.setText(label)
 
     def scene_geometry(self) -> QRectF:
         return self.sceneTransform().mapRect(self.rect()).normalized()
@@ -249,10 +262,13 @@ class RegionCanvas(QGraphicsView):
             self._image_item.setPixmap(scaled)
         return True
 
-    def add_region_box(self, region_id: str, rect: QRectF) -> ResizableRegionItem:
+    def add_region_box(
+        self, region_id: str, rect: QRectF, label: str = ""
+    ) -> ResizableRegionItem:
         if region_id in self._items:
             raise ValueError(f"region already exists on canvas: {region_id}")
         item = ResizableRegionItem(region_id, rect, self._item_geometry_changed)
+        item.set_label(label)
         self.scene().addItem(item)
         self._items[region_id] = item
         self.scene().clearSelection()
@@ -261,6 +277,9 @@ class RegionCanvas(QGraphicsView):
 
     def region_item(self, region_id: str) -> ResizableRegionItem:
         return self._items[region_id]
+
+    def set_region_name(self, region_id: str, name: str) -> None:
+        self._items[region_id].set_label(name)
 
     def select_region(self, region_id: str) -> None:
         item = self._items.get(region_id)
@@ -282,6 +301,16 @@ class RegionCanvas(QGraphicsView):
         self.scene().removeItem(item)
         if notify:
             self.region_deleted.emit(region_id)
+
+    def clear_regions(self) -> None:
+        for region_id in tuple(self._items):
+            self.remove_region(region_id)
+        self.scene().clearSelection()
+
+    def clear_image(self) -> None:
+        if self._image_item is not None:
+            self.scene().removeItem(self._image_item)
+            self._image_item = None
 
     def keyPressEvent(self, event) -> None:
         if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):

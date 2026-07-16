@@ -79,6 +79,11 @@ class WorkerProtocolTests(unittest.TestCase):
             }
             commands = [
                 {"command_id": "probe", "kind": "probe", "payload": payload},
+                {
+                    "command_id": "diagnose",
+                    "kind": "diagnose_accelerator",
+                    "payload": payload,
+                },
                 {"command_id": "validate", "kind": "validate_models", "payload": payload},
                 {"command_id": "stop", "kind": "shutdown", "payload": payload},
             ]
@@ -105,6 +110,15 @@ class WorkerProtocolTests(unittest.TestCase):
             self.assertTrue(validation["payload"]["complete"])
             self.assertTrue(all(item["compatible"] for item in validation["payload"]["manifests"]))
             self.assertEqual(len(tuple(manifests.glob("*_tensor_manifest.json"))), 3)
+            diagnostic = next(
+                event
+                for event in events
+                if event["command_id"] == "diagnose"
+                and event["message"] == "Accelerator diagnostics complete"
+            )
+            self.assertIn("python_executable", diagnostic["payload"])
+            self.assertIn("device_paths", diagnostic["payload"])
+            self.assertTrue(diagnostic["payload"]["recommendations"])
 
 
 if __name__ == "__main__":

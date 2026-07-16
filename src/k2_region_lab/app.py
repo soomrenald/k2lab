@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
 from collections.abc import Sequence
 
 from k2_region_lab.config import AppSettings
+from k2_region_lab.debug import configure_debug_logging
 from k2_region_lab.model import discover_model_artifacts
 
 
@@ -59,6 +61,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
     settings = AppSettings.from_environment()
+    log_path = configure_debug_logging("desktop", settings.data_directory)
+    if log_path is not None:
+        logging.getLogger(__name__).debug("application settings: %r", settings)
+        print(f"K2 Region Lab debug log: {log_path}", file=sys.stderr)
     if args.check_models:
         return check_models(settings)
     return launch_desktop(settings)

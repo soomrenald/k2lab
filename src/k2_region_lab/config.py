@@ -9,6 +9,12 @@ def _configured_path(environment_name: str, default: str) -> Path:
     return Path(os.environ.get(environment_name, default)).expanduser().resolve()
 
 
+def _configured_executable(environment_name: str, default: str) -> Path:
+    # Resolving a venv's Python symlink changes how Python discovers pyvenv.cfg
+    # and can silently select the system environment instead.
+    return Path(os.environ.get(environment_name, default)).expanduser().absolute()
+
+
 @dataclass(frozen=True, slots=True)
 class ModelDirectories:
     """Directories searched for local model components.
@@ -52,7 +58,7 @@ class AppSettings:
         return cls(
             model_directories=ModelDirectories.from_environment(),
             data_directory=_configured_path("K2LAB_DATA_DIR", "~/.local/share/k2-region-lab"),
-            worker_python=_configured_path(
+            worker_python=_configured_executable(
                 "K2LAB_WORKER_PYTHON", "~/ComfyUI/venv_rocm/bin/python"
             ),
             comfyui_root=_configured_path("K2LAB_COMFYUI_ROOT", "~/ComfyUI"),

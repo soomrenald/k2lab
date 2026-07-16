@@ -7,6 +7,7 @@ from typing import Any
 
 class CommandKind(StrEnum):
     PROBE = "probe"
+    DIAGNOSE_ACCELERATOR = "diagnose_accelerator"
     DISCOVER_MODELS = "discover_models"
     VALIDATE_MODELS = "validate_models"
     LOAD_MODEL = "load_model"

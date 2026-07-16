@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import glob
+import os
 import platform
 import sys
 from datetime import UTC, datetime
@@ -37,36 +39,137 @@ def probe_runtime(comfyui_root: Path) -> dict[str, Any]:
         )
         return payload
 
-    device_count = torch.cuda.device_count() if torch.cuda.is_available() else 0
-    devices = []
-    for index in range(device_count):
-        properties = torch.cuda.get_device_properties(index)
-        devices.append(
+    try:
+        accelerator_available = torch.cuda.is_available()
+        device_count = torch.cuda.device_count() if accelerator_available else 0
+    except Exception as error:
+        payload.update(
             {
-                "index": index,
-                "name": torch.cuda.get_device_name(index),
-                "total_memory": properties.total_memory,
-                "major": properties.major,
-                "minor": properties.minor,
+                "torch_available": True,
+                "torch_version": torch.__version__,
+                "hip_version": torch.version.hip,
+                "cuda_version": torch.version.cuda,
+                "accelerator_available": False,
+                "device_count": 0,
+                "devices": [],
+                "error": f"{type(error).__name__}: {error}",
             }
         )
+        return payload
+    devices = []
+    try:
+        for index in range(device_count):
+            properties = torch.cuda.get_device_properties(index)
+            devices.append(
+                {
+                    "index": index,
+                    "name": torch.cuda.get_device_name(index),
+                    "total_memory": properties.total_memory,
+                    "major": properties.major,
+                    "minor": properties.minor,
+                }
+            )
+    except Exception as error:
+        payload["device_query_error"] = f"{type(error).__name__}: {error}"
+    hip_parts = ()
+    if torch.version.hip:
+        try:
+            hip_parts = tuple(int(part) for part in torch.version.hip.split(".")[:2])
+        except ValueError:
+            pass
     payload.update(
         {
             "torch_available": True,
             "torch_version": torch.__version__,
             "hip_version": torch.version.hip,
             "cuda_version": torch.version.cuda,
-            "accelerator_available": bool(device_count),
+            "accelerator_available": bool(device_count and devices),
             "device_count": device_count,
             "devices": devices,
             "bf16_supported": bool(device_count and torch.cuda.is_bf16_supported()),
             "float8_e4m3fn": hasattr(torch, "float8_e4m3fn"),
-            "native_scaled_fp8": bool(
-                torch.version.hip
-                and tuple(int(part) for part in torch.version.hip.split(".")[:2]) >= (6, 5)
-            ),
+            "native_scaled_fp8": hip_parts >= (6, 5),
         }
     )
+    return payload
+
+
+def diagnose_accelerator(comfyui_root: Path) -> dict[str, Any]:
+    """Return copyable host/process evidence and targeted remediation hints."""
+
+    payload = probe_runtime(comfyui_root)
+    device_paths = [Path("/dev/kfd")]
+    device_paths.extend(Path(path) for path in sorted(glob.glob("/dev/dri/renderD*")))
+    payload.update(
+        {
+            "pid": os.getpid(),
+            "uid": os.getuid() if hasattr(os, "getuid") else None,
+            "gid": os.getgid() if hasattr(os, "getgid") else None,
+            "groups": list(os.getgroups()) if hasattr(os, "getgroups") else [],
+            "cwd": str(Path.cwd()),
+            "device_paths": [
+                {
+                    "path": str(path),
+                    "exists": path.exists(),
+                    "readable": os.access(path, os.R_OK),
+                    "writable": os.access(path, os.W_OK),
+                }
+                for path in device_paths
+            ],
+            "environment": {
+                name: os.environ.get(name)
+                for name in (
+                    "VIRTUAL_ENV",
+                    "PYTHONHOME",
+                    "PYTHONPATH",
+                    "LD_LIBRARY_PATH",
+                    "ROCR_VISIBLE_DEVICES",
+                    "HIP_VISIBLE_DEVICES",
+                    "CUDA_VISIBLE_DEVICES",
+                )
+            },
+        }
+    )
+    initialization_error = None
+    if payload.get("torch_available") and not payload.get("accelerator_available"):
+        try:
+            import torch
+
+            torch.cuda.init()
+        except Exception as error:
+            initialization_error = f"{type(error).__name__}: {error}"
+    if initialization_error:
+        payload["initialization_error"] = initialization_error
+
+    recommendations: list[str] = []
+    kfd = next(item for item in payload["device_paths"] if item["path"] == "/dev/kfd")
+    if not payload.get("torch_available"):
+        recommendations.append("Select the ComfyUI ROCm Python interpreter containing torch.")
+    elif not payload.get("hip_version"):
+        recommendations.append("The worker has a non-ROCm PyTorch build; install a ROCm build.")
+    if not kfd["exists"]:
+        recommendations.append(
+            "The worker cannot see /dev/kfd; launch outside a sandbox/container "
+            "or expose the AMD devices."
+        )
+    elif not kfd["readable"] or not kfd["writable"]:
+        recommendations.append(
+            "The worker lacks /dev/kfd access; verify the user belongs to the "
+            "render and video groups."
+        )
+    if any(
+        payload["environment"].get(name)
+        for name in ("ROCR_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES")
+    ):
+        recommendations.append("Check accelerator visibility environment variables shown below.")
+    if not recommendations and payload.get("accelerator_available"):
+        recommendations.append("ROCm accelerator probe succeeded; model loading can proceed.")
+    elif not recommendations:
+        recommendations.append(
+            "ROCm device files are visible; use the Torch initialization error "
+            "below to inspect the runtime."
+        )
+    payload["recommendations"] = recommendations
     return payload
 
 
