@@ -108,7 +108,13 @@ def main() -> int:
                 runtime = runtime or ComfyBaselineRuntime(comfyui_root)
                 loaded = runtime.load(
                     artifacts,
-                    reserve_vram_gb=float(payload.get("reserve_vram_gb", 2.0)),
+                    memory_policy_key=str(payload.get("memory_policy", "safe_16gb")),
+                    reserve_vram_gb=float(payload.get("reserve_vram_gb", 4.0)),
+                    minimum_system_ram_gb=float(
+                        payload.get("minimum_system_ram_gb", 14.0)
+                    ),
+                    cpu_vae=bool(payload.get("cpu_vae", False)),
+                    oom_recovery=bool(payload.get("oom_recovery", True)),
                 )
                 emit(
                     WorkerState.READY,
@@ -125,12 +131,24 @@ def main() -> int:
                     command_id=command_id,
                 )
 
-                def progress(step: int, total: int) -> None:
+                def progress(step: int, total: int, memory: dict[str, Any]) -> None:
                     emit(
                         WorkerState.RUNNING,
                         f"Denoising step {step}/{total}",
                         command_id=command_id,
-                        payload={"step": step, "total_steps": total},
+                        payload={
+                            "step": step,
+                            "total_steps": total,
+                            "memory": memory,
+                        },
+                    )
+
+                def runtime_event(message: str, event_payload: dict[str, Any]) -> None:
+                    emit(
+                        WorkerState.RUNNING,
+                        message,
+                        command_id=command_id,
+                        payload=event_payload,
                     )
 
                 generated = runtime.generate(
@@ -141,6 +159,7 @@ def main() -> int:
                     seed=int(payload.get("seed", 0)),
                     output_directory=Path(payload["output_directory"]),
                     progress=progress,
+                    event=runtime_event,
                 )
                 emit(
                     WorkerState.READY,

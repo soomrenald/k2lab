@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import glob
+import gc
 import os
 import platform
 import sys
@@ -11,6 +12,7 @@ from typing import Any, Callable
 from k2_region_lab.config import ModelDirectories
 from k2_region_lab.model import ArtifactSet, discover_model_artifacts
 from k2_region_lab.model.manifests import build_tensor_manifest
+from k2_region_lab.memory import GIB, memory_policy
 
 
 def probe_runtime(comfyui_root: Path) -> dict[str, Any]:
@@ -192,8 +194,25 @@ class ComfyBaselineRuntime:
         self.model = None
         self.clip = None
         self.vae = None
+        self.vae_path: Path | None = None
+        self.memory_policy_key = "safe_16gb"
+        self.reserve_vram_gb = 4.0
+        self.warning_free_gb = 4.0
+        self.critical_free_gb = 2.0
+        self.minimum_system_ram_gb = 14.0
+        self.cpu_vae = False
+        self.oom_recovery = True
 
-    def load(self, artifacts: ArtifactSet, *, reserve_vram_gb: float = 2.0) -> dict[str, Any]:
+    def load(
+        self,
+        artifacts: ArtifactSet,
+        *,
+        memory_policy_key: str = "safe_16gb",
+        reserve_vram_gb: float = 4.0,
+        minimum_system_ram_gb: float = 14.0,
+        cpu_vae: bool = False,
+        oom_recovery: bool = True,
+    ) -> dict[str, Any]:
         if not artifacts.complete:
             raise RuntimeError("all three model artifacts are required")
         capabilities = probe_runtime(self.comfyui_root)
@@ -205,8 +224,24 @@ class ComfyBaselineRuntime:
             sys.path.insert(0, root_text)
         from comfy.cli_args import args
 
+        policy = memory_policy(memory_policy_key)
+        self.memory_policy_key = policy.key
+        self.reserve_vram_gb = max(0.5, reserve_vram_gb)
+        self.warning_free_gb = max(self.reserve_vram_gb, policy.warning_free_gb)
+        self.critical_free_gb = min(self.warning_free_gb, policy.critical_free_gb)
+        self.minimum_system_ram_gb = max(4.0, minimum_system_ram_gb)
+        self.cpu_vae = bool(cpu_vae)
+        self.oom_recovery = bool(oom_recovery)
+        import psutil
+
+        if psutil.virtual_memory().available < self.minimum_system_ram_gb * GIB:
+            raise MemoryError(
+                "insufficient available system RAM for the selected offload policy: "
+                f"requires at least {self.minimum_system_ram_gb:.1f} GiB"
+            )
         args.lowvram = True
-        args.reserve_vram = max(0.5, reserve_vram_gb)
+        args.reserve_vram = self.reserve_vram_gb
+        args.cpu_vae = self.cpu_vae
         import comfy.sd
         import comfy.utils
 
@@ -222,19 +257,136 @@ class ComfyBaselineRuntime:
         vae_state, metadata = comfy.utils.load_torch_file(
             str(artifacts.vae.path), return_metadata=True
         )
+        self.vae_path = artifacts.vae.path
         self.vae = comfy.sd.VAE(sd=vae_state, metadata=metadata)
         self.vae.throw_exception_if_invalid()
         return {
             "transformer": type(self.model).__name__,
             "text_encoder": type(self.clip).__name__,
             "vae": type(self.vae).__name__,
-            "reserve_vram_gb": args.reserve_vram,
+            "memory_policy": self.memory_policy_key,
+            "reserve_vram_gb": self.reserve_vram_gb,
+            "minimum_system_ram_gb": self.minimum_system_ram_gb,
+            "cpu_vae": self.cpu_vae,
+            "oom_recovery": self.oom_recovery,
             "native_scaled_fp8": capabilities.get("native_scaled_fp8", False),
+            "memory": self.memory_snapshot("model loaded"),
         }
 
     @property
     def loaded(self) -> bool:
         return all(component is not None for component in (self.model, self.clip, self.vae))
+
+    def memory_snapshot(self, stage: str) -> dict[str, Any]:
+        import psutil
+        import torch
+
+        free_vram, total_vram = torch.cuda.mem_get_info(torch.cuda.current_device())
+        ram = psutil.virtual_memory()
+        return {
+            "stage": stage,
+            "gpu_free_bytes": free_vram,
+            "gpu_total_bytes": total_vram,
+            "gpu_allocated_bytes": torch.cuda.memory_allocated(),
+            "gpu_reserved_bytes": torch.cuda.memory_reserved(),
+            "ram_available_bytes": ram.available,
+            "ram_total_bytes": ram.total,
+            "warning_free_bytes": int(self.warning_free_gb * GIB),
+            "critical_free_bytes": int(self.critical_free_gb * GIB),
+            "minimum_ram_bytes": int(self.minimum_system_ram_gb * GIB),
+            "memory_policy": self.memory_policy_key,
+            "cpu_vae": self.cpu_vae,
+        }
+
+    def _ensure_memory(
+        self,
+        stage: str,
+        event: Callable[[str, dict[str, Any]], None] | None,
+    ) -> dict[str, Any]:
+        import comfy.model_management
+
+        snapshot = self.memory_snapshot(stage)
+        if snapshot["ram_available_bytes"] < snapshot["minimum_ram_bytes"]:
+            raise MemoryError(
+                f"available system RAM is below the {self.minimum_system_ram_gb:.1f} GiB guard"
+            )
+        action = "observed"
+        if snapshot["gpu_free_bytes"] < snapshot["warning_free_bytes"]:
+            device = comfy.model_management.get_torch_device()
+            comfy.model_management.free_memory(snapshot["warning_free_bytes"], device)
+            comfy.model_management.soft_empty_cache()
+            snapshot = self.memory_snapshot(stage)
+            action = "offloaded_to_ram"
+        snapshot["action"] = action
+        if event is not None:
+            event(f"Memory check: {stage}", {"memory": snapshot})
+        return snapshot
+
+    @staticmethod
+    def _is_oom(error: BaseException) -> bool:
+        try:
+            import torch
+
+            if isinstance(error, torch.OutOfMemoryError):
+                return True
+        except (ImportError, AttributeError):
+            pass
+        return "out of memory" in str(error).casefold()
+
+    def _switch_vae_to_cpu(self) -> None:
+        if self.cpu_vae:
+            return
+        if self.vae_path is None:
+            raise RuntimeError("VAE path is unavailable for CPU fallback")
+        from comfy.cli_args import args
+
+        import comfy.model_management
+        import comfy.sd
+        import comfy.utils
+
+        comfy.model_management.unload_all_models()
+        self.vae = None
+        gc.collect()
+        comfy.model_management.soft_empty_cache()
+        args.cpu_vae = True
+        vae_state, metadata = comfy.utils.load_torch_file(
+            str(self.vae_path), return_metadata=True
+        )
+        self.vae = comfy.sd.VAE(sd=vae_state, metadata=metadata)
+        self.vae.throw_exception_if_invalid()
+        self.cpu_vae = True
+
+    def _recover_from_oom(
+        self,
+        event: Callable[[str, dict[str, Any]], None] | None,
+    ) -> None:
+        from comfy.cli_args import args
+
+        import comfy.model_management
+
+        before = self.memory_snapshot("before OOM cleanup")
+        if before["ram_available_bytes"] < before["minimum_ram_bytes"]:
+            raise MemoryError(
+                "GPU OOM recovery stopped because available system RAM is below "
+                f"the {self.minimum_system_ram_gb:.1f} GiB guard"
+            )
+        comfy.model_management.unload_all_models()
+        gc.collect()
+        comfy.model_management.soft_empty_cache(force=True)
+        self.reserve_vram_gb = max(self.reserve_vram_gb, 5.0)
+        self.warning_free_gb = max(self.warning_free_gb, self.reserve_vram_gb)
+        args.reserve_vram = self.reserve_vram_gb
+        comfy.model_management.EXTRA_RESERVED_VRAM = int(self.reserve_vram_gb * GIB)
+        self._switch_vae_to_cpu()
+        if event is not None:
+            event(
+                "OOM recovery prepared",
+                {
+                    "memory": self.memory_snapshot("OOM cleanup"),
+                    "retry_reserve_vram_gb": self.reserve_vram_gb,
+                    "cpu_vae": True,
+                },
+            )
 
     def generate(
         self,
@@ -245,7 +397,8 @@ class ComfyBaselineRuntime:
         steps: int,
         seed: int,
         output_directory: Path,
-        progress: Callable[[int, int], None] | None = None,
+        progress: Callable[[int, int, dict[str, Any]], None] | None = None,
+        event: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
         if not self.loaded:
             raise RuntimeError("baseline components must be loaded before generation")
@@ -254,15 +407,70 @@ class ComfyBaselineRuntime:
         if not 1 <= steps <= 100:
             raise ValueError("steps must be between 1 and 100")
 
+        oom_message: str | None = None
+        try:
+            return self._generate_once(
+                prompt=prompt,
+                width=width,
+                height=height,
+                steps=steps,
+                seed=seed,
+                output_directory=output_directory,
+                progress=progress,
+                event=event,
+                oom_recovered=False,
+            )
+        except Exception as error:
+            if not self.oom_recovery or not self._is_oom(error):
+                raise
+            oom_message = str(error)
+            error.__traceback__ = None
+        gc.collect()
+        if event is not None:
+            event(
+                "GPU OOM detected; preparing one safe retry",
+                {
+                    "error": oom_message,
+                    "memory": self.memory_snapshot("OOM detected"),
+                },
+            )
+        self._recover_from_oom(event)
+        return self._generate_once(
+            prompt=prompt,
+            width=width,
+            height=height,
+            steps=steps,
+            seed=seed,
+            output_directory=output_directory,
+            progress=progress,
+            event=event,
+            oom_recovered=True,
+        )
+
+    def _generate_once(
+        self,
+        *,
+        prompt: str,
+        width: int,
+        height: int,
+        steps: int,
+        seed: int,
+        output_directory: Path,
+        progress: Callable[[int, int, dict[str, Any]], None] | None,
+        event: Callable[[str, dict[str, Any]], None] | None,
+        oom_recovered: bool,
+    ) -> dict[str, Any]:
         import numpy as np
         import torch
         from PIL import Image, PngImagePlugin
 
-        import comfy.model_management
         import comfy.sample
+
+        self._ensure_memory("before text encoding", event)
 
         positive = self.clip.encode_from_tokens_scheduled(self.clip.tokenize(prompt))
         negative = self.clip.encode_from_tokens_scheduled(self.clip.tokenize(""))
+        self._ensure_memory("before denoising", event)
         latent = torch.zeros(
             [1, 4, height // 8, width // 8],
             device=comfy.model_management.intermediate_device(),
@@ -276,7 +484,11 @@ class ComfyBaselineRuntime:
         def callback(step: int, denoised, current, total: int) -> None:
             del denoised, current
             if progress is not None:
-                progress(step + 1, total)
+                progress(
+                    step + 1,
+                    total,
+                    self.memory_snapshot(f"denoising step {step + 1}/{total}"),
+                )
 
         samples = comfy.sample.sample(
             self.model,
@@ -293,6 +505,7 @@ class ComfyBaselineRuntime:
             disable_pbar=True,
             seed=seed,
         )
+        self._ensure_memory("before VAE decode", event)
         images = self.vae.decode(samples)
         image_tensor = images[0]
         while image_tensor.ndim > 3 and image_tensor.shape[0] == 1:
@@ -316,6 +529,9 @@ class ComfyBaselineRuntime:
         metadata.add_text("seed", str(seed))
         metadata.add_text("steps", str(steps))
         metadata.add_text("size", f"{width}x{height}")
+        metadata.add_text("memory_policy", self.memory_policy_key)
+        metadata.add_text("oom_recovered", str(oom_recovered).lower())
+        metadata.add_text("cpu_vae", str(self.cpu_vae).lower())
         Image.fromarray(array).save(output_path, pnginfo=metadata)
         return {
             "image_path": str(output_path),
@@ -326,4 +542,9 @@ class ComfyBaselineRuntime:
             "sampler": "euler",
             "scheduler": "simple",
             "cfg": 1.0,
+            "memory_policy": self.memory_policy_key,
+            "reserve_vram_gb": self.reserve_vram_gb,
+            "cpu_vae": self.cpu_vae,
+            "oom_recovered": oom_recovered,
+            "memory": self.memory_snapshot("generation complete"),
         }

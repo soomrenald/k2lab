@@ -9,3 +9,4 @@ build/
 experiments/
 artifacts/
 *.log
+*.k2lab.json

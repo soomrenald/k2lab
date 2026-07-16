@@ -166,6 +166,12 @@ class DesktopSmokeTests(unittest.TestCase):
             window.canvas.set_canvas_size(768, 512)
             window.steps_input.setValue(6)
             window.seed_input.setValue(42)
+            window.memory_policy_input.setCurrentIndex(
+                window.memory_policy_input.findData("balanced")
+            )
+            window.reserve_vram_input.setValue(3.5)
+            window.minimum_ram_input.setValue(13.0)
+            window.cpu_vae_input.setChecked(True)
             window.canvas.region_created.emit("subject", 32.0, 48.0, 320.0, 480.0)
             window.region_name.setText("Main subject")
             window._region_name_edited()
@@ -183,6 +189,10 @@ class DesktopSmokeTests(unittest.TestCase):
             self.assertEqual(restored.height_input.value(), 512)
             self.assertEqual(restored.steps_input.value(), 6)
             self.assertEqual(restored.seed_input.value(), 42)
+            self.assertEqual(restored.memory_policy_input.currentData(), "balanced")
+            self.assertEqual(restored.reserve_vram_input.value(), 3.5)
+            self.assertEqual(restored.minimum_ram_input.value(), 13.0)
+            self.assertTrue(restored.cpu_vae_input.isChecked())
             self.assertEqual(restored.regions[0].name, "Main subject")
             self.assertEqual(restored.regions[0].prompt, "a person by the water")
             self.assertEqual(restored.lora_list.count(), 1)
@@ -211,6 +221,27 @@ class DesktopSmokeTests(unittest.TestCase):
             )
             self.assertFalse(window.diagnostic_button.isHidden())
             self.assertIn("run diagnostic", window.accelerator_status.text())
+            window.close()
+
+    def test_worker_memory_event_updates_live_status(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            window = self.make_window(Path(directory))
+            window._worker_event(
+                {
+                    "state": "running",
+                    "message": "Memory check: before VAE decode",
+                    "payload": {
+                        "memory": {
+                            "gpu_free_bytes": 4 * 1024**3,
+                            "gpu_total_bytes": 16 * 1024**3,
+                            "ram_available_bytes": 32 * 1024**3,
+                            "action": "offloaded_to_ram",
+                        }
+                    },
+                }
+            )
+            self.assertIn("VRAM 4.0/16.0 GiB free", window.memory_status.text())
+            self.assertIn("offloaded_to_ram", window.memory_status.text())
             window.close()
 
     def test_baseline_request_uses_aligned_canvas_and_result_becomes_background(self) -> None:

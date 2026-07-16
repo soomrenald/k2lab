@@ -11,6 +11,9 @@ from PySide6.QtCore import QRectF, Qt
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
     QDockWidget,
+    QCheckBox,
+    QComboBox,
+    QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
     QHBoxLayout,
@@ -31,6 +34,7 @@ from k2_region_lab.config import AppSettings, ModelDirectories
 from k2_region_lab.desktop.region_canvas import RegionCanvas
 from k2_region_lab.desktop.worker_client import ExternalWorkerClient
 from k2_region_lab.lora import LoraLibrary
+from k2_region_lab.memory import MEMORY_POLICIES, memory_policy
 from k2_region_lab.model import ArtifactSet, discover_model_artifacts
 from k2_region_lab.project import ProjectState, SavedLora, load_project, save_project
 from k2_region_lab.regions import CanvasGeometry, PixelBox, RegionDefinition
@@ -191,6 +195,34 @@ class MainWindow(QMainWindow):
         self.load_model_button.clicked.connect(self._load_worker_model)
         self.load_model_button.setEnabled(False)
         layout.addRow(self.load_model_button)
+        self.memory_policy_input = QComboBox()
+        for policy in MEMORY_POLICIES:
+            self.memory_policy_input.addItem(policy.label, policy.key)
+        policy_index = self.memory_policy_input.findData(self.settings.memory_policy)
+        self.memory_policy_input.setCurrentIndex(max(0, policy_index))
+        self.memory_policy_input.currentIndexChanged.connect(self._memory_policy_changed)
+        layout.addRow("Memory policy", self.memory_policy_input)
+        self.reserve_vram_input = QDoubleSpinBox()
+        self.reserve_vram_input.setRange(0.5, 12.0)
+        self.reserve_vram_input.setSingleStep(0.5)
+        self.reserve_vram_input.setSuffix(" GiB")
+        self.reserve_vram_input.setValue(self.settings.reserve_vram_gb)
+        layout.addRow("Keep VRAM free", self.reserve_vram_input)
+        self.minimum_ram_input = QDoubleSpinBox()
+        self.minimum_ram_input.setRange(4.0, 48.0)
+        self.minimum_ram_input.setSingleStep(1.0)
+        self.minimum_ram_input.setSuffix(" GiB")
+        self.minimum_ram_input.setValue(self.settings.minimum_system_ram_gb)
+        layout.addRow("Minimum free RAM", self.minimum_ram_input)
+        self.cpu_vae_input = QCheckBox("Decode with CPU VAE")
+        self.cpu_vae_input.setChecked(self.settings.cpu_vae)
+        layout.addRow(self.cpu_vae_input)
+        self.oom_recovery_input = QCheckBox("Retry once after OOM")
+        self.oom_recovery_input.setChecked(self.settings.oom_recovery)
+        layout.addRow(self.oom_recovery_input)
+        self.memory_status = QLabel("Not measured")
+        self.memory_status.setWordWrap(True)
+        layout.addRow("Memory", self.memory_status)
         self.steps_input = QSpinBox()
         self.steps_input.setRange(1, 100)
         self.steps_input.setValue(8)
@@ -205,6 +237,25 @@ class MainWindow(QMainWindow):
         layout.addRow(self.generate_button)
         dock.setWidget(body)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
+
+    def _memory_policy_changed(self) -> None:
+        key = self.memory_policy_input.currentData()
+        policy = memory_policy(key)
+        self.reserve_vram_input.setValue(policy.reserve_vram_gb)
+        self.minimum_ram_input.setValue(policy.minimum_system_ram_gb)
+        self.cpu_vae_input.setChecked(policy.cpu_vae)
+        self.oom_recovery_input.setChecked(policy.oom_recovery)
+        self.events.addItem(f"Memory policy changed to {policy.label}")
+
+    def _set_memory_controls_enabled(self, enabled: bool) -> None:
+        for control in (
+            self.memory_policy_input,
+            self.reserve_vram_input,
+            self.minimum_ram_input,
+            self.cpu_vae_input,
+            self.oom_recovery_input,
+        ):
+            control.setEnabled(enabled)
 
     def _build_lora_dock(self) -> None:
         dock = QDockWidget("LoRA library and scope", self)
@@ -533,7 +584,11 @@ class MainWindow(QMainWindow):
             "worker_python": str(self.settings.worker_python),
             "comfyui_root": str(self.settings.comfyui_root),
             "data_directory": str(self.settings.data_directory),
-            "reserve_vram_gb": self.settings.reserve_vram_gb,
+            "memory_policy": self.memory_policy_input.currentData(),
+            "reserve_vram_gb": self.reserve_vram_input.value(),
+            "minimum_system_ram_gb": self.minimum_ram_input.value(),
+            "cpu_vae": self.cpu_vae_input.isChecked(),
+            "oom_recovery": self.oom_recovery_input.isChecked(),
         }
         saved_loras = tuple(
             SavedLora(
@@ -619,7 +674,13 @@ class MainWindow(QMainWindow):
             worker_python=Path(runtime.get("worker_python", current.worker_python)).expanduser(),
             comfyui_root=Path(runtime.get("comfyui_root", current.comfyui_root)).expanduser(),
             auto_start_worker=current.auto_start_worker,
+            memory_policy=str(runtime.get("memory_policy", current.memory_policy)),
             reserve_vram_gb=float(runtime.get("reserve_vram_gb", current.reserve_vram_gb)),
+            minimum_system_ram_gb=float(
+                runtime.get("minimum_system_ram_gb", current.minimum_system_ram_gb)
+            ),
+            cpu_vae=bool(runtime.get("cpu_vae", current.cpu_vae)),
+            oom_recovery=bool(runtime.get("oom_recovery", current.oom_recovery)),
             default_width=state.canvas_width,
             default_height=state.canvas_height,
         )
@@ -643,6 +704,12 @@ class MainWindow(QMainWindow):
         self.global_prompt.setPlainText(state.global_prompt)
         self.steps_input.setValue(state.steps)
         self.seed_input.setValue(state.seed)
+        policy_index = self.memory_policy_input.findData(self.settings.memory_policy)
+        self.memory_policy_input.setCurrentIndex(max(0, policy_index))
+        self.reserve_vram_input.setValue(self.settings.reserve_vram_gb)
+        self.minimum_ram_input.setValue(self.settings.minimum_system_ram_gb)
+        self.cpu_vae_input.setChecked(self.settings.cpu_vae)
+        self.oom_recovery_input.setChecked(self.settings.oom_recovery)
 
         self.canvas.clear_regions()
         self.region_list.clear()
@@ -702,7 +769,11 @@ class MainWindow(QMainWindow):
             "text_encoders": str(directories.text_encoders),
             "vae": str(directories.vae),
             "manifest_directory": str(self.settings.data_directory / "manifests"),
-            "reserve_vram_gb": self.settings.reserve_vram_gb,
+            "memory_policy": self.memory_policy_input.currentData(),
+            "reserve_vram_gb": self.reserve_vram_input.value(),
+            "minimum_system_ram_gb": self.minimum_ram_input.value(),
+            "cpu_vae": self.cpu_vae_input.isChecked(),
+            "oom_recovery": self.oom_recovery_input.isChecked(),
         }
 
     def _start_worker(self) -> None:
@@ -735,6 +806,7 @@ class MainWindow(QMainWindow):
     def _load_worker_model(self) -> None:
         if self.worker_client.running:
             self.load_model_button.setEnabled(False)
+            self._set_memory_controls_enabled(False)
             self.worker_client.send(CommandKind.LOAD_MODEL, self._worker_payload())
 
     def _generate_baseline(self) -> None:
@@ -759,6 +831,16 @@ class MainWindow(QMainWindow):
         payload = event.get("payload", {})
         self.worker_status.setText(state)
         self.events.addItem(f"Worker [{state}]: {message}")
+        if "memory" in payload:
+            memory = payload["memory"]
+            free_gib = memory.get("gpu_free_bytes", 0) / (1024**3)
+            total_gib = memory.get("gpu_total_bytes", 0) / (1024**3)
+            ram_gib = memory.get("ram_available_bytes", 0) / (1024**3)
+            action = memory.get("action", "observed")
+            self.memory_status.setText(
+                f"VRAM {free_gib:.1f}/{total_gib:.1f} GiB free; "
+                f"RAM {ram_gib:.1f} GiB available; {action}"
+            )
         if "accelerator_available" in payload:
             self._accelerator_available = bool(payload["accelerator_available"])
             devices = payload.get("devices", [])
@@ -813,16 +895,22 @@ class MainWindow(QMainWindow):
             report.exec()
         elif message == "Krea 2 baseline components loaded":
             self.statusBar().showMessage("Krea 2 baseline loaded in GPU worker")
+            self._set_memory_controls_enabled(False)
             self.generate_button.setEnabled(True)
         elif message == "Baseline generation complete":
             image_path = payload.get("image_path")
             if image_path and self.canvas.set_image(image_path):
                 self._background_image_path = Path(image_path)
                 self.statusBar().showMessage(f"Baseline saved to {image_path}")
+            if payload.get("oom_recovered"):
+                self.events.addItem(
+                    "Generation recovered from GPU OOM with CPU VAE and a larger VRAM floor"
+                )
             self.generate_button.setEnabled(True)
         elif state == "error":
             self.load_model_button.setEnabled(self._accelerator_available)
             self.generate_button.setEnabled(False)
+            self._set_memory_controls_enabled(True)
 
     def _worker_stderr(self, output: str) -> None:
         logging.getLogger(__name__).debug("worker stderr received: %s", output)
@@ -832,6 +920,8 @@ class MainWindow(QMainWindow):
     def _worker_process_status(self, status: str) -> None:
         self.worker_status.setText(status)
         self.events.addItem(f"GPU worker process: {status}")
+        if status.startswith("stopped") or "error" in status:
+            self._set_memory_controls_enabled(True)
 
     def closeEvent(self, event) -> None:
         self.worker_client.stop()

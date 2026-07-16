@@ -4,6 +4,8 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from k2_region_lab.memory import memory_policy
+
 
 def _configured_path(environment_name: str, default: str) -> Path:
     return Path(os.environ.get(environment_name, default)).expanduser().resolve()
@@ -49,12 +51,17 @@ class AppSettings:
     )
     comfyui_root: Path = field(default_factory=lambda: Path("~/ComfyUI").expanduser())
     auto_start_worker: bool = True
-    reserve_vram_gb: float = 2.0
+    memory_policy: str = "safe_16gb"
+    reserve_vram_gb: float = 4.0
+    minimum_system_ram_gb: float = 14.0
+    cpu_vae: bool = False
+    oom_recovery: bool = True
     default_width: int = 1024
     default_height: int = 1024
 
     @classmethod
     def from_environment(cls) -> "AppSettings":
+        policy = memory_policy(os.environ.get("K2LAB_MEMORY_POLICY", "safe_16gb"))
         return cls(
             model_directories=ModelDirectories.from_environment(),
             data_directory=_configured_path("K2LAB_DATA_DIR", "~/.local/share/k2-region-lab"),
@@ -64,5 +71,17 @@ class AppSettings:
             comfyui_root=_configured_path("K2LAB_COMFYUI_ROOT", "~/ComfyUI"),
             auto_start_worker=os.environ.get("K2LAB_AUTO_START_WORKER", "1")
             not in {"0", "false", "False"},
-            reserve_vram_gb=float(os.environ.get("K2LAB_RESERVE_VRAM_GB", "2.0")),
+            memory_policy=policy.key,
+            reserve_vram_gb=float(
+                os.environ.get("K2LAB_RESERVE_VRAM_GB", policy.reserve_vram_gb)
+            ),
+            minimum_system_ram_gb=float(
+                os.environ.get("K2LAB_MINIMUM_SYSTEM_RAM_GB", policy.minimum_system_ram_gb)
+            ),
+            cpu_vae=os.environ.get("K2LAB_CPU_VAE", "1" if policy.cpu_vae else "0")
+            in {"1", "true", "True"},
+            oom_recovery=os.environ.get(
+                "K2LAB_OOM_RECOVERY", "1" if policy.oom_recovery else "0"
+            )
+            not in {"0", "false", "False"},
         )

@@ -10,6 +10,19 @@ from k2_region_lab.config import AppSettings
 
 
 class ConfigTests(unittest.TestCase):
+    def test_emergency_memory_policy_supplies_safe_defaults(self) -> None:
+        with patch.dict(
+            os.environ,
+            {"K2LAB_MEMORY_POLICY": "emergency"},
+            clear=True,
+        ):
+            settings = AppSettings.from_environment()
+
+        self.assertEqual(settings.reserve_vram_gb, 5.5)
+        self.assertEqual(settings.minimum_system_ram_gb, 16.0)
+        self.assertTrue(settings.cpu_vae)
+        self.assertFalse(settings.oom_recovery)
+
     def test_worker_python_preserves_virtual_environment_symlink(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

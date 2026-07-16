@@ -15,6 +15,7 @@ The implementation is at the foundation milestone. It currently provides:
 - a configurable external ROCm worker using the existing ComfyUI interpreter;
 - full transformer, Qwen, and VAE tensor manifests with Krea-specific shape validation;
 - fixed-seed Krea 2 Turbo baseline generation with progress events and PNG metadata;
+- selectable 16 GB memory policies, live VRAM/RAM telemetry, boundary offload, and OOM retry;
 - in-app ROCm diagnostics with device permissions, runtime identity, and remediation hints;
 - dependency-light unit tests for the geometry and artifact-discovery contracts.
 
@@ -54,7 +55,11 @@ The desktop starts its GPU worker with `~/ComfyUI/venv_rocm/bin/python` by defau
 K2LAB_WORKER_PYTHON
 K2LAB_COMFYUI_ROOT
 K2LAB_AUTO_START_WORKER
+K2LAB_MEMORY_POLICY
 K2LAB_RESERVE_VRAM_GB
+K2LAB_MINIMUM_SYSTEM_RAM_GB
+K2LAB_CPU_VAE
+K2LAB_OOM_RECOVERY
 ```
 
 Use **Validate tensors** before **Load Krea 2 baseline**. Validation reads only safetensors headers and writes complete manifests under the configured K2 Lab data directory. After loading, **Generate baseline** runs an eight-step Euler/simple Turbo pass by default and displays the saved image behind the editable region boxes.
@@ -63,5 +68,5 @@ If the accelerator probe fails, **Diagnose accelerator…** appears below the st
 
 Launch with `DEBUG=1 k2lab` to write bounded rotating logs under `~/.local/share/k2-region-lab/logs/` (or the configured `K2LAB_DATA_DIR`). The desktop and GPU worker use separate `desktop-debug.log` and `worker-debug.log` files.
 
-The tested local stack uses PyTorch 2.9.1 with ROCm 6.4. Because scaled FP8 execution is native only on ROCm 6.5 or newer, the worker automatically uses ComfyUI's low-VRAM fallback on ROCm 6.4 and reserves 2 GiB of VRAM by default. Change the reserve with `K2LAB_RESERVE_VRAM_GB` if another desktop workload needs a different margin.
+The tested local stack uses PyTorch 2.9.1 with ROCm 6.4. Because scaled FP8 execution is native only on ROCm 6.5 or newer, the worker automatically uses ComfyUI's low-VRAM fallback on ROCm 6.4. **Safe 16 GB** is the default policy: it keeps a 4 GiB VRAM floor, requires 14 GiB of available system RAM before offloading, reports memory at each generation boundary and denoising step, and retries once after a GPU OOM with a 5 GiB reserve and CPU VAE decode. Memory controls are locked while a model is loaded so the active worker configuration remains explicit.
 
