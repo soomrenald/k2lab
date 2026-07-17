@@ -4,7 +4,7 @@ from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 
-from PySide6.QtCore import QPointF, Qt, QTimer
+from PySide6.QtCore import QPointF, QTimer
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QLabel, QSizePolicy, QVBoxLayout, QWidget
 

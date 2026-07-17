@@ -11,12 +11,14 @@ from pathlib import Path
 from PySide6.QtCore import QRectF, Qt
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
+    QApplication,
     QDockWidget,
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -25,6 +27,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QSplitter,
     QSpinBox,
     QTextEdit,
@@ -86,7 +89,6 @@ class MainWindow(QMainWindow):
             settings.data_directory
         )
         self.setWindowTitle("K2 Region Lab")
-        self.resize(1550, 950)
         self._build_file_menu()
 
         self.canvas = RegionCanvas(settings.default_width, settings.default_height)
@@ -99,7 +101,11 @@ class MainWindow(QMainWindow):
         self._build_prompt_dock()
         self._build_model_dock()
         self._build_lora_dock()
+        self.splitDockWidget(
+            self.model_dock, self.lora_dock, Qt.Orientation.Horizontal
+        )
         self._build_event_dock()
+        self._fit_initial_window_to_screen()
         self.worker_client = ExternalWorkerClient(settings, self)
         self.worker_client.event_received.connect(self._worker_event)
         self.worker_client.stderr_received.connect(self._worker_stderr)
@@ -112,6 +118,23 @@ class MainWindow(QMainWindow):
         self.discover_models()
         if settings.auto_start_worker:
             self._start_worker()
+
+    @staticmethod
+    def _scrollable(widget: QWidget) -> QScrollArea:
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(widget)
+        return scroll
+
+    def _fit_initial_window_to_screen(self) -> None:
+        screen = self.screen() or QApplication.primaryScreen()
+        if screen is None:
+            self.resize(1550, 900)
+            return
+        available = screen.availableGeometry()
+        width = min(1800, max(1000, int(available.width() * 0.96)))
+        height = min(900, max(700, int(available.height() * 0.92)))
+        self.resize(width, height)
 
     def _build_file_menu(self) -> None:
         menu = self.menuBar().addMenu("&File")
@@ -142,6 +165,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(QLabel("Global prompt"))
         self.global_prompt = QTextEdit()
         self.global_prompt.setPlaceholderText("Describe the complete image...")
+        self.global_prompt.setMinimumHeight(80)
         layout.addWidget(self.global_prompt)
 
         dimensions = QHBoxLayout()
@@ -172,6 +196,7 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(QLabel("Regions (drag body; drag corner handles to resize)"))
         self.region_list = QListWidget()
+        self.region_list.setMinimumHeight(100)
         self.region_list.currentRowChanged.connect(self._selected_region_changed)
         layout.addWidget(self.region_list)
         layout.addWidget(QLabel("Selected region name"))
@@ -194,26 +219,31 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.region_role)
         layout.addWidget(QLabel("Selected region prompt"))
         self.region_prompt = QTextEdit()
+        self.region_prompt.setMinimumHeight(90)
         self.region_prompt.setPlaceholderText("Describe only the content controlled by this box...")
         self.region_prompt.setEnabled(False)
         self.region_prompt.textChanged.connect(self._region_form_edited)
         layout.addWidget(self.region_prompt)
         layout.addWidget(QLabel("Selected region negative prompt"))
         self.region_negative_prompt = QTextEdit()
+        self.region_negative_prompt.setMinimumHeight(70)
         self.region_negative_prompt.setPlaceholderText(
             "Optional content to discourage inside this box..."
         )
         self.region_negative_prompt.setEnabled(False)
         self.region_negative_prompt.textChanged.connect(self._region_form_edited)
         layout.addWidget(self.region_negative_prompt)
-        dock.setWidget(body)
+        dock.setWidget(self._scrollable(body))
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, dock)
 
     def _build_model_dock(self) -> None:
         dock = QDockWidget("Local model components", self)
         dock.setAllowedAreas(Qt.DockWidgetArea.RightDockWidgetArea)
         body = QWidget(dock)
-        layout = QFormLayout(body)
+        columns = QHBoxLayout(body)
+        runtime_group = QGroupBox("Model and memory")
+        layout = QFormLayout(runtime_group)
+        columns.addWidget(runtime_group, 1)
         self.transformer_status = QLabel("Not discovered")
         self.text_status = QLabel("Not discovered")
         self.vae_status = QLabel("Not discovered")
@@ -277,6 +307,9 @@ class MainWindow(QMainWindow):
         self.memory_status = QLabel("Not measured")
         self.memory_status.setWordWrap(True)
         layout.addRow("Memory", self.memory_status)
+        generation_group = QGroupBox("Generation and spatial guidance")
+        layout = QFormLayout(generation_group)
+        columns.addWidget(generation_group, 1)
         self.steps_input = QSpinBox()
         self.steps_input.setRange(1, 100)
         self.steps_input.setValue(8)
@@ -353,8 +386,8 @@ class MainWindow(QMainWindow):
         self.filename_prefix_input.editingFinished.connect(self._filename_prefix_edited)
         layout.addRow("Filename prefix", self.filename_prefix_input)
         generation_buttons = QWidget()
-        generation_layout = QHBoxLayout(generation_buttons)
-        generation_layout.setContentsMargins(0, 0, 0, 0)
+        generation_button_layout = QHBoxLayout(generation_buttons)
+        generation_button_layout.setContentsMargins(0, 0, 0, 0)
         self.generate_button = QPushButton("Generate image")
         self.generate_button.setEnabled(False)
         self.generate_button.clicked.connect(self._generate_baseline)
@@ -364,11 +397,12 @@ class MainWindow(QMainWindow):
             "Stop only the K2 GPU worker and release its GPU/system memory"
         )
         self.stop_generation_button.clicked.connect(self._stop_generation)
-        generation_layout.addWidget(self.generate_button)
-        generation_layout.addWidget(self.stop_generation_button)
+        generation_button_layout.addWidget(self.generate_button)
+        generation_button_layout.addWidget(self.stop_generation_button)
         layout.addRow(generation_buttons)
-        dock.setWidget(body)
+        dock.setWidget(self._scrollable(body))
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
+        self.model_dock = dock
 
     def _memory_policy_changed(self) -> None:
         key = self.memory_policy_input.currentData()
@@ -395,7 +429,10 @@ class MainWindow(QMainWindow):
             Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea
         )
         body = QWidget(dock)
-        layout = QVBoxLayout(body)
+        columns = QHBoxLayout(body)
+        library_group = QGroupBox("Library")
+        layout = QVBoxLayout(library_group)
+        columns.addWidget(library_group, 1)
         buttons = QHBoxLayout()
         browse = QPushButton("Browse…")
         browse.clicked.connect(self._browse_lora)
@@ -429,12 +466,16 @@ class MainWindow(QMainWindow):
         self.lora_status = QLabel("Select a LoRA to inspect its Krea compatibility")
         self.lora_status.setWordWrap(True)
         layout.addWidget(self.lora_status)
-        layout.addWidget(QLabel("Apply selected LoRA to Global or one or more regions"))
+        scope_group = QGroupBox("Apply selected LoRA")
+        scope_layout = QVBoxLayout(scope_group)
+        scope_layout.addWidget(QLabel("Choose Global or one or more named regions"))
         self.lora_scope_list = QListWidget()
         self.lora_scope_list.itemChanged.connect(self._lora_scope_changed)
-        layout.addWidget(self.lora_scope_list)
-        dock.setWidget(body)
+        scope_layout.addWidget(self.lora_scope_list)
+        columns.addWidget(scope_group, 1)
+        dock.setWidget(self._scrollable(body))
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
+        self.lora_dock = dock
 
     def _build_event_dock(self) -> None:
         dock = QDockWidget("Events", self)
