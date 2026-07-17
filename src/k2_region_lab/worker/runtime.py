@@ -450,9 +450,10 @@ class ComfyBaselineRuntime:
             compile_regional_prompt_plan(
                 width,
                 height,
+                prompt,
                 regions,
                 strength=regional_prompt_strength,
-                feather_pixels=regional_feather_pixels,
+                falloff_pixels=regional_feather_pixels,
             )
             if regional_prompting and regions
             else None
@@ -527,35 +528,18 @@ class ComfyBaselineRuntime:
 
         self._ensure_memory("before text encoding", event)
 
-        positive = self.clip.encode_from_tokens_scheduled(self.clip.tokenize(prompt))
+        conditioned_prompt = (
+            regional_plan.prompt
+            if regional_plan is not None and regional_plan.regions
+            else prompt
+        )
+        positive = self.clip.encode_from_tokens_scheduled(
+            self.clip.tokenize(conditioned_prompt)
+        )
         negative = self.clip.encode_from_tokens_scheduled(self.clip.tokenize(""))
         if regional_plan is not None and regional_plan.regions:
             if event is not None:
-                event("Regional prompting prepared", regional_plan.summary())
-            for region in regional_plan.regions:
-                encoded = self.clip.encode_from_tokens_scheduled(
-                    self.clip.tokenize(region.prompt)
-                )
-                positive.extend(
-                    self._regional_conditioning(encoded, regional_plan, region, torch)
-                )
-                if region.negative_prompt:
-                    encoded_negative = self.clip.encode_from_tokens_scheduled(
-                        self.clip.tokenize(region.negative_prompt)
-                    )
-                    negative.extend(
-                        self._regional_conditioning(
-                            encoded_negative, regional_plan, region, torch
-                        )
-                    )
-                if event is not None:
-                    event(
-                        f"Encoded regional prompt: {region.name}",
-                        {
-                            "region_id": region.region_id,
-                            "area_latent": list(region.area),
-                        },
-                    )
+                event("Unified regional prompt prepared", regional_plan.summary())
         self._ensure_memory("before denoising", event)
         latent = torch.zeros(
             [1, 4, height // 8, width // 8],
@@ -618,7 +602,8 @@ class ComfyBaselineRuntime:
         output_path = output_directory / f"{filename_prefix}_{stamp}_seed-{seed}.png"
         metadata = PngImagePlugin.PngInfo()
         metadata.add_text("k2lab_mode", "krea2_turbo_baseline")
-        metadata.add_text("prompt", prompt)
+        metadata.add_text("prompt", conditioned_prompt)
+        metadata.add_text("global_prompt", prompt)
         metadata.add_text("seed", str(seed))
         metadata.add_text("steps", str(steps))
         metadata.add_text("size", f"{width}x{height}")
@@ -659,24 +644,3 @@ class ComfyBaselineRuntime:
         # when the tiled accumulator was created as an inference tensor.
         with torch.inference_mode():
             return self.vae.decode(samples)
-
-    @staticmethod
-    def _regional_conditioning(encoded, plan, region, torch):
-        mask = torch.tensor(region.latent_mask, dtype=torch.float32).reshape(
-            1, plan.latent_height, plan.latent_width
-        )
-        output = []
-        for tensor, metadata in encoded:
-            regional_metadata = dict(metadata)
-            regional_metadata.update(
-                {
-                    "area": region.area,
-                    "mask": mask,
-                    "mask_strength": plan.strength,
-                    "set_area_to_bounds": False,
-                    "k2lab_region_id": region.region_id,
-                    "k2lab_region_name": region.name,
-                }
-            )
-            output.append([tensor, regional_metadata])
-        return output

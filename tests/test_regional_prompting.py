@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import json
 import unittest
+from pathlib import Path
 
+from k2_region_lab.project import project_state
 from k2_region_lab.regional_prompting import (
+    BACKEND,
     compile_regional_prompt_plan,
     region_definitions_from_payload,
 )
@@ -10,43 +14,70 @@ from k2_region_lab.regions import PixelBox, RegionDefinition
 
 
 class RegionalPromptingTests(unittest.TestCase):
-    def test_pixel_box_compiles_to_fractional_latent_and_image_token_masks(self) -> None:
+    def test_testone_compiles_one_scene_ordered_prompt(self) -> None:
+        document = json.loads(
+            (Path(__file__).parents[1] / "testone.k2lab.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        state = project_state(document)
+
+        plan = compile_regional_prompt_plan(
+            state.canvas_width,
+            state.canvas_height,
+            state.global_prompt,
+            state.regions,
+        )
+
+        self.assertTrue(plan.prompt.startswith(state.global_prompt.strip()))
+        ordered_names = [region.name for region in plan.regions]
+        self.assertEqual(
+            ordered_names,
+            ["sky", "ocean", "sand", "red bikini woman", "lface", "dog"],
+        )
+        self.assertIn("centered about 17% across and 64% down", plan.prompt)
+        self.assertIn(
+            "From left to right, the subjects are red bikini woman, dog, and lface",
+            plan.prompt,
+        )
+        self.assertEqual(plan.backend, BACKEND)
+        for region in plan.regions:
+            start, end = region.character_span
+            self.assertEqual(plan.prompt[start:end], region.clause)
+
+    def test_soft_field_has_full_box_core_and_smooth_outside_falloff(self) -> None:
         region = RegionDefinition(
             "subject",
             "Subject",
-            PixelBox(0, 0, 17, 16),
+            PixelBox(16, 16, 32, 32),
             prompt="a red glass sculpture",
         )
 
         plan = compile_regional_prompt_plan(
-            64, 64, (region,), strength=1.5, feather_pixels=0
+            64, 64, "gallery interior", (region,), falloff_pixels=24
         )
-        compiled = plan.regions[0]
+        field = plan.regions[0].image_token_field
 
-        self.assertEqual((plan.latent_width, plan.latent_height), (8, 8))
-        self.assertEqual(compiled.area, (2, 3, 0, 0))
-        self.assertAlmostEqual(sum(compiled.latent_mask), 4.25)
-        self.assertAlmostEqual(sum(compiled.image_token_mask), 1.0625)
-        self.assertEqual(plan.summary()["backend"], "comfy-latent-area-v1")
+        self.assertEqual((plan.image_token_width, plan.image_token_height), (4, 4))
+        self.assertEqual(field[1 * 4 + 1], 1.0)
+        self.assertGreater(field[1 * 4 + 2], 0.0)
+        self.assertLess(field[1 * 4 + 2], 1.0)
+        self.assertEqual(field[3 * 4 + 3], 0.0)
 
-    def test_default_feather_reduces_influence_at_box_edge(self) -> None:
-        region = RegionDefinition(
-            "subject",
-            "Subject",
-            PixelBox(0, 0, 64, 64),
-            prompt="a red glass sculpture",
+    def test_character_spans_bind_to_one_text_sequence(self) -> None:
+        regions = (
+            RegionDefinition("left", "Left", PixelBox(0, 0, 32, 64), "red vase"),
+            RegionDefinition("right", "Right", PixelBox(32, 0, 64, 64), "blue vase"),
         )
+        plan = compile_regional_prompt_plan(64, 64, "two objects", regions)
 
-        hard = compile_regional_prompt_plan(
-            64, 64, (region,), feather_pixels=0
-        ).regions[0].latent_mask
-        feathered = compile_regional_prompt_plan(
-            64, 64, (region,), feather_pixels=16
-        ).regions[0].latent_mask
+        bound = plan.bind_tokens(lambda prefix: len(prefix.split()))
 
-        self.assertEqual(hard[0], 1.0)
-        self.assertLess(feathered[0], hard[0])
-        self.assertEqual(feathered[3 * 8 + 3], 1.0)
+        self.assertEqual(bound.text_token_count, len(plan.prompt.split()))
+        self.assertEqual(len(bound.spans), 2)
+        self.assertLess(bound.spans[0].start, bound.spans[0].end)
+        self.assertLessEqual(bound.spans[0].end, bound.spans[1].start)
+        self.assertEqual(bound.image_token_count, 16)
 
     def test_disabled_and_empty_prompt_regions_do_not_compile(self) -> None:
         disabled = RegionDefinition(
@@ -54,9 +85,10 @@ class RegionalPromptingTests(unittest.TestCase):
         )
         empty = RegionDefinition("empty", "Empty", PixelBox(16, 0, 32, 16), "")
 
-        plan = compile_regional_prompt_plan(64, 64, (disabled, empty))
+        plan = compile_regional_prompt_plan(64, 64, "scene", (disabled, empty))
 
         self.assertEqual(plan.regions, ())
+        self.assertEqual(plan.prompt, "scene.")
 
     def test_worker_payload_conversion_preserves_generic_region_fields(self) -> None:
         regions = region_definitions_from_payload(

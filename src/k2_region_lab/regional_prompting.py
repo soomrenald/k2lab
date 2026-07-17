@@ -1,46 +1,133 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from math import hypot
+from typing import Callable
 
 from k2_region_lab.regions import CanvasGeometry, PixelBox, RegionDefinition
 
 
+BACKEND = "krea-unified-prompt-v1"
+
+
 @dataclass(frozen=True, slots=True)
-class RegionalPromptArea:
+class UnifiedPromptRegion:
     region_id: str
     name: str
     prompt: str
     negative_prompt: str
-    area: tuple[int, int, int, int]  # latent height, width, y, x
-    latent_mask: tuple[float, ...]
-    image_token_mask: tuple[float, ...]
+    box: PixelBox
+    clause: str
+    character_span: tuple[int, int]
+    image_token_field: tuple[float, ...]
 
 
 @dataclass(frozen=True, slots=True)
 class RegionalPromptPlan:
     width: int
     height: int
-    latent_width: int
-    latent_height: int
+    image_token_width: int
+    image_token_height: int
+    prompt: str
     strength: float
-    feather_pixels: float
-    regions: tuple[RegionalPromptArea, ...]
-    backend: str = "comfy-latent-area-v1"
+    falloff_pixels: float
+    regions: tuple[UnifiedPromptRegion, ...]
+    backend: str = BACKEND
+
+    @property
+    def image_token_count(self) -> int:
+        return self.image_token_width * self.image_token_height
+
+    def bind_tokens(
+        self, prompt_prefix_token_count: Callable[[str], int]
+    ) -> "BoundRegionalPromptPlan":
+        spans = tuple(
+            RegionalTokenSpan(
+                region_id=region.region_id,
+                name=region.name,
+                start=prompt_prefix_token_count(
+                    self.prompt[: region.character_span[0]]
+                ),
+                end=prompt_prefix_token_count(
+                    self.prompt[: region.character_span[1]]
+                ),
+                image_token_field=region.image_token_field,
+            )
+            for region in self.regions
+        )
+        if any(span.end <= span.start for span in spans):
+            raise ValueError("each regional prompt must own at least one text token")
+        return BoundRegionalPromptPlan(
+            prompt=self.prompt,
+            text_token_count=prompt_prefix_token_count(self.prompt),
+            image_token_count=self.image_token_count,
+            strength=self.strength,
+            falloff_pixels=self.falloff_pixels,
+            spans=spans,
+            backend=self.backend,
+        )
 
     def summary(self) -> dict[str, object]:
         return {
             "backend": self.backend,
+            "compiled_prompt": self.prompt,
             "strength": self.strength,
-            "feather_pixels": self.feather_pixels,
+            "falloff_pixels": self.falloff_pixels,
+            "image_token_grid": [self.image_token_width, self.image_token_height],
             "region_count": len(self.regions),
             "regions": [
                 {
                     "id": region.region_id,
                     "name": region.name,
-                    "area_latent": list(region.area),
-                    "covered_image_tokens": sum(region.image_token_mask),
+                    "box_pixels": [
+                        region.box.x0,
+                        region.box.y0,
+                        region.box.x1,
+                        region.box.y1,
+                    ],
+                    "character_span": list(region.character_span),
+                    "peak_spatial_weight": max(region.image_token_field),
                 }
                 for region in self.regions
+            ],
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class RegionalTokenSpan:
+    region_id: str
+    name: str
+    start: int
+    end: int
+    image_token_field: tuple[float, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class BoundRegionalPromptPlan:
+    prompt: str
+    text_token_count: int
+    image_token_count: int
+    strength: float
+    falloff_pixels: float
+    spans: tuple[RegionalTokenSpan, ...]
+    backend: str = BACKEND
+
+    def summary(self) -> dict[str, object]:
+        return {
+            "backend": self.backend,
+            "compiled_prompt": self.prompt,
+            "strength": self.strength,
+            "falloff_pixels": self.falloff_pixels,
+            "text_token_count": self.text_token_count,
+            "image_token_count": self.image_token_count,
+            "region_count": len(self.spans),
+            "regions": [
+                {
+                    "id": span.region_id,
+                    "name": span.name,
+                    "text_token_span": [span.start, span.end],
+                }
+                for span in self.spans
             ],
         }
 
@@ -48,84 +135,189 @@ class RegionalPromptPlan:
 def compile_regional_prompt_plan(
     width: int,
     height: int,
+    global_prompt: str,
     regions: tuple[RegionDefinition, ...],
     *,
     strength: float = 1.0,
-    feather_pixels: float = 32.0,
+    falloff_pixels: float = 128.0,
 ) -> RegionalPromptPlan:
     if not 0.0 < strength <= 10.0:
-        raise ValueError("regional prompt strength must be in (0, 10]")
-    if not 0.0 <= feather_pixels <= 1024.0:
-        raise ValueError("regional feather must be between 0 and 1024 pixels")
-    token_geometry = CanvasGeometry.resolve(width, height)
-    latent_geometry = CanvasGeometry.resolve(width, height, patch_size=1)
-    compiled: list[RegionalPromptArea] = []
+        raise ValueError("spatial guidance strength must be in (0, 10]")
+    if not 0.0 <= falloff_pixels <= 2048.0:
+        raise ValueError("spatial falloff must be between 0 and 2048 pixels")
+
+    geometry = CanvasGeometry.resolve(width, height)
+    active = []
     for region in regions:
         if not region.enabled or not region.prompt.strip():
             continue
-        box = region.box.clipped(width, height)
-        coverage_mask = latent_geometry.rasterize_box(box)
-        latent_mask = _inward_feather(
-            latent_geometry, box, coverage_mask, feather_pixels
-        )
-        nonzero = [index for index, value in enumerate(coverage_mask) if value > 0.0]
-        if not nonzero:
-            continue
-        rows = [index // latent_geometry.patch_width for index in nonzero]
-        columns = [index % latent_geometry.patch_width for index in nonzero]
-        y = min(rows)
-        x = min(columns)
-        area_height = max(rows) - y + 1
-        area_width = max(columns) - x + 1
+        active.append((region, region.box.clipped(width, height)))
+    active.sort(key=lambda item: _scene_order(item[0], item[1], width, height))
+
+    prompt = _sentence(global_prompt.strip())
+    compiled: list[UnifiedPromptRegion] = []
+    for region, box in active:
+        clause = _regional_clause(region, box, width, height)
+        if prompt:
+            prompt += " "
+        start = len(prompt)
+        prompt += clause
+        end = len(prompt)
         compiled.append(
-            RegionalPromptArea(
+            UnifiedPromptRegion(
                 region_id=region.region_id,
                 name=region.name,
                 prompt=region.prompt.strip(),
                 negative_prompt=region.negative_prompt.strip(),
-                area=(area_height, area_width, y, x),
-                latent_mask=latent_mask,
-                image_token_mask=token_geometry.rasterize_box(box),
+                box=box,
+                clause=clause,
+                character_span=(start, end),
+                image_token_field=_soft_box_field(
+                    geometry, box, float(falloff_pixels)
+                ),
             )
         )
+
+    relationship_clause = _relationship_clause(compiled, width, height)
+    if relationship_clause:
+        prompt += f" {relationship_clause}"
+
     return RegionalPromptPlan(
-        width=token_geometry.aligned_width,
-        height=token_geometry.aligned_height,
-        latent_width=latent_geometry.patch_width,
-        latent_height=latent_geometry.patch_height,
+        width=geometry.aligned_width,
+        height=geometry.aligned_height,
+        image_token_width=geometry.patch_width,
+        image_token_height=geometry.patch_height,
+        prompt=prompt,
         strength=float(strength),
-        feather_pixels=float(feather_pixels),
+        falloff_pixels=float(falloff_pixels),
         regions=tuple(compiled),
     )
 
 
-def _inward_feather(
-    geometry: CanvasGeometry,
-    box: PixelBox,
-    coverage: tuple[float, ...],
-    feather_pixels: float,
+def _scene_order(
+    region: RegionDefinition, box: PixelBox, width: int, height: int
 ) -> tuple[float, ...]:
-    effective = min(feather_pixels, box.width / 2.0, box.height / 2.0)
-    if effective <= 0.0:
-        return coverage
-    size = geometry.output_pixels_per_image_token
-    output = list(coverage)
-    for index, value in enumerate(coverage):
-        if value <= 0.0:
-            continue
-        row, column = divmod(index, geometry.patch_width)
-        center_x = (column + 0.5) * size
-        center_y = (row + 0.5) * size
-        distance = min(
-            center_x - box.x0,
-            box.x1 - center_x,
-            center_y - box.y0,
-            box.y1 - center_y,
+    scene_layer = 0.0 if box.width / width >= 0.70 else 1.0
+    center_y = (box.y0 + box.y1) / (2.0 * height)
+    center_x = (box.x0 + box.x1) / (2.0 * width)
+    area_fraction = box.width * box.height / (width * height)
+    return (scene_layer, -float(region.priority), center_y, center_x, -area_fraction)
+
+
+def _sentence(text: str) -> str:
+    if not text:
+        return ""
+    return text if text.endswith((".", "!", "?")) else text + "."
+
+
+def _regional_clause(
+    region: RegionDefinition, box: PixelBox, width: int, height: int
+) -> str:
+    center_x = 100.0 * (box.x0 + box.x1) / (2.0 * width)
+    center_y = 100.0 * (box.y0 + box.y1) / (2.0 * height)
+    width_percent = 100.0 * box.width / width
+    height_percent = 100.0 * box.height / height
+    horizontal = _horizontal_position(center_x)
+    vertical = _vertical_position(center_y)
+    description = region.prompt.strip().rstrip(".!? ")
+
+    if width_percent >= 70.0:
+        location = (
+            f"Across the {vertical} of the image, occupying about "
+            f"{height_percent:.0f}% of its height"
         )
-        u = max(0.0, min(1.0, distance / effective))
-        smoothstep = u * u * (3.0 - 2.0 * u)
-        output[index] = value * smoothstep
-    return tuple(output)
+    else:
+        location = (
+            f"In the {vertical} {horizontal}, centered about {center_x:.0f}% "
+            f"across and {center_y:.0f}% down, occupying about "
+            f"{width_percent:.0f}% of the image width and {height_percent:.0f}% "
+            "of its height"
+        )
+    return f"{location}, there is {description}."
+
+
+def _horizontal_position(percent: float) -> str:
+    if percent < 20.0:
+        return "far-left side"
+    if percent < 40.0:
+        return "left side"
+    if percent < 60.0:
+        return "center"
+    if percent < 80.0:
+        return "right side"
+    return "far-right side"
+
+
+def _vertical_position(percent: float) -> str:
+    if percent < 20.0:
+        return "top"
+    if percent < 40.0:
+        return "upper portion"
+    if percent < 60.0:
+        return "middle portion"
+    if percent < 80.0:
+        return "lower portion"
+    return "bottom"
+
+
+def _relationship_clause(
+    regions: list[UnifiedPromptRegion], width: int, height: int
+) -> str:
+    subjects = [
+        region
+        for region in regions
+        if region.box.width < 0.70 * width
+    ]
+    if len(subjects) < 2:
+        return ""
+    left_to_right = sorted(
+        subjects, key=lambda region: (region.box.x0 + region.box.x1) / 2.0
+    )
+    names = [region.name for region in left_to_right]
+    if len(names) == 2:
+        ordering = f"{names[0]} is to the left of {names[1]}"
+    else:
+        ordering = (
+            "From left to right, the subjects are "
+            + ", ".join(names[:-1])
+            + f", and {names[-1]}"
+        )
+
+    lowest = max(
+        subjects, key=lambda region: (region.box.y0 + region.box.y1) / 2.0
+    )
+    other_centers = [
+        (region.box.y0 + region.box.y1) / 2.0
+        for region in subjects
+        if region.region_id != lowest.region_id
+    ]
+    lowest_center = (lowest.box.y0 + lowest.box.y1) / 2.0
+    if other_centers and lowest_center - sum(other_centers) / len(other_centers) > 0.08 * height:
+        ordering += f"; {lowest.name} is positioned below the other subjects"
+    return f"{ordering}."
+
+
+def _soft_box_field(
+    geometry: CanvasGeometry, box: PixelBox, falloff_pixels: float
+) -> tuple[float, ...]:
+    values: list[float] = []
+    size = geometry.output_pixels_per_image_token
+    for row in range(geometry.patch_height):
+        center_y = (row + 0.5) * size
+        for column in range(geometry.patch_width):
+            center_x = (column + 0.5) * size
+            dx = max(box.x0 - center_x, 0.0, center_x - box.x1)
+            dy = max(box.y0 - center_y, 0.0, center_y - box.y1)
+            distance = hypot(dx, dy)
+            if distance == 0.0:
+                value = 1.0
+            elif falloff_pixels == 0.0 or distance >= falloff_pixels:
+                value = 0.0
+            else:
+                u = 1.0 - distance / falloff_pixels
+                value = u * u * (3.0 - 2.0 * u)
+            values.append(value)
+    return tuple(values)
 
 
 def region_definitions_from_payload(items: list[dict]) -> tuple[RegionDefinition, ...]:
