@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import glob
 import gc
+import hashlib
 import json
 import os
 import platform
@@ -29,6 +30,11 @@ from k2_region_lab.output import validate_filename_prefix
 from k2_region_lab.regional_lora import (
     LoraDeltaRoute,
     compile_lora_delta_routes,
+)
+from k2_region_lab.regional_refinement import (
+    BACKEND as REFINEMENT_BACKEND,
+    compile_refinement_crops,
+    latent_blend_mask,
 )
 from k2_region_lab.regional_prompting import (
     BoundRegionalPromptPlan,
@@ -642,17 +648,180 @@ class ComfyBaselineRuntime:
         when that unload happens under inference mode.
         """
 
+        self._release_generation_model(generation_model)
+        if event is not None:
+            event(
+                "Transformer offloaded before VAE decode",
+                {"memory": self.memory_snapshot("VAE handoff complete")},
+            )
+
+    @staticmethod
+    def _release_generation_model(generation_model) -> None:
         import comfy.model_management
 
         comfy.model_management.unload_all_models()
         generation_model.remove_injections("k2_routed_loras")
         gc.collect()
         comfy.model_management.soft_empty_cache(force=True)
-        if event is not None:
-            event(
-                "Transformer offloaded before VAE decode",
-                {"memory": self.memory_snapshot("VAE handoff complete")},
+
+    def _refine_subject_regions(
+        self,
+        samples,
+        *,
+        generation_model,
+        width: int,
+        height: int,
+        regions: tuple[RegionDefinition, ...],
+        loras: list[dict[str, Any]],
+        seed: int,
+        scale: float,
+        steps: int,
+        denoise: float,
+        feather_pixels: int,
+        event: Callable[[str, dict[str, Any]], None] | None,
+    ):
+        import torch
+        import torch.nn.functional as functional
+
+        import comfy.sample
+
+        if not 1 <= steps <= 20:
+            raise ValueError("refinement steps must be between 1 and 20")
+        if not 0.05 <= denoise <= 0.60:
+            raise ValueError("refinement denoise must be between 0.05 and 0.60")
+        if not 0 <= feather_pixels <= 256:
+            raise ValueError("refinement feather must be between 0 and 256 pixels")
+        crops = compile_refinement_crops(
+            width,
+            height,
+            regions,
+            scale=scale,
+        )
+        summary: dict[str, Any] = {
+            "backend": REFINEMENT_BACKEND,
+            "enabled": True,
+            "scale": scale,
+            "steps": steps,
+            "denoise": denoise,
+            "feather_pixels": feather_pixels,
+            "regions": [],
+        }
+        if not crops:
+            return samples, summary
+
+        self._release_generation_model(generation_model)
+        refined_samples = samples.detach().clone()
+        for crop_index, crop in enumerate(crops):
+            self._ensure_memory(f"before refining {crop.region_name}", event)
+            x0 = int(crop.crop.x0) // 8
+            y0 = int(crop.crop.y0) // 8
+            x1 = int(crop.crop.x1) // 8
+            y1 = int(crop.crop.y1) // 8
+            source = refined_samples[:, :, y0:y1, x0:x1].detach().clone()
+            internal = functional.interpolate(
+                source.to(dtype=torch.float32),
+                size=(crop.internal_height // 8, crop.internal_width // 8),
+                mode="bilinear",
+                align_corners=False,
+            ).to(dtype=source.dtype)
+            detail_prompt = (
+                f"{crop.prompt}. High-resolution regional detail refinement; "
+                "preserve the same subject, pose, viewpoint, and lighting."
             )
+            positive = self.clip.encode_from_tokens_scheduled(
+                self.clip.tokenize(detail_prompt)
+            )
+            negative = self.clip.encode_from_tokens_scheduled(self.clip.tokenize(""))
+            if not positive:
+                raise RuntimeError("Krea text encoder returned no refinement conditioning")
+            token_counts = {int(condition[0].shape[1]) for condition in positive}
+            if len(token_counts) != 1:
+                raise RuntimeError("refinement conditioning must use one text sequence")
+            crop_loras = []
+            for specification in loras:
+                if bool(specification.get("global", True)) or crop.region_id in set(
+                    map(str, specification.get("region_ids", ()))
+                ):
+                    routed = dict(specification)
+                    routed["global"] = True
+                    routed["region_ids"] = []
+                    crop_loras.append(routed)
+            crop_model, crop_reports, crop_statistics = self._apply_routed_loras(
+                crop_loras,
+                width=crop.internal_width,
+                height=crop.internal_height,
+                text_token_count=token_counts.pop(),
+                regional_plan=None,
+                bound_plan=None,
+                event=None,
+            )
+            seed_digest = hashlib.sha256(crop.region_id.encode("utf-8")).digest()
+            crop_seed = (seed + int.from_bytes(seed_digest[:4], "big")) % 2_147_483_648
+            noise = comfy.sample.prepare_noise(internal, crop_seed)
+
+            def refinement_callback(step: int, denoised, current, total: int) -> None:
+                del denoised, current
+                if event is not None:
+                    event(
+                        f"Refining {crop.region_name}: step {step + 1}/{total}",
+                        {
+                            "region_id": crop.region_id,
+                            "step": step + 1,
+                            "total_steps": total,
+                        },
+                    )
+
+            refined_internal = comfy.sample.sample(
+                crop_model,
+                noise,
+                steps,
+                1.0,
+                "euler",
+                "simple",
+                positive,
+                negative,
+                internal,
+                denoise=denoise,
+                callback=refinement_callback,
+                disable_pbar=True,
+                seed=crop_seed,
+            )
+            for report in crop_reports:
+                if report.get("status") in {"applied_global", "applied_regional"}:
+                    report["delta_statistics"] = crop_statistics.summary(
+                        str(report["id"])
+                    )
+            self._release_generation_model(crop_model)
+            restored = functional.interpolate(
+                refined_internal.to(dtype=torch.float32),
+                size=(source.shape[-2], source.shape[-1]),
+                mode="bilinear",
+                align_corners=False,
+            ).to(device=source.device, dtype=source.dtype)
+            mask = torch.tensor(
+                latent_blend_mask(crop, feather_pixels=feather_pixels),
+                device=source.device,
+                dtype=source.dtype,
+            ).view(1, 1, source.shape[-2], source.shape[-1])
+            refined_samples[:, :, y0:y1, x0:x1] = source * (1.0 - mask) + restored * mask
+            crop_summary = crop.summary()
+            crop_summary.update(
+                {
+                    "seed": crop_seed,
+                    "loras": crop_reports,
+                }
+            )
+            summary["regions"].append(crop_summary)
+            if event is not None:
+                event(
+                    f"Refined subject region {crop.region_name}",
+                    {
+                        "region": crop_summary,
+                        "completed": crop_index + 1,
+                        "total_regions": len(crops),
+                    },
+                )
+        return refined_samples, summary
 
     def memory_snapshot(self, stage: str) -> dict[str, Any]:
         import psutil
@@ -795,6 +964,11 @@ class ComfyBaselineRuntime:
         regional_feather_pixels: float = 128.0,
         regional_subject_competition: bool = True,
         regional_late_step_scale: float = 0.35,
+        regional_refinement: bool = False,
+        refinement_scale: float = 1.5,
+        refinement_steps: int = 4,
+        refinement_denoise: float = 0.25,
+        refinement_feather_pixels: int = 48,
         loras: list[dict[str, Any]] | None = None,
         progress: Callable[[int, int, dict[str, Any]], None] | None = None,
         event: Callable[[str, dict[str, Any]], None] | None = None,
@@ -833,6 +1007,12 @@ class ComfyBaselineRuntime:
                 output_directory=output_directory,
                 filename_prefix=filename_prefix,
                 regional_plan=regional_plan,
+                regions=regions,
+                regional_refinement=regional_refinement,
+                refinement_scale=refinement_scale,
+                refinement_steps=refinement_steps,
+                refinement_denoise=refinement_denoise,
+                refinement_feather_pixels=refinement_feather_pixels,
                 loras=list(loras or []),
                 progress=progress,
                 event=event,
@@ -864,6 +1044,12 @@ class ComfyBaselineRuntime:
             output_directory=output_directory,
             filename_prefix=filename_prefix,
             regional_plan=regional_plan,
+            regions=regions,
+            regional_refinement=regional_refinement,
+            refinement_scale=refinement_scale,
+            refinement_steps=refinement_steps,
+            refinement_denoise=refinement_denoise,
+            refinement_feather_pixels=refinement_feather_pixels,
             loras=list(loras or []),
             progress=progress,
             event=event,
@@ -881,6 +1067,12 @@ class ComfyBaselineRuntime:
         output_directory: Path,
         filename_prefix: str,
         regional_plan: RegionalPromptPlan | None,
+        regions: tuple[RegionDefinition, ...],
+        regional_refinement: bool,
+        refinement_scale: float,
+        refinement_steps: int,
+        refinement_denoise: float,
+        refinement_feather_pixels: int,
         loras: list[dict[str, Any]],
         progress: Callable[[int, int, dict[str, Any]], None] | None,
         event: Callable[[str, dict[str, Any]], None] | None,
@@ -1018,6 +1210,26 @@ class ComfyBaselineRuntime:
                     f"LoRA delta measured for {report['display_name']}",
                     {"lora_id": report["id"], **delta_summary},
                 )
+        refinement_summary: dict[str, Any] = {
+            "backend": "disabled",
+            "enabled": False,
+            "regions": [],
+        }
+        if regional_refinement:
+            samples, refinement_summary = self._refine_subject_regions(
+                samples,
+                generation_model=generation_model,
+                width=width,
+                height=height,
+                regions=regions,
+                loras=loras,
+                seed=seed,
+                scale=refinement_scale,
+                steps=refinement_steps,
+                denoise=refinement_denoise,
+                feather_pixels=refinement_feather_pixels,
+                event=event,
+            )
         self._ensure_memory("before VAE decode", event)
         self._prepare_vae_handoff(generation_model, event)
         images = self._decode_vae(samples)
@@ -1049,6 +1261,7 @@ class ComfyBaselineRuntime:
             regional_plan, bound_regional_plan, attention_override
         )
         metadata.add_text("regional_prompting", json.dumps(regional_summary))
+        metadata.add_text("regional_refinement", json.dumps(refinement_summary))
         metadata.add_text("loras", json.dumps(lora_reports))
         metadata.add_text("memory_policy", self.memory_policy_key)
         metadata.add_text("oom_recovered", str(oom_recovered).lower())
@@ -1062,6 +1275,7 @@ class ComfyBaselineRuntime:
             "seed": seed,
             "filename_prefix": filename_prefix,
             "regional_prompting": regional_summary,
+            "regional_refinement": refinement_summary,
             "loras": lora_reports,
             "sampler": "euler",
             "scheduler": "simple",

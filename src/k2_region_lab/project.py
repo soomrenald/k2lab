@@ -9,8 +9,8 @@ from k2_region_lab.regions import PixelBox, RegionDefinition
 
 
 PROJECT_SCHEMA = "k2-region-lab-project"
-PROJECT_VERSION = 3
-SUPPORTED_PROJECT_VERSIONS = {1, 2, PROJECT_VERSION}
+PROJECT_VERSION = 4
+SUPPORTED_PROJECT_VERSIONS = {1, 2, 3, PROJECT_VERSION}
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,6 +39,11 @@ class ProjectState:
     regional_feather_pixels: int = 128
     regional_subject_competition: bool = True
     regional_relaxation: bool = True
+    regional_refinement: bool = False
+    refinement_scale: float = 1.5
+    refinement_steps: int = 4
+    refinement_denoise: float = 0.25
+    refinement_feather_pixels: int = 48
     regions: tuple[RegionDefinition, ...] = ()
     loras: tuple[SavedLora, ...] = ()
     runtime: dict[str, Any] | None = None
@@ -59,6 +64,14 @@ class ProjectState:
             raise ValueError("regional outside penalty must be between 0 and 10")
         if not 0 <= self.regional_feather_pixels <= 2048:
             raise ValueError("spatial falloff must be between 0 and 2048 pixels")
+        if not 1.0 <= self.refinement_scale <= 2.0:
+            raise ValueError("refinement scale must be between 1 and 2")
+        if not 1 <= self.refinement_steps <= 20:
+            raise ValueError("refinement steps must be between 1 and 20")
+        if not 0.05 <= self.refinement_denoise <= 0.60:
+            raise ValueError("refinement denoise must be between 0.05 and 0.60")
+        if not 0 <= self.refinement_feather_pixels <= 256:
+            raise ValueError("refinement feather must be between 0 and 256 pixels")
         region_ids = [region.region_id for region in self.regions]
         if len(region_ids) != len(set(region_ids)):
             raise ValueError("project region IDs must be unique")
@@ -102,6 +115,11 @@ def project_document(state: ProjectState) -> dict[str, Any]:
             "regional_feather_pixels": state.regional_feather_pixels,
             "regional_subject_competition": state.regional_subject_competition,
             "regional_relaxation": state.regional_relaxation,
+            "regional_refinement": state.regional_refinement,
+            "refinement_scale": state.refinement_scale,
+            "refinement_steps": state.refinement_steps,
+            "refinement_denoise": state.refinement_denoise,
+            "refinement_feather_pixels": state.refinement_feather_pixels,
         },
         "regions": [
             {
@@ -189,6 +207,13 @@ def project_state(document: dict[str, Any]) -> ProjectState:
             generation.get("regional_subject_competition", True)
         ),
         regional_relaxation=bool(generation.get("regional_relaxation", True)),
+        regional_refinement=bool(generation.get("regional_refinement", False)),
+        refinement_scale=float(generation.get("refinement_scale", 1.5)),
+        refinement_steps=int(generation.get("refinement_steps", 4)),
+        refinement_denoise=float(generation.get("refinement_denoise", 0.25)),
+        refinement_feather_pixels=int(
+            generation.get("refinement_feather_pixels", 48)
+        ),
         regions=regions,
         loras=loras,
         runtime=dict(document.get("runtime", {})),

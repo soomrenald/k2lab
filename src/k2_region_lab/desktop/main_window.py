@@ -368,6 +368,37 @@ class MainWindow(QMainWindow):
             "Keep placement guidance strong early, then reduce it for final detail"
         )
         layout.addRow(self.regional_relaxation_input)
+        self.regional_refinement_input = QCheckBox("Refine subject regions")
+        self.regional_refinement_input.setToolTip(
+            "Run sequential low-denoise, high-resolution latent crops for enabled subjects"
+        )
+        layout.addRow(self.regional_refinement_input)
+        self.refinement_scale_input = QDoubleSpinBox()
+        self.refinement_scale_input.setRange(1.0, 2.0)
+        self.refinement_scale_input.setSingleStep(0.1)
+        self.refinement_scale_input.setValue(1.5)
+        self.refinement_scale_input.setSuffix("×")
+        layout.addRow("Refine scale", self.refinement_scale_input)
+        self.refinement_steps_input = QSpinBox()
+        self.refinement_steps_input.setRange(1, 20)
+        self.refinement_steps_input.setValue(4)
+        layout.addRow("Refine steps", self.refinement_steps_input)
+        self.refinement_denoise_input = QDoubleSpinBox()
+        self.refinement_denoise_input.setRange(0.05, 0.60)
+        self.refinement_denoise_input.setSingleStep(0.05)
+        self.refinement_denoise_input.setDecimals(2)
+        self.refinement_denoise_input.setValue(0.25)
+        layout.addRow("Refine denoise", self.refinement_denoise_input)
+        self.refinement_feather_input = QSpinBox()
+        self.refinement_feather_input.setRange(0, 256)
+        self.refinement_feather_input.setSingleStep(8)
+        self.refinement_feather_input.setSuffix(" px")
+        self.refinement_feather_input.setValue(48)
+        layout.addRow("Refine blend", self.refinement_feather_input)
+        self.regional_refinement_input.toggled.connect(
+            self._set_refinement_controls_enabled
+        )
+        self._set_refinement_controls_enabled(False)
         preview_prompt = QPushButton("Preview unified prompt…")
         preview_prompt.clicked.connect(self._preview_unified_prompt)
         layout.addRow(preview_prompt)
@@ -403,6 +434,15 @@ class MainWindow(QMainWindow):
         dock.setWidget(self._scrollable(body))
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
         self.model_dock = dock
+
+    def _set_refinement_controls_enabled(self, enabled: bool) -> None:
+        for control in (
+            self.refinement_scale_input,
+            self.refinement_steps_input,
+            self.refinement_denoise_input,
+            self.refinement_feather_input,
+        ):
+            control.setEnabled(enabled)
 
     def _memory_policy_changed(self) -> None:
         key = self.memory_policy_input.currentData()
@@ -932,6 +972,11 @@ class MainWindow(QMainWindow):
                 self.regional_subject_competition_input.isChecked()
             ),
             regional_relaxation=self.regional_relaxation_input.isChecked(),
+            regional_refinement=self.regional_refinement_input.isChecked(),
+            refinement_scale=self.refinement_scale_input.value(),
+            refinement_steps=self.refinement_steps_input.value(),
+            refinement_denoise=self.refinement_denoise_input.value(),
+            refinement_feather_pixels=self.refinement_feather_input.value(),
             regions=tuple(self.regions),
             loras=saved_loras,
             runtime=runtime,
@@ -1059,6 +1104,11 @@ class MainWindow(QMainWindow):
             state.regional_subject_competition
         )
         self.regional_relaxation_input.setChecked(state.regional_relaxation)
+        self.regional_refinement_input.setChecked(state.regional_refinement)
+        self.refinement_scale_input.setValue(state.refinement_scale)
+        self.refinement_steps_input.setValue(state.refinement_steps)
+        self.refinement_denoise_input.setValue(state.refinement_denoise)
+        self.refinement_feather_input.setValue(state.refinement_feather_pixels)
         policy_index = self.memory_policy_input.findData(self.settings.memory_policy)
         self.memory_policy_input.setCurrentIndex(max(0, policy_index))
         self.reserve_vram_input.setValue(self.settings.reserve_vram_gb)
@@ -1278,6 +1328,11 @@ class MainWindow(QMainWindow):
                 "regional_late_step_scale": (
                     0.35 if self.regional_relaxation_input.isChecked() else 1.0
                 ),
+                "regional_refinement": self.regional_refinement_input.isChecked(),
+                "refinement_scale": self.refinement_scale_input.value(),
+                "refinement_steps": self.refinement_steps_input.value(),
+                "refinement_denoise": self.refinement_denoise_input.value(),
+                "refinement_feather_pixels": self.refinement_feather_input.value(),
                 "regions": [
                     {
                         "id": region.region_id,
