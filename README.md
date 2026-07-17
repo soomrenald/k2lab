@@ -17,6 +17,7 @@ The implementation is at the foundation milestone. It currently provides:
 - a configurable external ROCm worker using the existing ComfyUI interpreter;
 - full transformer, Qwen, and VAE tensor manifests with Krea-specific shape validation;
 - fixed-seed Krea 2 Turbo baseline generation with progress events and PNG metadata;
+- optional 2×/4× post-upscaling after the Krea GPU state has been released;
 - selectable 16 GB memory policies, live VRAM/RAM telemetry, boundary offload, and OOM retry;
 - confirmed cleanup of current-user K2 workers without terminating unrelated ROCm applications;
 - in-app ROCm diagnostics with device permissions, runtime identity, and remediation hints;
@@ -82,6 +83,8 @@ Each loaded LoRA has a saved model-strength control and an **Inspect selected Lo
 The prompt-attention field and LoRA gate intentionally have different semantics. Prompt placement can feather outside a box so the model composes a coherent scene. LoRA parameter deltas do not use that falloff. Information can still propagate from an enabled lane through the transformer's normal self-attention, but no LoRA projection is evaluated into an unassigned output lane. Delta-magnitude-driven attention tuning is the next control stage built on these measurements.
 
 Before VAE decode, the worker explicitly offloads the denoising transformer and releases routed adapter hooks outside PyTorch inference mode. This both frees the additional VRAM held by multiple LoRAs and prevents ComfyUI's quantized FP8 parameter reconstruction from receiving inference tensors during the VAE memory handoff.
+
+**Post-upscale after releasing Krea VRAM** is a scene-wide output stage, not another denoising pass. The worker decodes the original image, copies it to CPU memory, unloads Krea, its routed LoRAs, and the VAE from the accelerator, and empties the ROCm cache before upscaling. The built-in **CPU Lanczos** option works without additional weights and produces an exact 2× or 4× output, but it cannot invent detail absent from the 1024×1024 render. For learned detail recovery, choose **Neural model (tiled GPU)** and browse to an ESRGAN/Real-ESRGAN-compatible `.pth`, `.pt`, or `.safetensors` file. Neural inference uses overlapping tiles with automatic OOM tile reduction and keeps its assembled output in system RAM. The selected method, model, base size, and final size are stored in project JSON and PNG metadata.
 
 If the accelerator probe fails, **Diagnose accelerator…** appears below the status. It restarts the worker with a clean environment and reports the interpreter, Torch/ROCm versions, device-file access, visibility variables, initialization errors, and suggested fixes without closing the application.
 

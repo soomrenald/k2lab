@@ -84,6 +84,7 @@ class MainWindow(QMainWindow):
         self._model_loaded = False
         self._current_project_path: Path | None = None
         self._background_image_path: Path | None = None
+        self._upscale_model_path: Path | None = None
         self._generation_active = False
         self._output_directory = settings.output_directory or default_output_directory(
             settings.data_directory
@@ -368,37 +369,38 @@ class MainWindow(QMainWindow):
             "Keep placement guidance strong early, then reduce it for final detail"
         )
         layout.addRow(self.regional_relaxation_input)
-        self.regional_refinement_input = QCheckBox("Refine subject regions")
-        self.regional_refinement_input.setToolTip(
-            "Run sequential low-denoise, high-resolution latent crops for enabled subjects"
+        self.post_upscale_input = QCheckBox("Post-upscale after releasing Krea VRAM")
+        self.post_upscale_input.setToolTip(
+            "Decode first, unload Krea/LoRAs/VAE from the GPU, then upscale the final image"
         )
-        layout.addRow(self.regional_refinement_input)
-        self.refinement_scale_input = QDoubleSpinBox()
-        self.refinement_scale_input.setRange(1.0, 2.0)
-        self.refinement_scale_input.setSingleStep(0.1)
-        self.refinement_scale_input.setValue(1.5)
-        self.refinement_scale_input.setSuffix("×")
-        layout.addRow("Refine scale", self.refinement_scale_input)
-        self.refinement_steps_input = QSpinBox()
-        self.refinement_steps_input.setRange(1, 20)
-        self.refinement_steps_input.setValue(4)
-        layout.addRow("Refine steps", self.refinement_steps_input)
-        self.refinement_denoise_input = QDoubleSpinBox()
-        self.refinement_denoise_input.setRange(0.05, 0.60)
-        self.refinement_denoise_input.setSingleStep(0.05)
-        self.refinement_denoise_input.setDecimals(2)
-        self.refinement_denoise_input.setValue(0.25)
-        layout.addRow("Refine denoise", self.refinement_denoise_input)
-        self.refinement_feather_input = QSpinBox()
-        self.refinement_feather_input.setRange(0, 256)
-        self.refinement_feather_input.setSingleStep(8)
-        self.refinement_feather_input.setSuffix(" px")
-        self.refinement_feather_input.setValue(48)
-        layout.addRow("Refine blend", self.refinement_feather_input)
-        self.regional_refinement_input.toggled.connect(
-            self._set_refinement_controls_enabled
+        layout.addRow(self.post_upscale_input)
+        self.upscale_scale_input = QComboBox()
+        self.upscale_scale_input.addItem("2×", 2)
+        self.upscale_scale_input.addItem("4×", 4)
+        layout.addRow("Output scale", self.upscale_scale_input)
+        self.upscale_method_input = QComboBox()
+        self.upscale_method_input.addItem("CPU Lanczos", "lanczos")
+        self.upscale_method_input.addItem("Neural model (tiled GPU)", "model")
+        layout.addRow("Upscaler", self.upscale_method_input)
+        upscale_model_row = QWidget()
+        upscale_model_layout = QHBoxLayout(upscale_model_row)
+        upscale_model_layout.setContentsMargins(0, 0, 0, 0)
+        self.upscale_model_input = QLineEdit()
+        self.upscale_model_input.setReadOnly(True)
+        self.upscale_model_input.setPlaceholderText("Select ESRGAN-compatible model…")
+        self.upscale_model_browse = QPushButton("Browse…")
+        self.upscale_model_browse.clicked.connect(self._browse_upscale_model)
+        self.upscale_model_clear = QPushButton("Clear")
+        self.upscale_model_clear.clicked.connect(self._clear_upscale_model)
+        upscale_model_layout.addWidget(self.upscale_model_input)
+        upscale_model_layout.addWidget(self.upscale_model_browse)
+        upscale_model_layout.addWidget(self.upscale_model_clear)
+        layout.addRow("Model", upscale_model_row)
+        self.post_upscale_input.toggled.connect(self._set_upscale_controls_enabled)
+        self.upscale_method_input.currentIndexChanged.connect(
+            self._set_upscale_controls_enabled
         )
-        self._set_refinement_controls_enabled(False)
+        self._set_upscale_controls_enabled()
         preview_prompt = QPushButton("Preview unified prompt…")
         preview_prompt.clicked.connect(self._preview_unified_prompt)
         layout.addRow(preview_prompt)
@@ -435,14 +437,14 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
         self.model_dock = dock
 
-    def _set_refinement_controls_enabled(self, enabled: bool) -> None:
-        for control in (
-            self.refinement_scale_input,
-            self.refinement_steps_input,
-            self.refinement_denoise_input,
-            self.refinement_feather_input,
-        ):
-            control.setEnabled(enabled)
+    def _set_upscale_controls_enabled(self, _value=None) -> None:
+        enabled = self.post_upscale_input.isChecked()
+        self.upscale_scale_input.setEnabled(enabled)
+        self.upscale_method_input.setEnabled(enabled)
+        model_enabled = enabled and self.upscale_method_input.currentData() == "model"
+        self.upscale_model_input.setEnabled(model_enabled)
+        self.upscale_model_browse.setEnabled(model_enabled)
+        self.upscale_model_clear.setEnabled(model_enabled and self._upscale_model_path is not None)
 
     def _memory_policy_changed(self) -> None:
         key = self.memory_policy_input.currentData()
@@ -541,6 +543,29 @@ class MainWindow(QMainWindow):
             self._output_directory = Path(selected).expanduser().resolve()
             self.output_directory_input.setText(str(self._output_directory))
             self.events.addItem(f"Output folder set to {self._output_directory}")
+
+    def _browse_upscale_model(self) -> None:
+        start = (
+            self._upscale_model_path.parent
+            if self._upscale_model_path is not None
+            else self.settings.comfyui_root / "models" / "upscale_models"
+        )
+        selected, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select neural upscaler model",
+            str(start),
+            "Upscaler models (*.safetensors *.pth *.pt);;All files (*)",
+        )
+        if selected:
+            self._upscale_model_path = Path(selected).expanduser().resolve()
+            self.upscale_model_input.setText(str(self._upscale_model_path))
+            self.events.addItem(f"Upscaler model set to {self._upscale_model_path.name}")
+            self._set_upscale_controls_enabled()
+
+    def _clear_upscale_model(self) -> None:
+        self._upscale_model_path = None
+        self.upscale_model_input.clear()
+        self._set_upscale_controls_enabled()
 
     def _filename_prefix_edited(self) -> None:
         try:
@@ -972,11 +997,10 @@ class MainWindow(QMainWindow):
                 self.regional_subject_competition_input.isChecked()
             ),
             regional_relaxation=self.regional_relaxation_input.isChecked(),
-            regional_refinement=self.regional_refinement_input.isChecked(),
-            refinement_scale=self.refinement_scale_input.value(),
-            refinement_steps=self.refinement_steps_input.value(),
-            refinement_denoise=self.refinement_denoise_input.value(),
-            refinement_feather_pixels=self.refinement_feather_input.value(),
+            post_upscale=self.post_upscale_input.isChecked(),
+            upscale_scale=int(self.upscale_scale_input.currentData()),
+            upscale_method=str(self.upscale_method_input.currentData()),
+            upscale_model=self._upscale_model_path,
             regions=tuple(self.regions),
             loras=saved_loras,
             runtime=runtime,
@@ -1104,11 +1128,16 @@ class MainWindow(QMainWindow):
             state.regional_subject_competition
         )
         self.regional_relaxation_input.setChecked(state.regional_relaxation)
-        self.regional_refinement_input.setChecked(state.regional_refinement)
-        self.refinement_scale_input.setValue(state.refinement_scale)
-        self.refinement_steps_input.setValue(state.refinement_steps)
-        self.refinement_denoise_input.setValue(state.refinement_denoise)
-        self.refinement_feather_input.setValue(state.refinement_feather_pixels)
+        self.post_upscale_input.setChecked(state.post_upscale)
+        scale_index = self.upscale_scale_input.findData(state.upscale_scale)
+        self.upscale_scale_input.setCurrentIndex(max(0, scale_index))
+        method_index = self.upscale_method_input.findData(state.upscale_method)
+        self.upscale_method_input.setCurrentIndex(max(0, method_index))
+        self._upscale_model_path = state.upscale_model
+        self.upscale_model_input.setText(
+            str(self._upscale_model_path) if self._upscale_model_path else ""
+        )
+        self._set_upscale_controls_enabled()
         policy_index = self.memory_policy_input.findData(self.settings.memory_policy)
         self.memory_policy_input.setCurrentIndex(max(0, policy_index))
         self.reserve_vram_input.setValue(self.settings.reserve_vram_gb)
@@ -1295,6 +1324,18 @@ class MainWindow(QMainWindow):
 
     def _generate_baseline(self) -> None:
         self._filename_prefix_edited()
+        if (
+            self.post_upscale_input.isChecked()
+            and self.upscale_method_input.currentData() == "model"
+            and (
+                self._upscale_model_path is None
+                or not self._upscale_model_path.is_file()
+            )
+        ):
+            message = "Select a readable neural upscaler model before generation."
+            self.events.addItem(message)
+            QMessageBox.warning(self, "Upscaler model required", message)
+            return
         seed_mode = str(self.seed_mode_input.currentData())
         seed = self.seed_input.value()
         if seed_mode == "random":
@@ -1328,11 +1369,14 @@ class MainWindow(QMainWindow):
                 "regional_late_step_scale": (
                     0.35 if self.regional_relaxation_input.isChecked() else 1.0
                 ),
-                "regional_refinement": self.regional_refinement_input.isChecked(),
-                "refinement_scale": self.refinement_scale_input.value(),
-                "refinement_steps": self.refinement_steps_input.value(),
-                "refinement_denoise": self.refinement_denoise_input.value(),
-                "refinement_feather_pixels": self.refinement_feather_input.value(),
+                "post_upscale": self.post_upscale_input.isChecked(),
+                "upscale_scale": int(self.upscale_scale_input.currentData()),
+                "upscale_method": str(self.upscale_method_input.currentData()),
+                "upscale_model_path": (
+                    str(self._upscale_model_path)
+                    if self._upscale_model_path is not None
+                    else None
+                ),
                 "regions": [
                     {
                         "id": region.region_id,

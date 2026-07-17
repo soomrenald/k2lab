@@ -193,16 +193,13 @@ def main() -> int:
                     regional_late_step_scale=float(
                         payload.get("regional_late_step_scale", 0.35)
                     ),
-                    regional_refinement=bool(
-                        payload.get("regional_refinement", False)
-                    ),
-                    refinement_scale=float(payload.get("refinement_scale", 1.5)),
-                    refinement_steps=int(payload.get("refinement_steps", 4)),
-                    refinement_denoise=float(
-                        payload.get("refinement_denoise", 0.25)
-                    ),
-                    refinement_feather_pixels=int(
-                        payload.get("refinement_feather_pixels", 48)
+                    post_upscale=bool(payload.get("post_upscale", False)),
+                    upscale_scale=int(payload.get("upscale_scale", 2)),
+                    upscale_method=str(payload.get("upscale_method", "lanczos")),
+                    upscale_model_path=(
+                        Path(payload["upscale_model_path"])
+                        if payload.get("upscale_model_path")
+                        else None
                     ),
                     loras=list(payload.get("loras", [])),
                     progress=progress,

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import glob
 import gc
-import hashlib
 import json
 import os
 import platform
@@ -30,11 +29,6 @@ from k2_region_lab.output import validate_filename_prefix
 from k2_region_lab.regional_lora import (
     LoraDeltaRoute,
     compile_lora_delta_routes,
-)
-from k2_region_lab.regional_refinement import (
-    BACKEND as REFINEMENT_BACKEND,
-    compile_refinement_crops,
-    latent_blend_mask,
 )
 from k2_region_lab.regional_prompting import (
     BoundRegionalPromptPlan,
@@ -664,164 +658,119 @@ class ComfyBaselineRuntime:
         gc.collect()
         comfy.model_management.soft_empty_cache(force=True)
 
-    def _refine_subject_regions(
+    def _release_gpu_for_post_upscale(
         self,
-        samples,
+        event: Callable[[str, dict[str, Any]], None] | None,
+    ) -> None:
+        """Move every Krea component off the accelerator before upscaling."""
+
+        import comfy.model_management
+
+        comfy.model_management.unload_all_models()
+        gc.collect()
+        comfy.model_management.soft_empty_cache(force=True)
+        if event is not None:
+            event(
+                "Krea GPU state released before post-upscale",
+                {"memory": self.memory_snapshot("post-upscale handoff")},
+            )
+
+    def _post_upscale_image(
+        self,
+        image,
         *,
-        generation_model,
-        width: int,
-        height: int,
-        regions: tuple[RegionDefinition, ...],
-        loras: list[dict[str, Any]],
-        seed: int,
-        scale: float,
-        steps: int,
-        denoise: float,
-        feather_pixels: int,
+        scale: int,
+        method: str,
+        model_path: Path | None,
         event: Callable[[str, dict[str, Any]], None] | None,
     ):
-        import torch
-        import torch.nn.functional as functional
+        from PIL import Image
 
-        import comfy.sample
-
-        if not 1 <= steps <= 20:
-            raise ValueError("refinement steps must be between 1 and 20")
-        if not 0.05 <= denoise <= 0.60:
-            raise ValueError("refinement denoise must be between 0.05 and 0.60")
-        if not 0 <= feather_pixels <= 256:
-            raise ValueError("refinement feather must be between 0 and 256 pixels")
-        crops = compile_refinement_crops(
-            width,
-            height,
-            regions,
-            scale=scale,
-        )
-        summary: dict[str, Any] = {
-            "backend": REFINEMENT_BACKEND,
-            "enabled": True,
-            "scale": scale,
-            "steps": steps,
-            "denoise": denoise,
-            "feather_pixels": feather_pixels,
-            "regions": [],
-        }
-        if not crops:
-            return samples, summary
-
-        self._release_generation_model(generation_model)
-        refined_samples = samples.detach().clone()
-        for crop_index, crop in enumerate(crops):
-            self._ensure_memory(f"before refining {crop.region_name}", event)
-            x0 = int(crop.crop.x0) // 8
-            y0 = int(crop.crop.y0) // 8
-            x1 = int(crop.crop.x1) // 8
-            y1 = int(crop.crop.y1) // 8
-            source = refined_samples[:, :, y0:y1, x0:x1].detach().clone()
-            internal = functional.interpolate(
-                source.to(dtype=torch.float32),
-                size=(crop.internal_height // 8, crop.internal_width // 8),
-                mode="bilinear",
-                align_corners=False,
-            ).to(dtype=source.dtype)
-            detail_prompt = (
-                f"{crop.prompt}. High-resolution regional detail refinement; "
-                "preserve the same subject, pose, viewpoint, and lighting."
-            )
-            positive = self.clip.encode_from_tokens_scheduled(
-                self.clip.tokenize(detail_prompt)
-            )
-            negative = self.clip.encode_from_tokens_scheduled(self.clip.tokenize(""))
-            if not positive:
-                raise RuntimeError("Krea text encoder returned no refinement conditioning")
-            token_counts = {int(condition[0].shape[1]) for condition in positive}
-            if len(token_counts) != 1:
-                raise RuntimeError("refinement conditioning must use one text sequence")
-            crop_loras = []
-            for specification in loras:
-                if bool(specification.get("global", True)) or crop.region_id in set(
-                    map(str, specification.get("region_ids", ()))
-                ):
-                    routed = dict(specification)
-                    routed["global"] = True
-                    routed["region_ids"] = []
-                    crop_loras.append(routed)
-            crop_model, crop_reports, crop_statistics = self._apply_routed_loras(
-                crop_loras,
-                width=crop.internal_width,
-                height=crop.internal_height,
-                text_token_count=token_counts.pop(),
-                regional_plan=None,
-                bound_plan=None,
-                event=None,
-            )
-            seed_digest = hashlib.sha256(crop.region_id.encode("utf-8")).digest()
-            crop_seed = (seed + int.from_bytes(seed_digest[:4], "big")) % 2_147_483_648
-            noise = comfy.sample.prepare_noise(internal, crop_seed)
-
-            def refinement_callback(step: int, denoised, current, total: int) -> None:
-                del denoised, current
-                if event is not None:
-                    event(
-                        f"Refining {crop.region_name}: step {step + 1}/{total}",
-                        {
-                            "region_id": crop.region_id,
-                            "step": step + 1,
-                            "total_steps": total,
-                        },
-                    )
-
-            refined_internal = comfy.sample.sample(
-                crop_model,
-                noise,
-                steps,
-                1.0,
-                "euler",
-                "simple",
-                positive,
-                negative,
-                internal,
-                denoise=denoise,
-                callback=refinement_callback,
-                disable_pbar=True,
-                seed=crop_seed,
-            )
-            for report in crop_reports:
-                if report.get("status") in {"applied_global", "applied_regional"}:
-                    report["delta_statistics"] = crop_statistics.summary(
-                        str(report["id"])
-                    )
-            self._release_generation_model(crop_model)
-            restored = functional.interpolate(
-                refined_internal.to(dtype=torch.float32),
-                size=(source.shape[-2], source.shape[-1]),
-                mode="bilinear",
-                align_corners=False,
-            ).to(device=source.device, dtype=source.dtype)
-            mask = torch.tensor(
-                latent_blend_mask(crop, feather_pixels=feather_pixels),
-                device=source.device,
-                dtype=source.dtype,
-            ).view(1, 1, source.shape[-2], source.shape[-1])
-            refined_samples[:, :, y0:y1, x0:x1] = source * (1.0 - mask) + restored * mask
-            crop_summary = crop.summary()
-            crop_summary.update(
-                {
-                    "seed": crop_seed,
-                    "loras": crop_reports,
-                }
-            )
-            summary["regions"].append(crop_summary)
+        if scale not in {2, 4}:
+            raise ValueError("post-upscale scale must be 2 or 4")
+        target_size = (image.width * scale, image.height * scale)
+        if method == "lanczos":
             if event is not None:
                 event(
-                    f"Refined subject region {crop.region_name}",
-                    {
-                        "region": crop_summary,
-                        "completed": crop_index + 1,
-                        "total_regions": len(crops),
-                    },
+                    f"CPU Lanczos post-upscale {scale}× started",
+                    {"target_width": target_size[0], "target_height": target_size[1]},
                 )
-        return refined_samples, summary
+            result = image.resize(target_size, Image.Resampling.LANCZOS)
+            return result, {
+                "enabled": True,
+                "backend": "pillow-lanczos",
+                "scale": scale,
+                "model": None,
+            }
+        if method != "model":
+            raise ValueError(f"unsupported post-upscale method: {method!r}")
+        if model_path is None or not model_path.expanduser().is_file():
+            raise ValueError("the selected neural upscaler model is not readable")
+
+        import numpy as np
+        import torch
+        from spandrel import ImageModelDescriptor, ModelLoader
+
+        import comfy.model_management
+        import comfy.utils
+
+        resolved_model_path = model_path.expanduser().resolve()
+        if event is not None:
+            event(
+                f"Neural post-upscale {scale}× started",
+                {"model": str(resolved_model_path)},
+            )
+        state = comfy.utils.load_torch_file(str(resolved_model_path), safe_load=True)
+        if "module.layers.0.residual_group.blocks.0.norm1.weight" in state:
+            state = comfy.utils.state_dict_prefix_replace(state, {"module.": ""})
+        upscale_model = ModelLoader().load_from_state_dict(state).eval()
+        del state
+        if not isinstance(upscale_model, ImageModelDescriptor):
+            raise ValueError("upscaler must be a single-image ESRGAN-compatible model")
+
+        device = comfy.model_management.get_torch_device()
+        source = torch.from_numpy(np.asarray(image).copy()).to(dtype=torch.float32)
+        source = source.div_(255.0).unsqueeze(0).movedim(-1, -3).to(device)
+        tile = 512
+        upscale_model.to(device)
+        try:
+            with torch.no_grad():
+                while True:
+                    try:
+                        output = comfy.utils.tiled_scale(
+                            source,
+                            lambda tile_input: upscale_model(tile_input.float()),
+                            tile_x=tile,
+                            tile_y=tile,
+                            overlap=32,
+                            upscale_amount=upscale_model.scale,
+                            output_device=torch.device("cpu"),
+                        )
+                        break
+                    except Exception as error:
+                        comfy.model_management.raise_non_oom(error)
+                        tile //= 2
+                        if tile < 128:
+                            raise
+        finally:
+            upscale_model.to("cpu")
+            del source
+            gc.collect()
+            comfy.model_management.soft_empty_cache(force=True)
+
+        output = output.clamp_(0, 1).movedim(-3, -1)[0]
+        array = (output.mul_(255.0).round_().to(torch.uint8).numpy())
+        result = Image.fromarray(array)
+        if result.size != target_size:
+            result = result.resize(target_size, Image.Resampling.LANCZOS)
+        return result, {
+            "enabled": True,
+            "backend": "spandrel-tiled",
+            "scale": scale,
+            "native_model_scale": float(upscale_model.scale),
+            "tile_size": tile,
+            "model": str(resolved_model_path),
+        }
 
     def memory_snapshot(self, stage: str) -> dict[str, Any]:
         import psutil
@@ -964,11 +913,10 @@ class ComfyBaselineRuntime:
         regional_feather_pixels: float = 128.0,
         regional_subject_competition: bool = True,
         regional_late_step_scale: float = 0.35,
-        regional_refinement: bool = False,
-        refinement_scale: float = 1.5,
-        refinement_steps: int = 4,
-        refinement_denoise: float = 0.25,
-        refinement_feather_pixels: int = 48,
+        post_upscale: bool = False,
+        upscale_scale: int = 2,
+        upscale_method: str = "lanczos",
+        upscale_model_path: Path | None = None,
         loras: list[dict[str, Any]] | None = None,
         progress: Callable[[int, int, dict[str, Any]], None] | None = None,
         event: Callable[[str, dict[str, Any]], None] | None = None,
@@ -979,6 +927,9 @@ class ComfyBaselineRuntime:
             raise ValueError("baseline dimensions must be positive multiples of 16")
         if not 1 <= steps <= 100:
             raise ValueError("steps must be between 1 and 100")
+        if post_upscale and upscale_method == "model":
+            if upscale_model_path is None or not upscale_model_path.expanduser().is_file():
+                raise ValueError("select a readable neural upscaler model before generation")
         filename_prefix = validate_filename_prefix(filename_prefix)
         regional_plan = (
             compile_regional_prompt_plan(
@@ -1007,12 +958,10 @@ class ComfyBaselineRuntime:
                 output_directory=output_directory,
                 filename_prefix=filename_prefix,
                 regional_plan=regional_plan,
-                regions=regions,
-                regional_refinement=regional_refinement,
-                refinement_scale=refinement_scale,
-                refinement_steps=refinement_steps,
-                refinement_denoise=refinement_denoise,
-                refinement_feather_pixels=refinement_feather_pixels,
+                post_upscale=post_upscale,
+                upscale_scale=upscale_scale,
+                upscale_method=upscale_method,
+                upscale_model_path=upscale_model_path,
                 loras=list(loras or []),
                 progress=progress,
                 event=event,
@@ -1044,12 +993,10 @@ class ComfyBaselineRuntime:
             output_directory=output_directory,
             filename_prefix=filename_prefix,
             regional_plan=regional_plan,
-            regions=regions,
-            regional_refinement=regional_refinement,
-            refinement_scale=refinement_scale,
-            refinement_steps=refinement_steps,
-            refinement_denoise=refinement_denoise,
-            refinement_feather_pixels=refinement_feather_pixels,
+            post_upscale=post_upscale,
+            upscale_scale=upscale_scale,
+            upscale_method=upscale_method,
+            upscale_model_path=upscale_model_path,
             loras=list(loras or []),
             progress=progress,
             event=event,
@@ -1067,12 +1014,10 @@ class ComfyBaselineRuntime:
         output_directory: Path,
         filename_prefix: str,
         regional_plan: RegionalPromptPlan | None,
-        regions: tuple[RegionDefinition, ...],
-        regional_refinement: bool,
-        refinement_scale: float,
-        refinement_steps: int,
-        refinement_denoise: float,
-        refinement_feather_pixels: int,
+        post_upscale: bool,
+        upscale_scale: int,
+        upscale_method: str,
+        upscale_model_path: Path | None,
         loras: list[dict[str, Any]],
         progress: Callable[[int, int, dict[str, Any]], None] | None,
         event: Callable[[str, dict[str, Any]], None] | None,
@@ -1210,26 +1155,6 @@ class ComfyBaselineRuntime:
                     f"LoRA delta measured for {report['display_name']}",
                     {"lora_id": report["id"], **delta_summary},
                 )
-        refinement_summary: dict[str, Any] = {
-            "backend": "disabled",
-            "enabled": False,
-            "regions": [],
-        }
-        if regional_refinement:
-            samples, refinement_summary = self._refine_subject_regions(
-                samples,
-                generation_model=generation_model,
-                width=width,
-                height=height,
-                regions=regions,
-                loras=loras,
-                seed=seed,
-                scale=refinement_scale,
-                steps=refinement_steps,
-                denoise=refinement_denoise,
-                feather_pixels=refinement_feather_pixels,
-                event=event,
-            )
         self._ensure_memory("before VAE decode", event)
         self._prepare_vae_handoff(generation_model, event)
         images = self._decode_vae(samples)
@@ -1246,6 +1171,28 @@ class ComfyBaselineRuntime:
             * 255.0
         ).round().astype(np.uint8)
 
+        output_image = Image.fromarray(array)
+        upscale_summary: dict[str, Any] = {
+            "enabled": False,
+            "backend": "disabled",
+            "scale": 1,
+            "model": None,
+        }
+        if post_upscale:
+            self._release_gpu_for_post_upscale(event)
+            output_image, upscale_summary = self._post_upscale_image(
+                output_image,
+                scale=upscale_scale,
+                method=upscale_method,
+                model_path=upscale_model_path,
+                event=event,
+            )
+            if event is not None:
+                event(
+                    f"Post-upscale complete: {output_image.width}×{output_image.height}",
+                    {"post_upscale": upscale_summary},
+                )
+
         output_directory.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         output_path = output_directory / f"{filename_prefix}_{stamp}_seed-{seed}.png"
@@ -1255,27 +1202,30 @@ class ComfyBaselineRuntime:
         metadata.add_text("global_prompt", prompt)
         metadata.add_text("seed", str(seed))
         metadata.add_text("steps", str(steps))
-        metadata.add_text("size", f"{width}x{height}")
+        metadata.add_text("size", f"{output_image.width}x{output_image.height}")
+        metadata.add_text("base_size", f"{width}x{height}")
         metadata.add_text("filename_prefix", filename_prefix)
         regional_summary = self._regional_summary(
             regional_plan, bound_regional_plan, attention_override
         )
         metadata.add_text("regional_prompting", json.dumps(regional_summary))
-        metadata.add_text("regional_refinement", json.dumps(refinement_summary))
+        metadata.add_text("post_upscale", json.dumps(upscale_summary))
         metadata.add_text("loras", json.dumps(lora_reports))
         metadata.add_text("memory_policy", self.memory_policy_key)
         metadata.add_text("oom_recovered", str(oom_recovered).lower())
         metadata.add_text("cpu_vae", str(self.cpu_vae).lower())
-        Image.fromarray(array).save(output_path, pnginfo=metadata)
+        output_image.save(output_path, pnginfo=metadata)
         return {
             "image_path": str(output_path),
-            "width": width,
-            "height": height,
+            "width": output_image.width,
+            "height": output_image.height,
+            "base_width": width,
+            "base_height": height,
             "steps": steps,
             "seed": seed,
             "filename_prefix": filename_prefix,
             "regional_prompting": regional_summary,
-            "regional_refinement": refinement_summary,
+            "post_upscale": upscale_summary,
             "loras": lora_reports,
             "sampler": "euler",
             "scheduler": "simple",
