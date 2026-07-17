@@ -10,3 +10,5 @@ experiments/
 artifacts/
 *.log
 *.k2lab.json
+/outputs/*
+!/outputs/.gitkeep

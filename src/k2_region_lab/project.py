@@ -9,8 +9,8 @@ from k2_region_lab.regions import PixelBox, RegionDefinition
 
 
 PROJECT_SCHEMA = "k2-region-lab-project"
-PROJECT_VERSION = 6
-SUPPORTED_PROJECT_VERSIONS = {1, 2, 3, 4, 5, PROJECT_VERSION}
+PROJECT_VERSION = 7
+SUPPORTED_PROJECT_VERSIONS = {1, 2, 3, 4, 5, 6, PROJECT_VERSION}
 
 
 @dataclass(frozen=True, slots=True)

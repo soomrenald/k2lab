@@ -3,8 +3,23 @@ from __future__ import annotations
 from pathlib import Path
 
 
-def default_output_directory(data_directory: Path) -> Path:
-    return data_directory / "baseline_outputs"
+def project_workspace_directory() -> Path:
+    """Return the checkout that owns the desktop's prompt and output folders."""
+
+    source_checkout = Path(__file__).resolve().parents[2]
+    if (source_checkout / "pyproject.toml").is_file():
+        return source_checkout
+    if configured.is_dir():
+        return configured.resolve()
+    return Path.cwd().resolve()
+
+
+def default_prompt_directory() -> Path:
+    return project_workspace_directory() / "prompts"
+
+
+def default_output_directory(_data_directory: Path | None = None) -> Path:
+    return project_workspace_directory() / "outputs"
 
 
 def validate_filename_prefix(prefix: str) -> str:

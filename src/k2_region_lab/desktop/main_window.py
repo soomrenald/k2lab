@@ -11,6 +11,7 @@ from pathlib import Path
 from PySide6.QtCore import QRectF, Qt
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QApplication,
     QDockWidget,
     QCheckBox,
@@ -50,7 +51,11 @@ from k2_region_lab.memory import (
     memory_policy,
 )
 from k2_region_lab.model import ArtifactSet, discover_model_artifacts
-from k2_region_lab.output import default_output_directory, validate_filename_prefix
+from k2_region_lab.output import (
+    default_output_directory,
+    default_prompt_directory,
+    validate_filename_prefix,
+)
 from k2_region_lab.processes import find_owned_k2_workers, terminate_workers
 from k2_region_lab.project import ProjectState, SavedLora, load_project, save_project
 from k2_region_lab.regional_prompting import compile_regional_prompt_plan
@@ -93,6 +98,7 @@ class MainWindow(QMainWindow):
         self._worker_bootstrap_stage: str | None = None
         self._generation_completed = False
         self._prompt_preview_dialog: QDialog | None = None
+        self._project_directory = default_prompt_directory()
         self._output_directory = settings.output_directory or default_output_directory(
             settings.data_directory
         )
@@ -202,9 +208,19 @@ class MainWindow(QMainWindow):
         region_buttons.addWidget(delete)
         layout.addLayout(region_buttons)
 
-        layout.addWidget(QLabel("Regions (drag body; drag corner handles to resize)"))
+        layout.addWidget(
+            QLabel("Regions (front to back; drag rows to reorder)")
+        )
         self.region_list = QListWidget()
         self.region_list.setMinimumHeight(100)
+        self.region_list.setDragDropMode(
+            QAbstractItemView.DragDropMode.InternalMove
+        )
+        self.region_list.setDefaultDropAction(Qt.DropAction.MoveAction)
+        self.region_list.setToolTip(
+            "Topmost overlapping subject regions appear in front of lower regions"
+        )
+        self.region_list.model().rowsMoved.connect(self._region_order_changed)
         self.region_list.currentRowChanged.connect(self._selected_region_changed)
         layout.addWidget(self.region_list)
         layout.addWidget(QLabel("Selected region name"))
@@ -646,6 +662,7 @@ class MainWindow(QMainWindow):
             box=PixelBox(x0, y0, x1, y1),
         )
         self.regions.append(region)
+        self._normalize_region_priorities()
         list_item = QListWidgetItem(self._region_label(region))
         list_item.setData(Qt.ItemDataRole.UserRole, region_id)
         self.region_list.addItem(list_item)
@@ -654,6 +671,7 @@ class MainWindow(QMainWindow):
             QRectF(x0, y0, x1 - x0, y1 - y0),
             region.name,
         )
+        self._sync_canvas_region_stack()
         self.region_list.setCurrentItem(list_item)
         self._refresh_lora_scope()
         self.events.addItem(f"Created {region.name}")
@@ -678,6 +696,8 @@ class MainWindow(QMainWindow):
         if item is not None:
             self.region_list.takeItem(self.region_list.row(item))
         self.lora_library.drop_region(region_id)
+        self._normalize_region_priorities()
+        self._sync_canvas_region_stack()
         self._refresh_lora_scope()
         self.events.addItem(f"Deleted {region.name}")
 
@@ -698,6 +718,35 @@ class MainWindow(QMainWindow):
             if item.data(Qt.ItemDataRole.UserRole) == region_id:
                 return item
         return None
+
+    def _normalize_region_priorities(self) -> None:
+        count = len(self.regions)
+        self.regions = [
+            replace(region, priority=count - index)
+            for index, region in enumerate(self.regions)
+        ]
+
+    def _sync_canvas_region_stack(self) -> None:
+        self.canvas.set_region_stack_order(
+            tuple(region.region_id for region in self.regions)
+        )
+
+    def _region_order_changed(self, *_args) -> None:
+        by_id = {region.region_id: region for region in self.regions}
+        ordered_ids = [
+            str(self.region_list.item(row).data(Qt.ItemDataRole.UserRole))
+            for row in range(self.region_list.count())
+        ]
+        if set(ordered_ids) != set(by_id):
+            return
+        self.regions = [by_id[region_id] for region_id in ordered_ids]
+        self._normalize_region_priorities()
+        self._sync_canvas_region_stack()
+        self._refresh_lora_scope()
+        self._selected_region_changed(self.region_list.currentRow())
+        self.events.addItem(
+            "Region depth order updated (top row is frontmost)"
+        )
 
     def _selected_region_changed(self, row: int) -> None:
         selected = 0 <= row < len(self.regions)
@@ -1035,7 +1084,7 @@ class MainWindow(QMainWindow):
         selected, _ = QFileDialog.getOpenFileName(
             self,
             "Open K2 Region Lab project",
-            str(self._current_project_path.parent if self._current_project_path else Path.home()),
+            str(self._project_directory),
             "K2 Region Lab project (*.k2lab.json *.json)",
         )
         if selected:
@@ -1048,7 +1097,12 @@ class MainWindow(QMainWindow):
         self._save_project_to(self._current_project_path, show_error_dialog=True)
 
     def _save_project_as(self) -> None:
-        start = self._current_project_path or (Path.home() / "untitled.k2lab.json")
+        filename = (
+            self._current_project_path.name
+            if self._current_project_path
+            else "untitled.k2lab.json"
+        )
+        start = self._project_directory / filename
         selected, _ = QFileDialog.getSaveFileName(
             self,
             "Save K2 Region Lab project",
@@ -1087,6 +1141,14 @@ class MainWindow(QMainWindow):
         current_output = current.output_directory or default_output_directory(
             current.data_directory
         )
+        saved_output = runtime.get("output_directory")
+        legacy_output = data_directory / "baseline_outputs"
+        output_directory = (
+            current_output
+            if saved_output is None
+            or Path(saved_output).expanduser() == legacy_output
+            else Path(saved_output).expanduser()
+        )
         # A launch-time interpreter selection is an operator override. This lets
         # an old project run on a newer ROCm worker without first rewriting it.
         worker_python = (
@@ -1113,9 +1175,7 @@ class MainWindow(QMainWindow):
             ),
             cpu_vae=bool(runtime.get("cpu_vae", current.cpu_vae)),
             oom_recovery=bool(runtime.get("oom_recovery", current.oom_recovery)),
-            output_directory=Path(
-                runtime.get("output_directory", current_output)
-            ).expanduser(),
+            output_directory=output_directory,
             filename_prefix=validate_filename_prefix(
                 runtime.get("filename_prefix", current.filename_prefix)
             ),
@@ -1179,6 +1239,7 @@ class MainWindow(QMainWindow):
         self.canvas.clear_regions()
         self.region_list.clear()
         self.regions = list(state.regions)
+        self._normalize_region_priorities()
         self._region_number = max(
             (
                 int(match.group(1))
@@ -1197,6 +1258,7 @@ class MainWindow(QMainWindow):
                 QRectF(box.x0, box.y0, box.width, box.height),
                 region.name,
             )
+        self._sync_canvas_region_stack()
 
         self.lora_library = LoraLibrary()
         self.lora_list.clear()

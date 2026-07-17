@@ -281,6 +281,15 @@ class RegionCanvas(QGraphicsView):
     def set_region_name(self, region_id: str, name: str) -> None:
         self._items[region_id].set_label(name)
 
+    def set_region_stack_order(self, region_ids: tuple[str, ...]) -> None:
+        """Mirror the list's front-to-back order on the editable canvas overlays."""
+
+        count = len(region_ids)
+        for index, region_id in enumerate(region_ids):
+            item = self._items.get(region_id)
+            if item is not None:
+                item.setZValue(float(count - index))
+
     def select_region(self, region_id: str) -> None:
         item = self._items.get(region_id)
         if item is None:

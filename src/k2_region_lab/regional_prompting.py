@@ -8,7 +8,7 @@ from typing import Callable
 from k2_region_lab.regions import CanvasGeometry, PixelBox, RegionDefinition
 
 
-BACKEND = "krea-unified-spatial-attention-v3"
+BACKEND = "krea-unified-spatial-attention-v4"
 
 
 @dataclass(frozen=True, slots=True)
@@ -190,7 +190,9 @@ def compile_regional_prompt_plan(
         if not region.enabled or not region.prompt.strip():
             continue
         active.append((region, region.box.clipped(width, height)))
-    active.sort(key=lambda item: _scene_order(item[0], item[1], width, height))
+    # The project/list order is front-to-back. Priority keeps that ordering intact
+    # when definitions arrive through the worker payload.
+    active.sort(key=lambda item: -item[0].priority)
 
     roles = tuple(_effective_spatial_role(region, box, width) for region, box in active)
     raw_fields = tuple(
@@ -260,16 +262,6 @@ def compile_regional_prompt_plan(
         late_step_scale=float(late_step_scale),
         regions=tuple(compiled),
     )
-
-
-def _scene_order(
-    region: RegionDefinition, box: PixelBox, width: int, height: int
-) -> tuple[float, ...]:
-    scene_layer = 0.0 if box.width / width >= 0.70 else 1.0
-    center_y = (box.y0 + box.y1) / (2.0 * height)
-    center_x = (box.x0 + box.x1) / (2.0 * width)
-    area_fraction = box.width * box.height / (width * height)
-    return (scene_layer, -float(region.priority), center_y, center_x, -area_fraction)
 
 
 def _sentence(text: str) -> str:
@@ -410,7 +402,24 @@ def _relationship_clause(
                 )
     if equally_scaled:
         ordering += "; " + "; ".join(equally_scaled)
-    return f"{ordering}."
+    depth_relationships = []
+    for index, front in enumerate(subjects):
+        for behind in subjects[index + 1 :]:
+            overlap_width = max(
+                0.0, min(front.box.x1, behind.box.x1) - max(front.box.x0, behind.box.x0)
+            )
+            overlap_height = max(
+                0.0, min(front.box.y1, behind.box.y1) - max(front.box.y0, behind.box.y0)
+            )
+            if overlap_width > 0.0 and overlap_height > 0.0:
+                depth_relationships.append(
+                    f"{front.name} appears in front of {behind.name} where their "
+                    "target boxes overlap; both occupy the shared image area as "
+                    f"distinct subjects, with {behind.name} naturally and partially "
+                    f"occluded behind {front.name}"
+                )
+    relationships = [ordering, *depth_relationships]
+    return ". ".join(relationships) + "."
 
 
 def _soft_box_field(

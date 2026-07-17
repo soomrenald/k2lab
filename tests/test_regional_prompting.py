@@ -49,21 +49,13 @@ class RegionalPromptingTests(unittest.TestCase):
 
         self.assertTrue(plan.prompt.startswith(global_prompt))
         ordered_names = [region.name for region in plan.regions]
-        expected_scene_order = sorted(
-            regions,
-            key=lambda region: (
-                0 if region.box.width >= 0.70 * 1024 else 1,
-                (region.box.y0 + region.box.y1) / 2.0,
-                (region.box.x0 + region.box.x1) / 2.0,
-            ),
-        )
         subjects = sorted(
             (region for region in regions if region.box.width < 0.70 * 1024),
             key=lambda region: (region.box.x0 + region.box.x1) / 2.0,
         )
         self.assertEqual(
             ordered_names,
-            [region.name for region in expected_scene_order],
+            [region.name for region in regions],
         )
         self.assertIn("centered about 17% across and 64% down", plan.prompt)
         self.assertIn("visible subject itself should nearly fill its target box", plan.prompt)
@@ -81,11 +73,39 @@ class RegionalPromptingTests(unittest.TestCase):
         self.assertEqual(plan.backend, BACKEND)
         self.assertEqual(
             [region.spatial_role for region in plan.regions],
-            ["background", "background", "background", "subject", "subject", "subject"],
+            ["subject", "background", "subject", "background", "subject", "background"],
         )
         for region in plan.regions:
             start, end = region.character_span
             self.assertEqual(plan.prompt[start:end], region.clause)
+
+    def test_overlapping_subjects_follow_front_to_back_region_order(self) -> None:
+        front = RegionDefinition(
+            "person",
+            "sface",
+            PixelBox(20, 10, 80, 100),
+            "a standing person",
+            priority=2,
+            spatial_role="subject",
+        )
+        behind = RegionDefinition(
+            "dog",
+            "dog",
+            PixelBox(50, 65, 95, 105),
+            "a small brown dog",
+            priority=1,
+            spatial_role="subject",
+        )
+
+        plan = compile_regional_prompt_plan(128, 128, "outdoor scene", (front, behind))
+
+        self.assertEqual([region.name for region in plan.regions], ["sface", "dog"])
+        self.assertIn(
+            "sface appears in front of dog where their target boxes overlap",
+            plan.prompt,
+        )
+        self.assertIn("both occupy the shared image area as distinct subjects", plan.prompt)
+        self.assertIn("dog naturally and partially occluded behind sface", plan.prompt)
 
     def test_soft_field_has_full_box_core_and_smooth_outside_falloff(self) -> None:
         region = RegionDefinition(

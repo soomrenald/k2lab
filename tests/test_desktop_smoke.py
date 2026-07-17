@@ -14,9 +14,15 @@ PYSIDE_AVAILABLE = importlib.util.find_spec("PySide6") is not None
 
 if PYSIDE_AVAILABLE:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    from PySide6.QtCore import QRectF, Qt
+    from PySide6.QtCore import QModelIndex, QRectF, Qt
     from PySide6.QtGui import QColor, QPixmap
-    from PySide6.QtWidgets import QApplication, QDialog, QMessageBox, QTextEdit
+    from PySide6.QtWidgets import (
+        QApplication,
+        QDialog,
+        QFileDialog,
+        QMessageBox,
+        QTextEdit,
+    )
 
     from k2_region_lab.config import AppSettings, ModelDirectories
     from k2_region_lab.desktop.main_window import GLOBAL_SCOPE_ID, MainWindow
@@ -114,6 +120,74 @@ class DesktopSmokeTests(unittest.TestCase):
             prompt_views = preview.findChildren(QTextEdit)
             self.assertEqual(len(prompt_views), 1)
             self.assertIn("a detailed landscape", prompt_views[0].toPlainText())
+            window.close()
+
+    def test_region_rows_drag_reorders_depth_priority_and_canvas_stack(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            window = self.make_window(Path(directory))
+            window.canvas.region_created.emit("back", 20.0, 20.0, 200.0, 240.0)
+            window.canvas.region_created.emit("middle", 40.0, 40.0, 220.0, 260.0)
+            window.canvas.region_created.emit("front", 60.0, 60.0, 240.0, 280.0)
+
+            moved = window.region_list.model().moveRow(
+                QModelIndex(), 2, QModelIndex(), 0
+            )
+            self.application.processEvents()
+
+            self.assertTrue(moved)
+            self.assertEqual(
+                [region.region_id for region in window.regions],
+                ["front", "back", "middle"],
+            )
+            self.assertEqual([region.priority for region in window.regions], [3, 2, 1])
+            self.assertGreater(
+                window.canvas.region_item("front").zValue(),
+                window.canvas.region_item("back").zValue(),
+            )
+            self.assertEqual(
+                [region.region_id for region in window._project_state().regions],
+                ["front", "back", "middle"],
+            )
+            window.close()
+
+    def test_project_dialogs_start_in_repository_prompt_folder(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            window = self.make_window(Path(directory))
+            with patch.object(
+                QFileDialog, "getOpenFileName", return_value=("", "")
+            ) as open_dialog:
+                window._open_project()
+            self.assertEqual(
+                Path(open_dialog.call_args.args[2]), window._project_directory
+            )
+
+            with patch.object(
+                QFileDialog, "getSaveFileName", return_value=("", "")
+            ) as save_dialog:
+                window._save_project_as()
+            self.assertEqual(
+                Path(save_dialog.call_args.args[2]).parent,
+                window._project_directory,
+            )
+            window.close()
+
+    def test_legacy_default_output_folder_migrates_to_repository_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            window = self.make_window(root)
+            state = ProjectState(
+                1024,
+                1024,
+                runtime={
+                    "data_directory": str(root),
+                    "output_directory": str(root / "baseline_outputs"),
+                },
+            )
+
+            settings = window._settings_from_project(state)
+
+            self.assertEqual(settings.output_directory, window._output_directory)
+            self.assertEqual(settings.output_directory.name, "outputs")
             window.close()
 
     def test_lora_browser_model_defaults_global_and_allows_multiple_regions(self) -> None:
