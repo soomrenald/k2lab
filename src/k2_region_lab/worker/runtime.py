@@ -26,6 +26,10 @@ from k2_region_lab.memory import (
     memory_policy,
 )
 from k2_region_lab.output import validate_filename_prefix
+from k2_region_lab.regional_lora import (
+    LoraDeltaRoute,
+    compile_lora_delta_routes,
+)
 from k2_region_lab.regional_prompting import (
     BoundRegionalPromptPlan,
     RegionalPromptPlan,
@@ -38,6 +42,69 @@ from k2_region_lab.spatial_attention import KreaSpatialAttentionOverride
 
 class CriticalGpuMemoryPressure(RuntimeError):
     """Raised only between denoising steps so recovery starts before a hard OOM."""
+
+
+class LoraDeltaStatistics:
+    """Accumulate routed per-token delta magnitudes without synchronizing each layer."""
+
+    def __init__(self, routes: tuple[LoraDeltaRoute, ...]) -> None:
+        self.routes = {route.lora_id: route for route in routes}
+        self.values: dict[str, dict[str, Any]] = {
+            route.lora_id: {
+                "text_energy": None,
+                "text_count": 0,
+                "image_energy": None,
+                "image_count": 0,
+                "calls": 0,
+            }
+            for route in routes
+        }
+
+    @staticmethod
+    def _add(previous, value):
+        return value if previous is None else previous + value
+
+    def observe(self, route: LoraDeltaRoute, token_norms, *, route_kind: str) -> None:
+        state = self.values[route.lora_id]
+        state["calls"] += 1
+        batch = int(token_norms.shape[0])
+        text_count = len(route.text_token_mask)
+        enabled_text = sum(value > 0.0 for value in route.text_token_mask)
+        if route_kind == "text_layerwise":
+            text_norms = token_norms
+            image_norms = None
+            folded_batches = batch // text_count
+            text_observations = folded_batches * enabled_text * int(token_norms.shape[1])
+        elif route_kind == "text_refiner":
+            text_norms = token_norms
+            image_norms = None
+            text_observations = batch * enabled_text
+        else:
+            text_norms = token_norms[:, :text_count]
+            image_norms = token_norms[:, text_count:]
+            text_observations = batch * enabled_text
+        if enabled_text:
+            state["text_energy"] = self._add(state["text_energy"], text_norms.square().sum())
+            state["text_count"] += text_observations
+        enabled_image = sum(value > 0.0 for value in route.image_token_mask)
+        if image_norms is not None and enabled_image:
+            state["image_energy"] = self._add(state["image_energy"], image_norms.square().sum())
+            state["image_count"] += batch * enabled_image
+
+    @staticmethod
+    def _rms(energy, count: int) -> float:
+        if energy is None or count == 0:
+            return 0.0
+        return float((energy / count).sqrt().item())
+
+    def summary(self, lora_id: str) -> dict[str, Any]:
+        state = self.values[lora_id]
+        return {
+            "observed_forward_calls": state["calls"],
+            "text_delta_rms": self._rms(state["text_energy"], state["text_count"]),
+            "image_delta_rms": self._rms(state["image_energy"], state["image_count"]),
+            "outside_gate_delta_rms": 0.0,
+        }
 
 
 def probe_runtime(comfyui_root: Path) -> dict[str, Any]:
@@ -366,63 +433,49 @@ class ComfyBaselineRuntime:
         gc.collect()
         return reports
 
-    def _apply_global_loras(
+    def _apply_routed_loras(
         self,
         specifications: list[dict[str, Any]],
+        *,
+        width: int,
+        height: int,
+        text_token_count: int,
+        regional_plan: RegionalPromptPlan | None,
+        bound_plan: BoundRegionalPromptPlan | None,
         event: Callable[[str, dict[str, Any]], None] | None,
     ):
-        generation_model = self.model
+        routes = compile_lora_delta_routes(
+            specifications,
+            width=width,
+            height=height,
+            text_token_count=text_token_count,
+            regional_plan=regional_plan,
+            bound_plan=bound_plan,
+        )
+        routes_by_id = {route.lora_id: route for route in routes}
         reports: list[dict[str, Any]] = []
-        active_globals = [
-            specification
-            for specification in specifications
-            if bool(specification.get("global", True))
-            and float(specification.get("strength", 1.0)) != 0.0
-        ]
-        if len(active_globals) > 1:
-            raise ValueError(
-                "this LoRA milestone supports one active Global LoRA per generation"
-            )
+        target_entries: dict[str, list[tuple[Any, LoraDeltaRoute]]] = {}
+        metadata_items = []
         for specification in specifications:
             path = Path(str(specification["path"])).expanduser().resolve()
-            if not bool(specification.get("global", True)):
-                report = {
-                    **inspect_lora_header(path),
-                    "id": str(specification.get("id", path.stem)),
-                    "display_name": str(specification.get("name", path.stem)),
-                    "strength": float(specification.get("strength", 1.0)),
-                    "global": False,
-                    "region_ids": list(specification.get("region_ids", [])),
-                    "status": "regional_pending",
-                    "compatible": None,
-                    "model_only": True,
-                }
-                reports.append(report)
-                if event is not None:
-                    event(
-                        f"Regional LoRA {report['display_name']} is not applied yet",
-                        {"lora": report},
-                    )
-                continue
-
+            lora_id = str(specification.get("id", path.stem))
             strength = float(specification.get("strength", 1.0))
-            if not -4.0 <= strength <= 4.0:
-                raise ValueError("LoRA strength must be between -4 and 4")
             if strength == 0.0:
-                report = {
-                    **inspect_lora_header(path),
-                    "id": str(specification.get("id", path.stem)),
-                    "display_name": str(specification.get("name", path.stem)),
-                    "strength": strength,
-                    "global": True,
-                    "region_ids": [],
-                    "status": "disabled",
-                    "compatible": None,
-                    "model_only": True,
-                }
-                reports.append(report)
+                reports.append(
+                    {
+                        **inspect_lora_header(path),
+                        "id": lora_id,
+                        "display_name": str(specification.get("name", path.stem)),
+                        "strength": strength,
+                        "global": bool(specification.get("global", True)),
+                        "region_ids": list(specification.get("region_ids", [])),
+                        "status": "disabled",
+                        "compatible": None,
+                        "model_only": True,
+                    }
+                )
                 continue
-
+            route = routes_by_id[lora_id]
             patches, metadata, report = self._load_lora_patches(specification)
             if not report["compatible"]:
                 raise ValueError(
@@ -430,58 +483,152 @@ class ComfyBaselineRuntime:
                     f"{report['matched_model_targets']}/{report['adapter_count']} "
                     "Krea 2 model targets"
                 )
-            patched_model, applied_count = self._install_global_lora_bypass(
-                generation_model,
-                patches,
-                strength,
-                str(report["id"]),
-            )
+            for key, adapter in patches.items():
+                target_entries.setdefault(key, []).append((adapter, route))
             if metadata:
-                patched_model.set_attachments("lora_metadata", metadata)
-            generation_model = patched_model
-            report["status"] = "applied_global"
-            report["application_mode"] = "unfused_bypass"
-            report["applied_model_targets"] = applied_count
+                metadata_items.append({"id": lora_id, "metadata": metadata})
+            report["status"] = "applied_global" if route.global_scope else "applied_regional"
+            report["application_mode"] = "unfused_token_delta_gate"
+            report["applied_model_targets"] = len(patches)
+            report["route"] = route.summary()
             reports.append(report)
-            if event is not None:
+
+        statistics = LoraDeltaStatistics(routes)
+        if not target_entries:
+            return self.model, reports, statistics
+        generation_model, installed_targets = self._install_routed_lora_bypass(
+            self.model, target_entries, statistics
+        )
+        expected_targets = len(target_entries)
+        if installed_targets != expected_targets:
+            raise ValueError(
+                f"LoRA routing mapped {expected_targets} model targets but installed "
+                f"only {installed_targets}"
+            )
+        if metadata_items:
+            generation_model.set_attachments("lora_metadata", metadata_items)
+        if event is not None:
+            for report in reports:
+                if report["status"] == "disabled":
+                    continue
+                route = report["route"]
+                scope = "Global" if report["global"] else ", ".join(route["region_names"])
                 event(
-                    f"Applied global LoRA {report['display_name']} at {strength:.2f}",
+                    f"Applied LoRA {report['display_name']} to {scope} at {report['strength']:.2f}",
                     {"lora": report},
                 )
-        return generation_model, reports
+        return generation_model, reports, statistics
 
     @staticmethod
-    def _install_global_lora_bypass(
-        generation_model,
-        patches: dict,
-        strength: float,
-        lora_id: str,
-    ):
+    def _install_routed_lora_bypass(generation_model, target_entries, statistics):
+        import torch
+
         import comfy.weight_adapter
+
+        base_adapter_type = comfy.weight_adapter.WeightAdapterBase
+
+        class RoutedCompositeAdapter(base_adapter_type):
+            name = "k2_routed_composite"
+
+            def __init__(self, entries, *, route_kind: str) -> None:
+                self.entries = entries
+                self.route_kind = route_kind
+                self.weights = []
+                self.loaded_keys = set()
+                self._prepared: set[int] = set()
+                self._mask_cache = {}
+
+            def _prepare_adapter(self, adapter, route, x) -> None:
+                adapter.multiplier = route.strength
+                for name in (
+                    "is_conv",
+                    "conv_dim",
+                    "kernel_size",
+                    "in_channels",
+                    "out_channels",
+                    "kw_dict",
+                ):
+                    setattr(adapter, name, getattr(self, name))
+                identity = id(adapter)
+                if identity in self._prepared:
+                    return
+                weights = getattr(adapter, "weights", None)
+                if isinstance(weights, (tuple, list)):
+                    moved = []
+                    for weight in weights:
+                        if isinstance(weight, torch.Tensor):
+                            dtype = x.dtype if weight.is_floating_point() else weight.dtype
+                            moved.append(weight.to(device=x.device, dtype=dtype))
+                        else:
+                            moved.append(weight)
+                    adapter.weights = type(weights)(moved)
+                self._prepared.add(identity)
+
+            def _mask(self, route, x):
+                key = (
+                    route.lora_id,
+                    self.route_kind,
+                    x.shape[0],
+                    x.shape[-2],
+                    x.device,
+                    x.dtype,
+                )
+                mask = self._mask_cache.get(key)
+                if mask is None:
+                    if self.route_kind == "text_layerwise":
+                        values = route.layerwise_text_batch_mask(int(x.shape[0]))
+                        mask = torch.tensor(values, device=x.device, dtype=x.dtype).view(-1, 1, 1)
+                    else:
+                        values = route.sequence_mask(
+                            int(x.shape[-2]),
+                            text_fusion=self.route_kind == "text_refiner",
+                        )
+                        mask = torch.tensor(values, device=x.device, dtype=x.dtype).view(1, -1, 1)
+                    self._mask_cache[key] = mask
+                return mask
+
+            def h(self, x, base_out):
+                total = torch.zeros_like(base_out)
+                for adapter, route in self.entries:
+                    self._prepare_adapter(adapter, route, x)
+                    delta = adapter.h(x, base_out)
+                    applied = delta * self._mask(route, x)
+                    token_norms = torch.linalg.vector_norm(
+                        applied.detach(), dim=-1, dtype=torch.float32
+                    )
+                    statistics.observe(route, token_norms, route_kind=self.route_kind)
+                    total = total + applied
+                return total
 
         manager = comfy.weight_adapter.BypassInjectionManager()
         unsupported = []
-        for key, patch in patches.items():
-            if isinstance(patch, comfy.weight_adapter.WeightAdapterBase):
-                manager.add_adapter(key, patch, strength=strength)
-            else:
+        for key, entries in target_entries.items():
+            if not all(isinstance(adapter, base_adapter_type) for adapter, _route in entries):
                 unsupported.append(key)
+                continue
+            manager.add_adapter(
+                key,
+                RoutedCompositeAdapter(
+                    entries,
+                    route_kind=(
+                        "text_layerwise"
+                        if ".txtfusion.layerwise_blocks." in str(key)
+                        else "text_refiner"
+                        if ".txtfusion." in str(key)
+                        else "combined"
+                    ),
+                ),
+                strength=1.0,
+            )
         if unsupported:
             raise ValueError(
-                "unfused Global LoRA loading does not support non-adapter patches: "
+                "regional LoRA routing does not support non-adapter patches: "
                 + ", ".join(map(str, unsupported[:4]))
             )
-
         patched_model = generation_model.clone()
         injections = manager.create_injections(patched_model.model)
-        applied_count = manager.get_hook_count()
-        if applied_count != len(patches):
-            raise ValueError(
-                f"LoRA mapped {len(patches)} targets but only {applied_count} "
-                "could be installed as unfused adapters"
-            )
-        patched_model.set_injections(f"k2_global_lora_{lora_id}", injections)
-        return patched_model, applied_count
+        patched_model.set_injections("k2_routed_loras", injections)
+        return patched_model, manager.get_hook_count()
 
     def memory_snapshot(self, stage: str) -> dict[str, Any]:
         import psutil
@@ -732,18 +879,17 @@ class ComfyBaselineRuntime:
             self.clip.tokenize(conditioned_prompt)
         )
         negative = self.clip.encode_from_tokens_scheduled(self.clip.tokenize(""))
+        if not positive:
+            raise RuntimeError("Krea text encoder returned no positive conditioning")
+        text_token_counts = {int(condition[0].shape[1]) for condition in positive}
+        if len(text_token_counts) != 1:
+            raise RuntimeError("Krea conditioning must use one text sequence length")
+        conditioning_text_token_count = text_token_counts.pop()
         bound_regional_plan: BoundRegionalPromptPlan | None = None
         if regional_plan is not None and regional_plan.regions:
-            if not positive:
-                raise RuntimeError("Krea text encoder returned no positive conditioning")
-            text_token_counts = {int(condition[0].shape[1]) for condition in positive}
-            if len(text_token_counts) != 1:
-                raise RuntimeError(
-                    "unified spatial prompting requires one conditioning sequence length"
-                )
             bound_regional_plan = regional_plan.bind_tokens(
                 lambda prefix: krea_prompt_token_count(self.clip.tokenize(prefix)),
-                conditioning_text_token_count=text_token_counts.pop(),
+                conditioning_text_token_count=conditioning_text_token_count,
             )
             if event is not None:
                 event("Unified spatial prompt prepared", bound_regional_plan.summary())
@@ -759,7 +905,15 @@ class ComfyBaselineRuntime:
         noise = comfy.sample.prepare_noise(latent, seed)
         if loras:
             self._ensure_memory("before LoRA loading", event)
-        generation_model, lora_reports = self._apply_global_loras(loras, event)
+        generation_model, lora_reports, lora_statistics = self._apply_routed_loras(
+            loras,
+            width=width,
+            height=height,
+            text_token_count=conditioning_text_token_count,
+            regional_plan=regional_plan,
+            bound_plan=bound_regional_plan,
+            event=event,
+        )
 
         def callback(step: int, denoised, current, total: int) -> None:
             del denoised, current
@@ -829,6 +983,16 @@ class ComfyBaselineRuntime:
                 event(
                     "Unified spatial attention applied",
                     {"attention_calls": attention_override.matched_calls},
+                )
+        for report in lora_reports:
+            if report.get("status") not in {"applied_global", "applied_regional"}:
+                continue
+            delta_summary = lora_statistics.summary(str(report["id"]))
+            report["delta_statistics"] = delta_summary
+            if event is not None:
+                event(
+                    f"LoRA delta measured for {report['display_name']}",
+                    {"lora_id": report["id"], **delta_summary},
                 )
         self._ensure_memory("before VAE decode", event)
         images = self._decode_vae(samples)

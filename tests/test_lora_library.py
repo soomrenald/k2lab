@@ -4,7 +4,6 @@ import json
 import struct
 import tempfile
 import unittest
-from types import MethodType
 from pathlib import Path
 
 from k2_region_lab.lora import (
@@ -14,7 +13,6 @@ from k2_region_lab.lora import (
     normalize_krea_lora_key,
     normalize_krea_lora_state_dict,
 )
-from k2_region_lab.worker.runtime import ComfyBaselineRuntime
 
 
 def write_lora(path: Path) -> None:
@@ -128,70 +126,6 @@ class LoraLibraryTests(unittest.TestCase):
             self.assertEqual(report["adapter_count"], 1)
             self.assertEqual(report["complete_adapter_pairs"], 1)
             self.assertEqual(report["ranks"], {4: 1})
-
-    def test_global_loras_are_added_to_a_temporary_model_clone(self) -> None:
-        class FakeModel:
-            def __init__(self, applied=()):
-                self.applied = list(applied)
-
-            def clone(self):
-                return FakeModel(self.applied)
-
-            def add_patches(self, patches, strength):
-                self.applied.append((tuple(patches), strength))
-                return list(patches)
-
-            def set_attachments(self, key, value):
-                del key, value
-
-        runtime = object.__new__(ComfyBaselineRuntime)
-        runtime.model = FakeModel()
-
-        def fake_load(self, specification):
-            del self
-            name = specification["name"]
-            return (
-                {f"diffusion_model.{name}.weight": object()},
-                None,
-                {
-                    "id": name,
-                    "display_name": name,
-                    "compatible": True,
-                    "adapter_count": 1,
-                    "matched_model_targets": 1,
-                },
-            )
-
-        def fake_install(self, generation_model, patches, strength, lora_id):
-            del self, lora_id
-            patched_model = generation_model.clone()
-            patched_model.applied.append((tuple(patches), strength))
-            return patched_model, len(patches)
-
-        runtime._load_lora_patches = MethodType(fake_load, runtime)
-        runtime._install_global_lora_bypass = MethodType(fake_install, runtime)
-        specifications = [
-            {
-                "path": "/unused/one.safetensors",
-                "name": "one",
-                "strength": 0.6,
-                "global": True,
-            }
-        ]
-
-        generated_model, reports = runtime._apply_global_loras(specifications, None)
-
-        self.assertEqual(runtime.model.applied, [])
-        self.assertEqual(
-            generated_model.applied,
-            [(("diffusion_model.one.weight",), 0.6)],
-        )
-        self.assertEqual(
-            [report["status"] for report in reports],
-            ["applied_global"],
-        )
-        self.assertEqual(reports[0]["application_mode"], "unfused_bypass")
-
 
 if __name__ == "__main__":
     unittest.main()

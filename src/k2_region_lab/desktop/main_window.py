@@ -1453,8 +1453,9 @@ class MainWindow(QMainWindow):
                 )
                 report.setText(self.lora_status.text())
                 report.setInformativeText(
-                    "This milestone applies compatible Global LoRAs to the "
-                    "transformer. Regional scopes are diagnosed but not yet applied."
+                    "Compatible LoRAs can be routed globally or to one or more named "
+                    "regions. Regional routes gate both their prompt-token spans and "
+                    "their exact pixel-box image tokens."
                 )
                 report.setDetailedText(json.dumps(report_data, indent=2, sort_keys=True))
                 report.exec()

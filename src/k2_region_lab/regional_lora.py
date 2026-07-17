@@ -1,0 +1,156 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any
+
+from k2_region_lab.regional_prompting import (
+    BoundRegionalPromptPlan,
+    RegionalPromptPlan,
+)
+from k2_region_lab.regions import CanvasGeometry
+
+
+BACKEND = "krea-regional-lora-delta-gating-v1"
+
+
+@dataclass(frozen=True, slots=True)
+class LoraDeltaRoute:
+    lora_id: str
+    display_name: str
+    strength: float
+    global_scope: bool
+    region_ids: tuple[str, ...]
+    region_names: tuple[str, ...]
+    text_token_mask: tuple[float, ...]
+    image_token_mask: tuple[float, ...]
+    backend: str = BACKEND
+
+    def sequence_mask(self, sequence_length: int, *, text_fusion: bool) -> tuple[float, ...]:
+        text_count = len(self.text_token_mask)
+        image_count = len(self.image_token_mask)
+        if text_fusion and sequence_length == text_count:
+            return self.text_token_mask
+        if not text_fusion and sequence_length == text_count + image_count:
+            return self.text_token_mask + self.image_token_mask
+        raise ValueError(
+            f"LoRA route {self.display_name!r} expected "
+            f"{text_count} text or {text_count + image_count} combined tokens, "
+            f"received {sequence_length}"
+        )
+
+    def layerwise_text_batch_mask(self, batch_size: int) -> tuple[float, ...]:
+        text_count = len(self.text_token_mask)
+        if batch_size <= 0 or batch_size % text_count:
+            raise ValueError(
+                f"LoRA route {self.display_name!r} expected a folded text batch "
+                f"divisible by {text_count}, received {batch_size}"
+            )
+        return self.text_token_mask * (batch_size // text_count)
+
+    def summary(self) -> dict[str, Any]:
+        return {
+            "backend": self.backend,
+            "global": self.global_scope,
+            "region_ids": list(self.region_ids),
+            "region_names": list(self.region_names),
+            "text_tokens_enabled": sum(value > 0.0 for value in self.text_token_mask),
+            "image_tokens_enabled": sum(value > 0.0 for value in self.image_token_mask),
+            "image_mask_coverage": (
+                sum(self.image_token_mask) / len(self.image_token_mask)
+                if self.image_token_mask
+                else 0.0
+            ),
+        }
+
+
+def compile_lora_delta_routes(
+    specifications: list[dict[str, Any]],
+    *,
+    width: int,
+    height: int,
+    text_token_count: int,
+    regional_plan: RegionalPromptPlan | None,
+    bound_plan: BoundRegionalPromptPlan | None,
+) -> tuple[LoraDeltaRoute, ...]:
+    """Compile exact text/image token gates for every active LoRA.
+
+    Prompt attention may use soft falloff fields, but LoRA image masks are always
+    rasterized directly from the pixel boxes so their parameter deltas are zero
+    outside the assigned regions.
+    """
+
+    if text_token_count <= 0:
+        raise ValueError("LoRA routing requires a positive text token count")
+    geometry = CanvasGeometry.resolve(width, height)
+    all_text = (1.0,) * text_token_count
+    all_image = (1.0,) * geometry.image_lane_count
+    active_regions = {
+        region.region_id: region for region in (regional_plan.regions if regional_plan else ())
+    }
+    token_spans = {span.region_id: span for span in (bound_plan.spans if bound_plan else ())}
+
+    routes: list[LoraDeltaRoute] = []
+    for specification in specifications:
+        strength = float(specification.get("strength", 1.0))
+        if strength == 0.0:
+            continue
+        if not -4.0 <= strength <= 4.0:
+            raise ValueError("LoRA strength must be between -4 and 4")
+        lora_id = str(specification.get("id", specification.get("name", "LoRA")))
+        display_name = str(specification.get("name", lora_id))
+        global_scope = bool(specification.get("global", True))
+        region_ids = tuple(dict.fromkeys(map(str, specification.get("region_ids", ()))))
+        if global_scope:
+            routes.append(
+                LoraDeltaRoute(
+                    lora_id=lora_id,
+                    display_name=display_name,
+                    strength=strength,
+                    global_scope=True,
+                    region_ids=(),
+                    region_names=(),
+                    text_token_mask=all_text,
+                    image_token_mask=all_image,
+                )
+            )
+            continue
+        if not region_ids:
+            raise ValueError(f"regional LoRA {display_name!r} has no assigned regions")
+        missing = [
+            region_id
+            for region_id in region_ids
+            if region_id not in active_regions or region_id not in token_spans
+        ]
+        if missing:
+            raise ValueError(
+                f"regional LoRA {display_name!r} targets regions without active prompts: "
+                + ", ".join(missing)
+            )
+
+        text_mask = [0.0] * text_token_count
+        image_mask = [0.0] * geometry.image_lane_count
+        names = []
+        for region_id in region_ids:
+            region = active_regions[region_id]
+            span = token_spans[region_id]
+            names.append(region.name)
+            for index in range(span.start, span.end):
+                text_mask[index] = 1.0
+            strict_box_mask = geometry.rasterize_box(region.box)
+            image_mask = [
+                max(current, candidate)
+                for current, candidate in zip(image_mask, strict_box_mask, strict=True)
+            ]
+        routes.append(
+            LoraDeltaRoute(
+                lora_id=lora_id,
+                display_name=display_name,
+                strength=strength,
+                global_scope=False,
+                region_ids=region_ids,
+                region_names=tuple(names),
+                text_token_mask=tuple(text_mask),
+                image_token_mask=tuple(image_mask),
+            )
+        )
+    return tuple(routes)
