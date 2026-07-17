@@ -15,8 +15,8 @@ from k2_region_lab.regions import PixelBox, RegionDefinition
 
 
 PROJECT_SCHEMA = "k2-region-lab-project"
-PROJECT_VERSION = 8
-SUPPORTED_PROJECT_VERSIONS = {1, 2, 3, 4, 5, 6, 7, PROJECT_VERSION}
+PROJECT_VERSION = 9
+SUPPORTED_PROJECT_VERSIONS = {1, 2, 3, 4, 5, 6, 7, 8, PROJECT_VERSION}
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,6 +46,7 @@ class ProjectState:
     regional_subject_competition: bool = True
     regional_subject_fill: bool = True
     regional_relaxation: bool = True
+    regional_late_step_scale: float = 0.35
     projector_enabled: bool = False
     projector_preset: str = DEFAULT_PROJECTOR_PRESET
     projector_values: tuple[float, ...] = PROJECTOR_PRESETS[DEFAULT_PROJECTOR_PRESET]
@@ -74,6 +75,8 @@ class ProjectState:
             raise ValueError("regional outside penalty must be between 0 and 10")
         if not 0 <= self.regional_feather_pixels <= 2048:
             raise ValueError("spatial falloff must be between 0 and 2048 pixels")
+        if not 0.0 <= self.regional_late_step_scale <= 1.0:
+            raise ValueError("late-step spatial scale must be between 0 and 1")
         if self.projector_preset not in {
             *PROJECTOR_PRESETS,
             CUSTOM_PROJECTOR_PRESET,
@@ -132,6 +135,7 @@ def project_document(state: ProjectState) -> dict[str, Any]:
             "regional_subject_competition": state.regional_subject_competition,
             "regional_subject_fill": state.regional_subject_fill,
             "regional_relaxation": state.regional_relaxation,
+            "regional_late_step_scale": state.regional_late_step_scale,
             "projector_enabled": state.projector_enabled,
             "projector_preset": state.projector_preset,
             "projector_values": list(state.projector_values),
@@ -230,6 +234,9 @@ def project_state(document: dict[str, Any]) -> ProjectState:
         ),
         regional_subject_fill=bool(generation.get("regional_subject_fill", True)),
         regional_relaxation=bool(generation.get("regional_relaxation", True)),
+        regional_late_step_scale=float(
+            generation.get("regional_late_step_scale", 0.35)
+        ),
         projector_enabled=bool(generation.get("projector_enabled", False)),
         projector_preset=str(
             generation.get("projector_preset", DEFAULT_PROJECTOR_PRESET)

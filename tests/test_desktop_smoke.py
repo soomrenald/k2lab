@@ -310,6 +310,7 @@ class DesktopSmokeTests(unittest.TestCase):
             window.regional_subject_competition_input.setChecked(False)
             window.regional_subject_fill_input.setChecked(False)
             window.regional_relaxation_input.setChecked(False)
+            window.regional_late_step_scale_input.setValue(0.8)
             window.projector_enabled_input.setChecked(True)
             window.projector_preset_input.setCurrentIndex(
                 window.projector_preset_input.findData("filter_bypass3")
@@ -368,6 +369,7 @@ class DesktopSmokeTests(unittest.TestCase):
             )
             self.assertFalse(restored.regional_subject_fill_input.isChecked())
             self.assertFalse(restored.regional_relaxation_input.isChecked())
+            self.assertEqual(restored.regional_late_step_scale_input.value(), 0.8)
             self.assertTrue(restored.projector_enabled_input.isChecked())
             self.assertEqual(
                 restored.projector_preset_input.currentData(), "filter_bypass3"

@@ -410,9 +410,24 @@ class MainWindow(QMainWindow):
         )
         self.regional_relaxation_input.setChecked(True)
         self.regional_relaxation_input.setToolTip(
-            "Keep placement guidance strong early, then reduce it for final detail"
+            "Keep placement guidance strong early, then reduce it to the selected "
+            "scale for final detail"
         )
         layout.addRow(self.regional_relaxation_input)
+        self.regional_late_step_scale_input = QDoubleSpinBox()
+        self.regional_late_step_scale_input.setRange(0.0, 1.0)
+        self.regional_late_step_scale_input.setDecimals(2)
+        self.regional_late_step_scale_input.setSingleStep(0.05)
+        self.regional_late_step_scale_input.setValue(0.35)
+        self.regional_late_step_scale_input.setToolTip(
+            "Spatial-guidance multiplier reached at the final denoising step. "
+            "1.00 keeps full box guidance; lower values allow late refinement."
+        )
+        layout.addRow("Late-step spatial scale", self.regional_late_step_scale_input)
+        self.regional_relaxation_input.toggled.connect(
+            self._set_late_step_scale_enabled
+        )
+        self._set_late_step_scale_enabled(self.regional_relaxation_input.isChecked())
         self.post_upscale_input = QCheckBox("Post-upscale after releasing Krea VRAM")
         self.post_upscale_input.setToolTip(
             "Decode first, unload Krea/LoRAs/VAE from the GPU, then upscale the final image"
@@ -603,6 +618,9 @@ class MainWindow(QMainWindow):
         self.upscale_model_input.setEnabled(model_enabled)
         self.upscale_model_browse.setEnabled(model_enabled)
         self.upscale_model_clear.setEnabled(model_enabled and self._upscale_model_path is not None)
+
+    def _set_late_step_scale_enabled(self, enabled: bool) -> None:
+        self.regional_late_step_scale_input.setEnabled(enabled)
 
     def _memory_policy_changed(self) -> None:
         key = self.memory_policy_input.currentData()
@@ -1192,6 +1210,7 @@ class MainWindow(QMainWindow):
             ),
             regional_subject_fill=self.regional_subject_fill_input.isChecked(),
             regional_relaxation=self.regional_relaxation_input.isChecked(),
+            regional_late_step_scale=self.regional_late_step_scale_input.value(),
             projector_enabled=self.projector_enabled_input.isChecked(),
             projector_preset=str(self.projector_preset_input.currentData()),
             projector_values=self._projector_values(),
@@ -1339,6 +1358,7 @@ class MainWindow(QMainWindow):
         )
         self.regional_subject_fill_input.setChecked(state.regional_subject_fill)
         self.regional_relaxation_input.setChecked(state.regional_relaxation)
+        self.regional_late_step_scale_input.setValue(state.regional_late_step_scale)
         self._set_projector_controls(
             enabled=state.projector_enabled,
             preset=state.projector_preset,
@@ -1629,7 +1649,9 @@ class MainWindow(QMainWindow):
                 ),
                 "regional_subject_fill": self.regional_subject_fill_input.isChecked(),
                 "regional_late_step_scale": (
-                    0.35 if self.regional_relaxation_input.isChecked() else 1.0
+                    self.regional_late_step_scale_input.value()
+                    if self.regional_relaxation_input.isChecked()
+                    else 1.0
                 ),
                 "projector_enabled": self.projector_enabled_input.isChecked(),
                 "projector_preset": str(self.projector_preset_input.currentData()),
@@ -1683,7 +1705,9 @@ class MainWindow(QMainWindow):
             ),
             subject_fill=self.regional_subject_fill_input.isChecked(),
             late_step_scale=(
-                0.35 if self.regional_relaxation_input.isChecked() else 1.0
+                self.regional_late_step_scale_input.value()
+                if self.regional_relaxation_input.isChecked()
+                else 1.0
             ),
         )
         preview = QDialog(self)
