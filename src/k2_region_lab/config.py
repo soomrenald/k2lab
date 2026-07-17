@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from k2_region_lab.memory import memory_policy
+from k2_region_lab.output import default_output_directory, validate_filename_prefix
 
 
 def _configured_path(environment_name: str, default: str) -> Path:
@@ -56,15 +57,21 @@ class AppSettings:
     minimum_system_ram_gb: float = 14.0
     cpu_vae: bool = False
     oom_recovery: bool = True
+    output_directory: Path | None = None
+    filename_prefix: str = "baseline"
     default_width: int = 1024
     default_height: int = 1024
 
     @classmethod
     def from_environment(cls) -> "AppSettings":
         policy = memory_policy(os.environ.get("K2LAB_MEMORY_POLICY", "safe_16gb"))
+        data_directory = _configured_path(
+            "K2LAB_DATA_DIR", "~/.local/share/k2-region-lab"
+        )
+        configured_output = os.environ.get("K2LAB_OUTPUT_DIRECTORY")
         return cls(
             model_directories=ModelDirectories.from_environment(),
-            data_directory=_configured_path("K2LAB_DATA_DIR", "~/.local/share/k2-region-lab"),
+            data_directory=data_directory,
             worker_python=_configured_executable(
                 "K2LAB_WORKER_PYTHON", "~/ComfyUI/venv_rocm/bin/python"
             ),
@@ -84,4 +91,12 @@ class AppSettings:
                 "K2LAB_OOM_RECOVERY", "1" if policy.oom_recovery else "0"
             )
             not in {"0", "false", "False"},
+            output_directory=(
+                Path(configured_output).expanduser().resolve()
+                if configured_output
+                else default_output_directory(data_directory)
+            ),
+            filename_prefix=validate_filename_prefix(
+                os.environ.get("K2LAB_FILENAME_PREFIX", "baseline")
+            ),
         )

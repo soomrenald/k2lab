@@ -41,6 +41,7 @@ from k2_region_lab.memory import (
     memory_policy,
 )
 from k2_region_lab.model import ArtifactSet, discover_model_artifacts
+from k2_region_lab.output import default_output_directory, validate_filename_prefix
 from k2_region_lab.processes import find_owned_k2_workers, terminate_workers
 from k2_region_lab.project import ProjectState, SavedLora, load_project, save_project
 from k2_region_lab.regions import CanvasGeometry, PixelBox, RegionDefinition
@@ -48,6 +49,17 @@ from k2_region_lab.worker.protocol import CommandKind
 
 
 GLOBAL_SCOPE_ID = "__global__"
+
+
+class EventListWidget(QListWidget):
+    """Follow new events only while the user is already viewing the end."""
+
+    def addItem(self, item) -> None:
+        scrollbar = self.verticalScrollBar()
+        follow_latest = scrollbar.value() >= scrollbar.maximum()
+        super().addItem(item)
+        if follow_latest:
+            self.scrollToBottom()
 
 
 class MainWindow(QMainWindow):
@@ -63,6 +75,9 @@ class MainWindow(QMainWindow):
         self._models_compatible = False
         self._current_project_path: Path | None = None
         self._background_image_path: Path | None = None
+        self._output_directory = settings.output_directory or default_output_directory(
+            settings.data_directory
+        )
         self.setWindowTitle("K2 Region Lab")
         self.resize(1550, 950)
         self._build_file_menu()
@@ -243,6 +258,20 @@ class MainWindow(QMainWindow):
         self.seed_input.setValue(0)
         layout.addRow("Turbo steps", self.steps_input)
         layout.addRow("Seed", self.seed_input)
+        output_row = QWidget()
+        output_layout = QHBoxLayout(output_row)
+        output_layout.setContentsMargins(0, 0, 0, 0)
+        self.output_directory_input = QLineEdit(str(self._output_directory))
+        self.output_directory_input.setReadOnly(True)
+        output_browse = QPushButton("Browse…")
+        output_browse.clicked.connect(self._browse_output_directory)
+        output_layout.addWidget(self.output_directory_input)
+        output_layout.addWidget(output_browse)
+        layout.addRow("Output folder", output_row)
+        self.filename_prefix_input = QLineEdit(self.settings.filename_prefix)
+        self.filename_prefix_input.setPlaceholderText("baseline")
+        self.filename_prefix_input.editingFinished.connect(self._filename_prefix_edited)
+        layout.addRow("Filename prefix", self.filename_prefix_input)
         self.generate_button = QPushButton("Generate baseline")
         self.generate_button.setEnabled(False)
         self.generate_button.clicked.connect(self._generate_baseline)
@@ -299,9 +328,29 @@ class MainWindow(QMainWindow):
     def _build_event_dock(self) -> None:
         dock = QDockWidget("Events", self)
         dock.setAllowedAreas(Qt.DockWidgetArea.BottomDockWidgetArea)
-        self.events = QListWidget(dock)
+        self.events = EventListWidget(dock)
         dock.setWidget(self.events)
         self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, dock)
+
+    def _browse_output_directory(self) -> None:
+        selected = QFileDialog.getExistingDirectory(
+            self,
+            "Select generation output folder",
+            str(self._output_directory),
+        )
+        if selected:
+            self._output_directory = Path(selected).expanduser().resolve()
+            self.output_directory_input.setText(str(self._output_directory))
+            self.events.addItem(f"Output folder set to {self._output_directory}")
+
+    def _filename_prefix_edited(self) -> None:
+        try:
+            prefix = validate_filename_prefix(self.filename_prefix_input.text())
+        except ValueError as error:
+            self.filename_prefix_input.setText("baseline")
+            self.events.addItem(f"Invalid filename prefix: {error}; reset to baseline")
+            return
+        self.filename_prefix_input.setText(prefix)
 
     @staticmethod
     def _artifact_label(artifact) -> str:
@@ -601,6 +650,10 @@ class MainWindow(QMainWindow):
             "minimum_system_ram_gb": self.minimum_ram_input.value(),
             "cpu_vae": self.cpu_vae_input.isChecked(),
             "oom_recovery": self.oom_recovery_input.isChecked(),
+            "output_directory": str(self._output_directory),
+            "filename_prefix": validate_filename_prefix(
+                self.filename_prefix_input.text()
+            ),
         }
         saved_loras = tuple(
             SavedLora(
@@ -672,6 +725,12 @@ class MainWindow(QMainWindow):
         runtime = state.runtime or {}
         current = self.settings
         current_directories = current.model_directories
+        data_directory = Path(
+            runtime.get("data_directory", current.data_directory)
+        ).expanduser()
+        current_output = current.output_directory or default_output_directory(
+            current.data_directory
+        )
         # A launch-time interpreter selection is an operator override. This lets
         # an old project run on a newer ROCm worker without first rewriting it.
         worker_python = (
@@ -687,9 +746,7 @@ class MainWindow(QMainWindow):
                 Path(runtime.get("text_encoders", current_directories.text_encoders)).expanduser(),
                 Path(runtime.get("vae", current_directories.vae)).expanduser(),
             ),
-            data_directory=Path(
-                runtime.get("data_directory", current.data_directory)
-            ).expanduser(),
+            data_directory=data_directory,
             worker_python=worker_python,
             comfyui_root=Path(runtime.get("comfyui_root", current.comfyui_root)).expanduser(),
             auto_start_worker=current.auto_start_worker,
@@ -700,6 +757,12 @@ class MainWindow(QMainWindow):
             ),
             cpu_vae=bool(runtime.get("cpu_vae", current.cpu_vae)),
             oom_recovery=bool(runtime.get("oom_recovery", current.oom_recovery)),
+            output_directory=Path(
+                runtime.get("output_directory", current_output)
+            ).expanduser(),
+            filename_prefix=validate_filename_prefix(
+                runtime.get("filename_prefix", current.filename_prefix)
+            ),
             default_width=state.canvas_width,
             default_height=state.canvas_height,
         )
@@ -729,6 +792,12 @@ class MainWindow(QMainWindow):
         self.minimum_ram_input.setValue(self.settings.minimum_system_ram_gb)
         self.cpu_vae_input.setChecked(self.settings.cpu_vae)
         self.oom_recovery_input.setChecked(self.settings.oom_recovery)
+        self._output_directory = (
+            self.settings.output_directory
+            or default_output_directory(self.settings.data_directory)
+        )
+        self.output_directory_input.setText(str(self._output_directory))
+        self.filename_prefix_input.setText(self.settings.filename_prefix)
 
         self.canvas.clear_regions()
         self.region_list.clear()
@@ -895,6 +964,7 @@ class MainWindow(QMainWindow):
             self.worker_client.send(CommandKind.LOAD_MODEL, self._worker_payload())
 
     def _generate_baseline(self) -> None:
+        self._filename_prefix_edited()
         geometry = CanvasGeometry.resolve(self.width_input.value(), self.height_input.value())
         payload = self._worker_payload()
         payload.update(
@@ -904,7 +974,10 @@ class MainWindow(QMainWindow):
                 "height": geometry.aligned_height,
                 "steps": self.steps_input.value(),
                 "seed": self.seed_input.value(),
-                "output_directory": str(self.settings.data_directory / "baseline_outputs"),
+                "output_directory": str(self._output_directory),
+                "filename_prefix": validate_filename_prefix(
+                    self.filename_prefix_input.text()
+                ),
             }
         )
         self.generate_button.setEnabled(False)

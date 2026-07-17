@@ -3,7 +3,8 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import Mock
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 from k2_region_lab.memory import (
     MEMORY_POLICIES,
@@ -68,6 +69,32 @@ class MemoryPolicyTests(unittest.TestCase):
             [42, 42],
         )
         runtime._recover_from_oom.assert_called_once()
+
+    def test_vae_decode_stays_inside_torch_inference_mode(self) -> None:
+        active = False
+
+        class InferenceMode:
+            def __enter__(self):
+                nonlocal active
+                active = True
+
+            def __exit__(self, *_):
+                nonlocal active
+                active = False
+
+        def decode(samples):
+            self.assertTrue(active)
+            return samples
+
+        runtime = ComfyBaselineRuntime(Path("/unused"))
+        runtime.vae = SimpleNamespace(decode=decode)
+        fake_torch = SimpleNamespace(inference_mode=InferenceMode)
+
+        with patch.dict("sys.modules", {"torch": fake_torch}):
+            result = runtime._decode_vae("latent")
+
+        self.assertEqual(result, "latent")
+        self.assertFalse(active)
 
 
 if __name__ == "__main__":

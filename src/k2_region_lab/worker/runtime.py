@@ -19,6 +19,7 @@ from k2_region_lab.memory import (
     effective_reserve_vram_gb,
     memory_policy,
 )
+from k2_region_lab.output import validate_filename_prefix
 
 
 class CriticalGpuMemoryPressure(RuntimeError):
@@ -424,6 +425,7 @@ class ComfyBaselineRuntime:
         steps: int,
         seed: int,
         output_directory: Path,
+        filename_prefix: str = "baseline",
         progress: Callable[[int, int, dict[str, Any]], None] | None = None,
         event: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
@@ -433,6 +435,7 @@ class ComfyBaselineRuntime:
             raise ValueError("baseline dimensions must be positive multiples of 16")
         if not 1 <= steps <= 100:
             raise ValueError("steps must be between 1 and 100")
+        filename_prefix = validate_filename_prefix(filename_prefix)
 
         oom_message: str | None = None
         try:
@@ -443,6 +446,7 @@ class ComfyBaselineRuntime:
                 steps=steps,
                 seed=seed,
                 output_directory=output_directory,
+                filename_prefix=filename_prefix,
                 progress=progress,
                 event=event,
                 oom_recovered=False,
@@ -471,6 +475,7 @@ class ComfyBaselineRuntime:
             steps=steps,
             seed=seed,
             output_directory=output_directory,
+            filename_prefix=filename_prefix,
             progress=progress,
             event=event,
             oom_recovered=True,
@@ -485,6 +490,7 @@ class ComfyBaselineRuntime:
         steps: int,
         seed: int,
         output_directory: Path,
+        filename_prefix: str,
         progress: Callable[[int, int, dict[str, Any]], None] | None,
         event: Callable[[str, dict[str, Any]], None] | None,
         oom_recovered: bool,
@@ -542,7 +548,7 @@ class ComfyBaselineRuntime:
             seed=seed,
         )
         self._ensure_memory("before VAE decode", event)
-        images = self.vae.decode(samples)
+        images = self._decode_vae(samples)
         image_tensor = images[0]
         while image_tensor.ndim > 3 and image_tensor.shape[0] == 1:
             image_tensor = image_tensor[0]
@@ -558,13 +564,14 @@ class ComfyBaselineRuntime:
 
         output_directory.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-        output_path = output_directory / f"baseline_{stamp}_seed-{seed}.png"
+        output_path = output_directory / f"{filename_prefix}_{stamp}_seed-{seed}.png"
         metadata = PngImagePlugin.PngInfo()
         metadata.add_text("k2lab_mode", "krea2_turbo_baseline")
         metadata.add_text("prompt", prompt)
         metadata.add_text("seed", str(seed))
         metadata.add_text("steps", str(steps))
         metadata.add_text("size", f"{width}x{height}")
+        metadata.add_text("filename_prefix", filename_prefix)
         metadata.add_text("memory_policy", self.memory_policy_key)
         metadata.add_text("oom_recovered", str(oom_recovered).lower())
         metadata.add_text("cpu_vae", str(self.cpu_vae).lower())
@@ -575,6 +582,7 @@ class ComfyBaselineRuntime:
             "height": height,
             "steps": steps,
             "seed": seed,
+            "filename_prefix": filename_prefix,
             "sampler": "euler",
             "scheduler": "simple",
             "cfg": 1.0,
@@ -584,3 +592,12 @@ class ComfyBaselineRuntime:
             "oom_recovered": oom_recovered,
             "memory": self.memory_snapshot("generation complete"),
         }
+
+    def _decode_vae(self, samples):
+        import torch
+
+        # ComfyUI's tiled fallback normalizes with in-place tensor operations.
+        # PyTorch 2.10 requires those operations to remain inside inference mode
+        # when the tiled accumulator was created as an inference tensor.
+        with torch.inference_mode():
+            return self.vae.decode(samples)

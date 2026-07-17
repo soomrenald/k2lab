@@ -158,6 +158,7 @@ def main() -> int:
                     steps=int(payload.get("steps", 8)),
                     seed=int(payload.get("seed", 0)),
                     output_directory=Path(payload["output_directory"]),
+                    filename_prefix=str(payload.get("filename_prefix", "baseline")),
                     progress=progress,
                     event=runtime_event,
                 )

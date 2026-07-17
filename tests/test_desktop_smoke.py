@@ -174,6 +174,10 @@ class DesktopSmokeTests(unittest.TestCase):
             window.reserve_vram_input.setValue(3.5)
             window.minimum_ram_input.setValue(13.0)
             window.cpu_vae_input.setChecked(True)
+            output_directory = root / "custom renders"
+            window._output_directory = output_directory
+            window.output_directory_input.setText(str(output_directory))
+            window.filename_prefix_input.setText("beach-study")
             window.canvas.region_created.emit("subject", 32.0, 48.0, 320.0, 480.0)
             window.region_name.setText("Main subject")
             window._region_name_edited()
@@ -195,6 +199,8 @@ class DesktopSmokeTests(unittest.TestCase):
             self.assertEqual(restored.reserve_vram_input.value(), 3.5)
             self.assertEqual(restored.minimum_ram_input.value(), 13.0)
             self.assertTrue(restored.cpu_vae_input.isChecked())
+            self.assertEqual(restored._output_directory, output_directory)
+            self.assertEqual(restored.filename_prefix_input.text(), "beach-study")
             self.assertEqual(restored.regions[0].name, "Main subject")
             self.assertEqual(restored.regions[0].prompt, "a person by the water")
             self.assertEqual(restored.lora_list.count(), 1)
@@ -341,6 +347,8 @@ class DesktopSmokeTests(unittest.TestCase):
             window.height_input.setValue(517)
             window.steps_input.setValue(8)
             window.seed_input.setValue(1234)
+            window._output_directory = root / "renders"
+            window.filename_prefix_input.setText("teapot-test")
             window.worker_client.send = Mock()
 
             window._generate_baseline()
@@ -351,6 +359,8 @@ class DesktopSmokeTests(unittest.TestCase):
             self.assertEqual(payload["height"] % 16, 0)
             self.assertEqual(payload["steps"], 8)
             self.assertEqual(payload["seed"], 1234)
+            self.assertEqual(payload["output_directory"], str(root / "renders"))
+            self.assertEqual(payload["filename_prefix"], "teapot-test")
 
             image_path = root / "baseline.png"
             pixmap = QPixmap(32, 32)
@@ -366,6 +376,29 @@ class DesktopSmokeTests(unittest.TestCase):
             self.assertIsNotNone(window.canvas._image_item)
             self.assertEqual(window.canvas._image_item.zValue(), -100.0)
             self.assertTrue(window.generate_button.isEnabled())
+            window.close()
+
+    def test_event_view_follows_only_when_already_at_latest_event(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            window = self.make_window(Path(directory))
+            window.show()
+            window.events.setMinimumHeight(80)
+            for index in range(100):
+                window.events.addItem(f"Event {index}")
+            self.application.processEvents()
+
+            scrollbar = window.events.verticalScrollBar()
+            window.events.scrollToBottom()
+            self.application.processEvents()
+            window.events.addItem("Followed event")
+            self.application.processEvents()
+            self.assertEqual(scrollbar.value(), scrollbar.maximum())
+
+            scrollbar.setValue(max(scrollbar.minimum(), scrollbar.maximum() - 20))
+            previous_position = scrollbar.value()
+            window.events.addItem("Background event")
+            self.application.processEvents()
+            self.assertEqual(scrollbar.value(), previous_position)
             window.close()
 
 

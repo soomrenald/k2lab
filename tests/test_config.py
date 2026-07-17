@@ -43,6 +43,22 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(settings.worker_python, worker_python)
             self.assertNotEqual(settings.worker_python, system_python)
 
+    def test_output_environment_settings_are_resolved(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "renders"
+            with patch.dict(
+                os.environ,
+                {
+                    "K2LAB_OUTPUT_DIRECTORY": str(output),
+                    "K2LAB_FILENAME_PREFIX": "beach study",
+                },
+                clear=False,
+            ):
+                settings = AppSettings.from_environment()
+
+            self.assertEqual(settings.output_directory, output.resolve())
+            self.assertEqual(settings.filename_prefix, "beach study")
+
 
 if __name__ == "__main__":
     unittest.main()
