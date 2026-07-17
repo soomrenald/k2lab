@@ -91,9 +91,10 @@ class DesktopSmokeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             window = self.make_window(Path(directory))
 
-            self.assertEqual(window.settings_tabs.count(), 2)
+            self.assertEqual(window.settings_tabs.count(), 3)
             self.assertEqual(window.settings_tabs.tabText(0), "Model & memory")
             self.assertEqual(window.settings_tabs.tabText(1), "Generation & spatial")
+            self.assertEqual(window.settings_tabs.tabText(2), "Projector")
             runtime_page = window.settings_tabs.widget(0)
             generation_page = window.settings_tabs.widget(1)
             self.assertFalse(runtime_page.isHidden())
@@ -102,6 +103,25 @@ class DesktopSmokeTests(unittest.TestCase):
             window.settings_tabs.setCurrentIndex(1)
             self.assertTrue(runtime_page.isHidden())
             self.assertFalse(generation_page.isHidden())
+            window.close()
+
+    def test_projector_preset_autofills_twelve_vectors_and_marks_custom_edits(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            window = self.make_window(Path(directory))
+            window.projector_preset_input.setCurrentIndex(
+                window.projector_preset_input.findData("filter_bypass3")
+            )
+
+            self.assertEqual(len(window.projector_vector_inputs), 12)
+            self.assertEqual(window.projector_vector_inputs[8].value(), -0.5117)
+            self.assertEqual(window.projector_vector_inputs[9].value(), -0.8906)
+            self.assertEqual(window.projector_vector_inputs[10].value(), -0.6094)
+            self.assertEqual(window.projector_vector_inputs[11].value(), 0.0)
+
+            window.projector_vector_inputs[0].setValue(1.25)
+            self.assertEqual(
+                window.projector_preset_input.currentData(), "custom"
+            )
             window.close()
 
     def test_unified_prompt_preview_is_resizable_and_contains_prompt(self) -> None:
@@ -290,6 +310,11 @@ class DesktopSmokeTests(unittest.TestCase):
             window.regional_subject_competition_input.setChecked(False)
             window.regional_subject_fill_input.setChecked(False)
             window.regional_relaxation_input.setChecked(False)
+            window.projector_enabled_input.setChecked(True)
+            window.projector_preset_input.setCurrentIndex(
+                window.projector_preset_input.findData("filter_bypass3")
+            )
+            window.projector_multiplier_input.setValue(3.5)
             upscale_path = root / "4x-upscaler.pth"
             upscale_path.write_bytes(b"test upscaler placeholder")
             window.post_upscale_input.setChecked(True)
@@ -343,6 +368,12 @@ class DesktopSmokeTests(unittest.TestCase):
             )
             self.assertFalse(restored.regional_subject_fill_input.isChecked())
             self.assertFalse(restored.regional_relaxation_input.isChecked())
+            self.assertTrue(restored.projector_enabled_input.isChecked())
+            self.assertEqual(
+                restored.projector_preset_input.currentData(), "filter_bypass3"
+            )
+            self.assertEqual(restored.projector_vector_inputs[10].value(), -0.6094)
+            self.assertEqual(restored.projector_multiplier_input.value(), 3.5)
             self.assertTrue(restored.post_upscale_input.isChecked())
             self.assertEqual(restored.upscale_scale_input.currentData(), 4)
             self.assertEqual(restored.upscale_method_input.currentData(), "model")
@@ -542,6 +573,10 @@ class DesktopSmokeTests(unittest.TestCase):
             self.assertTrue(payload["regional_subject_competition"])
             self.assertTrue(payload["regional_subject_fill"])
             self.assertEqual(payload["regional_late_step_scale"], 0.35)
+            self.assertFalse(payload["projector_enabled"])
+            self.assertEqual(payload["projector_preset"], "filter_bypass2")
+            self.assertEqual(len(payload["projector_values"]), 12)
+            self.assertEqual(payload["projector_multiplier"], 1.0)
             self.assertFalse(payload["post_upscale"])
             self.assertEqual(payload["upscale_scale"], 2)
             self.assertEqual(payload["upscale_method"], "lanczos")

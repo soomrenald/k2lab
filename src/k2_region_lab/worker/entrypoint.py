@@ -205,6 +205,12 @@ def main() -> int:
                     regional_late_step_scale=float(
                         payload.get("regional_late_step_scale", 0.35)
                     ),
+                    projector_enabled=bool(payload.get("projector_enabled", False)),
+                    projector_preset=str(
+                        payload.get("projector_preset", "filter_bypass2")
+                    ),
+                    projector_values=tuple(payload.get("projector_values", ())),
+                    projector_multiplier=float(payload.get("projector_multiplier", 1.0)),
                     post_upscale=bool(payload.get("post_upscale", False)),
                     upscale_scale=int(payload.get("upscale_scale", 2)),
                     upscale_method=str(payload.get("upscale_method", "lanczos")),

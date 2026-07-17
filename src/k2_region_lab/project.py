@@ -5,12 +5,18 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from k2_region_lab.projector import (
+    CUSTOM_PROJECTOR_PRESET,
+    DEFAULT_PROJECTOR_PRESET,
+    PROJECTOR_PRESETS,
+    validate_projector_values,
+)
 from k2_region_lab.regions import PixelBox, RegionDefinition
 
 
 PROJECT_SCHEMA = "k2-region-lab-project"
-PROJECT_VERSION = 7
-SUPPORTED_PROJECT_VERSIONS = {1, 2, 3, 4, 5, 6, PROJECT_VERSION}
+PROJECT_VERSION = 8
+SUPPORTED_PROJECT_VERSIONS = {1, 2, 3, 4, 5, 6, 7, PROJECT_VERSION}
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,6 +46,10 @@ class ProjectState:
     regional_subject_competition: bool = True
     regional_subject_fill: bool = True
     regional_relaxation: bool = True
+    projector_enabled: bool = False
+    projector_preset: str = DEFAULT_PROJECTOR_PRESET
+    projector_values: tuple[float, ...] = PROJECTOR_PRESETS[DEFAULT_PROJECTOR_PRESET]
+    projector_multiplier: float = 1.0
     post_upscale: bool = False
     upscale_scale: int = 2
     upscale_method: str = "lanczos"
@@ -64,6 +74,14 @@ class ProjectState:
             raise ValueError("regional outside penalty must be between 0 and 10")
         if not 0 <= self.regional_feather_pixels <= 2048:
             raise ValueError("spatial falloff must be between 0 and 2048 pixels")
+        if self.projector_preset not in {
+            *PROJECTOR_PRESETS,
+            CUSTOM_PROJECTOR_PRESET,
+        }:
+            raise ValueError(f"unsupported projector preset: {self.projector_preset!r}")
+        validate_projector_values(self.projector_values)
+        if not -20.0 <= self.projector_multiplier <= 20.0:
+            raise ValueError("projector multiplier must be between -20 and 20")
         if self.upscale_scale not in {2, 4}:
             raise ValueError("post-upscale scale must be 2 or 4")
         if self.upscale_method not in {"lanczos", "model"}:
@@ -114,6 +132,10 @@ def project_document(state: ProjectState) -> dict[str, Any]:
             "regional_subject_competition": state.regional_subject_competition,
             "regional_subject_fill": state.regional_subject_fill,
             "regional_relaxation": state.regional_relaxation,
+            "projector_enabled": state.projector_enabled,
+            "projector_preset": state.projector_preset,
+            "projector_values": list(state.projector_values),
+            "projector_multiplier": state.projector_multiplier,
             "post_upscale": state.post_upscale,
             "upscale_scale": state.upscale_scale,
             "upscale_method": state.upscale_method,
@@ -208,6 +230,17 @@ def project_state(document: dict[str, Any]) -> ProjectState:
         ),
         regional_subject_fill=bool(generation.get("regional_subject_fill", True)),
         regional_relaxation=bool(generation.get("regional_relaxation", True)),
+        projector_enabled=bool(generation.get("projector_enabled", False)),
+        projector_preset=str(
+            generation.get("projector_preset", DEFAULT_PROJECTOR_PRESET)
+        ),
+        projector_values=validate_projector_values(
+            generation.get(
+                "projector_values",
+                PROJECTOR_PRESETS[DEFAULT_PROJECTOR_PRESET],
+            )
+        ),
+        projector_multiplier=float(generation.get("projector_multiplier", 1.0)),
         post_upscale=bool(generation.get("post_upscale", False)),
         upscale_scale=int(generation.get("upscale_scale", 2)),
         upscale_method=str(generation.get("upscale_method", "lanczos")),

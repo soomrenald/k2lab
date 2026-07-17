@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -58,6 +59,12 @@ from k2_region_lab.output import (
 )
 from k2_region_lab.processes import find_owned_k2_workers, terminate_workers
 from k2_region_lab.project import ProjectState, SavedLora, load_project, save_project
+from k2_region_lab.projector import (
+    CUSTOM_PROJECTOR_PRESET,
+    DEFAULT_PROJECTOR_PRESET,
+    PROJECTOR_PRESETS,
+    PROJECTOR_PRESET_LABELS,
+)
 from k2_region_lab.regional_prompting import compile_regional_prompt_plan
 from k2_region_lab.regions import CanvasGeometry, PixelBox, RegionDefinition
 from k2_region_lab.worker.protocol import CommandKind
@@ -88,6 +95,7 @@ class MainWindow(QMainWindow):
         self._loading_region_form = False
         self._syncing_lora_scope = False
         self._syncing_lora_strength = False
+        self._syncing_projector_fields = False
         self._models_compatible = False
         self._model_loaded = False
         self._current_project_path: Path | None = None
@@ -469,9 +477,123 @@ class MainWindow(QMainWindow):
         generation_button_layout.addWidget(self.generate_button)
         generation_button_layout.addWidget(self.stop_generation_button)
         layout.addRow(generation_buttons)
+        self._build_projector_tab()
         dock.setWidget(body)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
         self.model_dock = dock
+
+    def _build_projector_tab(self) -> None:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        explanation = QLabel(
+            "Applies one global txtfusion.projector vector before regional LoRA "
+            "routing. It cannot be safely localized to a pixel box."
+        )
+        explanation.setWordWrap(True)
+        layout.addWidget(explanation)
+        self.projector_enabled_input = QCheckBox("Apply global projector vector")
+        self.projector_enabled_input.setChecked(False)
+        self.projector_enabled_input.setToolTip(
+            "Affects all text and image tokens; regional LoRA routing remains unchanged"
+        )
+        layout.addWidget(self.projector_enabled_input)
+        form = QFormLayout()
+        self.projector_preset_input = QComboBox()
+        for preset in PROJECTOR_PRESETS:
+            self.projector_preset_input.addItem(PROJECTOR_PRESET_LABELS[preset], preset)
+        self.projector_preset_input.addItem(
+            PROJECTOR_PRESET_LABELS[CUSTOM_PROJECTOR_PRESET],
+            CUSTOM_PROJECTOR_PRESET,
+        )
+        form.addRow("Preset", self.projector_preset_input)
+        vector_grid = QWidget()
+        grid = QGridLayout(vector_grid)
+        grid.setContentsMargins(0, 0, 0, 0)
+        self.projector_vector_inputs: list[QDoubleSpinBox] = []
+        default_values = PROJECTOR_PRESETS[DEFAULT_PROJECTOR_PRESET]
+        for index, value in enumerate(default_values):
+            row = (index % 4) * 2
+            column = (index // 4) * 2
+            label = QLabel(f"Vector {index + 1}")
+            field = QDoubleSpinBox()
+            field.setRange(-1000.0, 1000.0)
+            field.setDecimals(4)
+            field.setSingleStep(0.0001)
+            field.setValue(value)
+            field.valueChanged.connect(self._projector_value_edited)
+            self.projector_vector_inputs.append(field)
+            grid.addWidget(label, row, column)
+            grid.addWidget(field, row + 1, column)
+        form.addRow("Vector values", vector_grid)
+        self.projector_multiplier_input = QDoubleSpinBox()
+        self.projector_multiplier_input.setRange(-20.0, 20.0)
+        self.projector_multiplier_input.setDecimals(4)
+        self.projector_multiplier_input.setSingleStep(0.1)
+        self.projector_multiplier_input.setValue(1.0)
+        self.projector_multiplier_input.setToolTip(
+            "Multiplies every vector value before it is added to the projector weight"
+        )
+        form.addRow("Global multiplier", self.projector_multiplier_input)
+        layout.addLayout(form)
+        layout.addStretch(1)
+        self.projector_preset_input.currentIndexChanged.connect(
+            self._projector_preset_changed
+        )
+        self.settings_tabs.addTab(self._scrollable(page), "Projector")
+
+    def _projector_values(self) -> tuple[float, ...]:
+        return tuple(field.value() for field in self.projector_vector_inputs)
+
+    def _projector_preset_changed(self, *_args) -> None:
+        if self._syncing_projector_fields:
+            return
+        preset = str(self.projector_preset_input.currentData())
+        if preset == CUSTOM_PROJECTOR_PRESET:
+            return
+        self._syncing_projector_fields = True
+        try:
+            for field, value in zip(
+                self.projector_vector_inputs,
+                PROJECTOR_PRESETS[preset],
+                strict=True,
+            ):
+                field.setValue(value)
+        finally:
+            self._syncing_projector_fields = False
+
+    def _projector_value_edited(self, *_args) -> None:
+        if self._syncing_projector_fields:
+            return
+        custom_index = self.projector_preset_input.findData(CUSTOM_PROJECTOR_PRESET)
+        if custom_index >= 0:
+            self._syncing_projector_fields = True
+            try:
+                self.projector_preset_input.setCurrentIndex(custom_index)
+            finally:
+                self._syncing_projector_fields = False
+
+    def _set_projector_controls(
+        self,
+        *,
+        enabled: bool,
+        preset: str,
+        values: tuple[float, ...],
+        multiplier: float,
+    ) -> None:
+        self._syncing_projector_fields = True
+        try:
+            self.projector_enabled_input.setChecked(enabled)
+            for field, value in zip(self.projector_vector_inputs, values, strict=True):
+                field.setValue(value)
+            preset_index = self.projector_preset_input.findData(preset)
+            if preset_index < 0:
+                preset_index = self.projector_preset_input.findData(
+                    CUSTOM_PROJECTOR_PRESET
+                )
+            self.projector_preset_input.setCurrentIndex(preset_index)
+            self.projector_multiplier_input.setValue(multiplier)
+        finally:
+            self._syncing_projector_fields = False
 
     def _set_upscale_controls_enabled(self, _value=None) -> None:
         enabled = self.post_upscale_input.isChecked()
@@ -1070,6 +1192,10 @@ class MainWindow(QMainWindow):
             ),
             regional_subject_fill=self.regional_subject_fill_input.isChecked(),
             regional_relaxation=self.regional_relaxation_input.isChecked(),
+            projector_enabled=self.projector_enabled_input.isChecked(),
+            projector_preset=str(self.projector_preset_input.currentData()),
+            projector_values=self._projector_values(),
+            projector_multiplier=self.projector_multiplier_input.value(),
             post_upscale=self.post_upscale_input.isChecked(),
             upscale_scale=int(self.upscale_scale_input.currentData()),
             upscale_method=str(self.upscale_method_input.currentData()),
@@ -1213,6 +1339,12 @@ class MainWindow(QMainWindow):
         )
         self.regional_subject_fill_input.setChecked(state.regional_subject_fill)
         self.regional_relaxation_input.setChecked(state.regional_relaxation)
+        self._set_projector_controls(
+            enabled=state.projector_enabled,
+            preset=state.projector_preset,
+            values=state.projector_values,
+            multiplier=state.projector_multiplier,
+        )
         self.post_upscale_input.setChecked(state.post_upscale)
         scale_index = self.upscale_scale_input.findData(state.upscale_scale)
         self.upscale_scale_input.setCurrentIndex(max(0, scale_index))
@@ -1499,6 +1631,10 @@ class MainWindow(QMainWindow):
                 "regional_late_step_scale": (
                     0.35 if self.regional_relaxation_input.isChecked() else 1.0
                 ),
+                "projector_enabled": self.projector_enabled_input.isChecked(),
+                "projector_preset": str(self.projector_preset_input.currentData()),
+                "projector_values": list(self._projector_values()),
+                "projector_multiplier": self.projector_multiplier_input.value(),
                 "post_upscale": self.post_upscale_input.isChecked(),
                 "upscale_scale": int(self.upscale_scale_input.currentData()),
                 "upscale_method": str(self.upscale_method_input.currentData()),

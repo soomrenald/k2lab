@@ -170,6 +170,7 @@ class RegionalLoraRoutingTests(unittest.TestCase):
 
         _model, reports, _statistics = runtime._apply_routed_loras(
             specifications,
+            base_model=runtime.model,
             width=32,
             height=16,
             text_token_count=bound.text_token_count,

@@ -26,6 +26,13 @@ from k2_region_lab.memory import (
     memory_policy,
 )
 from k2_region_lab.output import validate_filename_prefix
+from k2_region_lab.projector import (
+    DEFAULT_PROJECTOR_PRESET,
+    PROJECTOR_VECTOR_COUNT,
+    effective_projector_values,
+    projector_preset_values,
+    validate_projector_values,
+)
 from k2_region_lab.regional_lora import (
     LoraDeltaRoute,
     compile_lora_delta_routes,
@@ -437,6 +444,7 @@ class ComfyBaselineRuntime:
         self,
         specifications: list[dict[str, Any]],
         *,
+        base_model,
         width: int,
         height: int,
         text_token_count: int,
@@ -495,9 +503,9 @@ class ComfyBaselineRuntime:
 
         statistics = LoraDeltaStatistics(routes)
         if not target_entries:
-            return self.model, reports, statistics
+            return base_model, reports, statistics
         generation_model, installed_targets = self._install_routed_lora_bypass(
-            self.model, target_entries, statistics
+            base_model, target_entries, statistics
         )
         expected_targets = len(target_entries)
         if installed_targets != expected_targets:
@@ -518,6 +526,67 @@ class ComfyBaselineRuntime:
                     {"lora": report},
                 )
         return generation_model, reports, statistics
+
+    def _apply_global_projector_vector(
+        self,
+        *,
+        enabled: bool,
+        preset: str,
+        values,
+        multiplier: float,
+        event: Callable[[str, dict[str, Any]], None] | None,
+    ):
+        """Patch Krea's global 1×12 text-fusion projector before LoRA routing.
+
+        The projector reduces the layerwise text-fusion axis for every token. It has
+        no pixel-space routing interface, so region-gating it would corrupt the
+        strict outside-zero guarantee provided by regional LoRA adapters.
+        """
+
+        raw_values = (
+            projector_preset_values(preset)
+            if not values
+            else validate_projector_values(values)
+        )
+        effective_values = effective_projector_values(raw_values, multiplier)
+        summary = {
+            "enabled": bool(enabled),
+            "scope": "global",
+            "preset": preset,
+            "values": list(raw_values),
+            "multiplier": float(multiplier),
+            "effective_values": list(effective_values),
+            "target": "diffusion_model.txtfusion.projector.weight",
+        }
+        if not enabled or not any(effective_values):
+            summary["status"] = "disabled" if not enabled else "zero_effect"
+            return self.model, summary
+
+        import torch
+
+        target = summary["target"]
+        target_weight = self.model.model.state_dict().get(target)
+        expected_shape = (1, PROJECTOR_VECTOR_COUNT)
+        if target_weight is None:
+            raise RuntimeError(f"Krea projector target is missing: {target}")
+        if tuple(target_weight.shape) != expected_shape:
+            raise RuntimeError(
+                f"unexpected Krea projector shape {tuple(target_weight.shape)}; "
+                f"expected {expected_shape}"
+            )
+        delta = torch.tensor((effective_values,), dtype=torch.float32)
+        patched_model = self.model.clone()
+        patched_keys = patched_model.add_patches({target: ("diff", (delta,))})
+        if target not in patched_keys:
+            raise RuntimeError("could not install the Krea projector vector patch")
+        summary["status"] = "applied_global_diff"
+        patched_model.set_attachments("projector_settings", summary)
+        if event is not None:
+            event(
+                f"Applied global projector vector ({preset}) at {float(multiplier):.4f}×",
+                {"projector": summary},
+            )
+        return patched_model, summary
 
     @staticmethod
     def _install_routed_lora_bypass(generation_model, target_entries, statistics):
@@ -914,6 +983,10 @@ class ComfyBaselineRuntime:
         regional_subject_competition: bool = True,
         regional_subject_fill: bool = True,
         regional_late_step_scale: float = 0.35,
+        projector_enabled: bool = False,
+        projector_preset: str = DEFAULT_PROJECTOR_PRESET,
+        projector_values: tuple[float, ...] = (),
+        projector_multiplier: float = 1.0,
         post_upscale: bool = False,
         upscale_scale: int = 2,
         upscale_method: str = "lanczos",
@@ -960,6 +1033,10 @@ class ComfyBaselineRuntime:
                 output_directory=output_directory,
                 filename_prefix=filename_prefix,
                 regional_plan=regional_plan,
+                projector_enabled=projector_enabled,
+                projector_preset=projector_preset,
+                projector_values=projector_values,
+                projector_multiplier=projector_multiplier,
                 post_upscale=post_upscale,
                 upscale_scale=upscale_scale,
                 upscale_method=upscale_method,
@@ -995,6 +1072,10 @@ class ComfyBaselineRuntime:
             output_directory=output_directory,
             filename_prefix=filename_prefix,
             regional_plan=regional_plan,
+            projector_enabled=projector_enabled,
+            projector_preset=projector_preset,
+            projector_values=projector_values,
+            projector_multiplier=projector_multiplier,
             post_upscale=post_upscale,
             upscale_scale=upscale_scale,
             upscale_method=upscale_method,
@@ -1016,6 +1097,10 @@ class ComfyBaselineRuntime:
         output_directory: Path,
         filename_prefix: str,
         regional_plan: RegionalPromptPlan | None,
+        projector_enabled: bool,
+        projector_preset: str,
+        projector_values: tuple[float, ...],
+        projector_multiplier: float,
         post_upscale: bool,
         upscale_scale: int,
         upscale_method: str,
@@ -1068,8 +1153,16 @@ class ComfyBaselineRuntime:
         noise = comfy.sample.prepare_noise(latent, seed)
         if loras:
             self._ensure_memory("before LoRA loading", event)
+        generation_model, projector_summary = self._apply_global_projector_vector(
+            enabled=projector_enabled,
+            preset=projector_preset,
+            values=projector_values,
+            multiplier=projector_multiplier,
+            event=event,
+        )
         generation_model, lora_reports, lora_statistics = self._apply_routed_loras(
             loras,
+            base_model=generation_model,
             width=width,
             height=height,
             text_token_count=conditioning_text_token_count,
@@ -1211,6 +1304,7 @@ class ComfyBaselineRuntime:
             regional_plan, bound_regional_plan, attention_override
         )
         metadata.add_text("regional_prompting", json.dumps(regional_summary))
+        metadata.add_text("projector", json.dumps(projector_summary))
         metadata.add_text("post_upscale", json.dumps(upscale_summary))
         metadata.add_text("loras", json.dumps(lora_reports))
         metadata.add_text("memory_policy", self.memory_policy_key)
@@ -1227,6 +1321,7 @@ class ComfyBaselineRuntime:
             "seed": seed,
             "filename_prefix": filename_prefix,
             "regional_prompting": regional_summary,
+            "projector": projector_summary,
             "post_upscale": upscale_summary,
             "loras": lora_reports,
             "sampler": "euler",
