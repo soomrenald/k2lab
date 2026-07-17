@@ -5,6 +5,9 @@ from dataclasses import dataclass
 from k2_region_lab.regions.geometry import CanvasGeometry, PixelBox
 
 
+REGION_ROLES = ("auto", "subject", "background")
+
+
 @dataclass(frozen=True, slots=True)
 class RegionDefinition:
     """A generic region shared by prompt, LoRA, influence, and attention controls."""
@@ -16,10 +19,13 @@ class RegionDefinition:
     negative_prompt: str = ""
     enabled: bool = True
     priority: int = 0
+    spatial_role: str = "auto"
 
     def __post_init__(self) -> None:
         if not self.region_id.strip():
             raise ValueError("region_id must not be empty")
+        if self.spatial_role not in REGION_ROLES:
+            raise ValueError(f"unsupported spatial role: {self.spatial_role!r}")
 
 
 @dataclass(frozen=True, slots=True)

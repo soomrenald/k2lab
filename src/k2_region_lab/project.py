@@ -9,7 +9,8 @@ from k2_region_lab.regions import PixelBox, RegionDefinition
 
 
 PROJECT_SCHEMA = "k2-region-lab-project"
-PROJECT_VERSION = 1
+PROJECT_VERSION = 2
+SUPPORTED_PROJECT_VERSIONS = {1, PROJECT_VERSION}
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,7 +30,10 @@ class ProjectState:
     seed_mode: str = "fixed"
     regional_prompting: bool = True
     regional_prompt_strength: float = 1.0
+    regional_outside_penalty: float = 1.0
     regional_feather_pixels: int = 128
+    regional_subject_competition: bool = True
+    regional_relaxation: bool = True
     regions: tuple[RegionDefinition, ...] = ()
     loras: tuple[SavedLora, ...] = ()
     runtime: dict[str, Any] | None = None
@@ -46,6 +50,8 @@ class ProjectState:
             raise ValueError(f"unsupported seed mode: {self.seed_mode!r}")
         if not 0.0 < self.regional_prompt_strength <= 10.0:
             raise ValueError("regional prompt strength must be in (0, 10]")
+        if not 0.0 <= self.regional_outside_penalty <= 10.0:
+            raise ValueError("regional outside penalty must be between 0 and 10")
         if not 0 <= self.regional_feather_pixels <= 2048:
             raise ValueError("spatial falloff must be between 0 and 2048 pixels")
         region_ids = [region.region_id for region in self.regions]
@@ -87,7 +93,10 @@ def project_document(state: ProjectState) -> dict[str, Any]:
             "seed_mode": state.seed_mode,
             "regional_prompting": state.regional_prompting,
             "regional_prompt_strength": state.regional_prompt_strength,
+            "regional_outside_penalty": state.regional_outside_penalty,
             "regional_feather_pixels": state.regional_feather_pixels,
+            "regional_subject_competition": state.regional_subject_competition,
+            "regional_relaxation": state.regional_relaxation,
         },
         "regions": [
             {
@@ -103,6 +112,7 @@ def project_document(state: ProjectState) -> dict[str, Any]:
                 "negative_prompt": region.negative_prompt,
                 "enabled": region.enabled,
                 "priority": region.priority,
+                "spatial_role": region.spatial_role,
             }
             for region in state.regions
         ],
@@ -122,7 +132,7 @@ def project_document(state: ProjectState) -> dict[str, Any]:
 def project_state(document: dict[str, Any]) -> ProjectState:
     if document.get("schema") != PROJECT_SCHEMA:
         raise ValueError("not a K2 Region Lab project file")
-    if document.get("version") != PROJECT_VERSION:
+    if document.get("version") not in SUPPORTED_PROJECT_VERSIONS:
         raise ValueError(f"unsupported project version: {document.get('version')!r}")
     canvas = document["canvas"]
     generation = document.get("generation", {})
@@ -140,6 +150,7 @@ def project_state(document: dict[str, Any]) -> ProjectState:
             negative_prompt=str(item.get("negative_prompt", "")),
             enabled=bool(item.get("enabled", True)),
             priority=int(item.get("priority", 0)),
+            spatial_role=str(item.get("spatial_role", "auto")),
         )
         for item in document.get("regions", [])
     )
@@ -163,7 +174,14 @@ def project_state(document: dict[str, Any]) -> ProjectState:
         regional_prompt_strength=float(
             generation.get("regional_prompt_strength", 1.0)
         ),
+        regional_outside_penalty=float(
+            generation.get("regional_outside_penalty", 1.0)
+        ),
         regional_feather_pixels=int(generation.get("regional_feather_pixels", 128)),
+        regional_subject_competition=bool(
+            generation.get("regional_subject_competition", True)
+        ),
+        regional_relaxation=bool(generation.get("regional_relaxation", True)),
         regions=regions,
         loras=loras,
         runtime=dict(document.get("runtime", {})),

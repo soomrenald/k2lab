@@ -10,15 +10,19 @@ def spatial_pair_bias(
     strength: float,
     *,
     outside_penalty_ratio: float = 0.25,
+    outside_penalty: float | None = None,
 ) -> tuple[float, ...]:
     """Convert a soft spatial field into additive attention-logit values."""
     if not 0.0 <= outside_penalty_ratio <= 1.0:
         raise ValueError("outside penalty ratio must be between zero and one")
-    return tuple(
-        strength
-        * ((1.0 + outside_penalty_ratio) * weight - outside_penalty_ratio)
-        for weight in image_token_field
+    penalty = (
+        strength * outside_penalty_ratio
+        if outside_penalty is None
+        else outside_penalty
     )
+    if not 0.0 <= penalty <= 10.0:
+        raise ValueError("outside penalty must be between zero and ten")
+    return tuple((strength + penalty) * weight - penalty for weight in image_token_field)
 
 
 class KreaSpatialAttentionOverride:
@@ -45,6 +49,7 @@ class KreaSpatialAttentionOverride:
             plan.text_token_count + plan.image_token_count
         )
         self.matched_calls = 0
+        self.step_scale = 1.0
         self._cache: dict[tuple[str, int | None, str], Any] = {}
 
     def __call__(self, original, *args, **kwargs):
@@ -109,6 +114,8 @@ class KreaSpatialAttentionOverride:
                     span.image_token_field,
                     self.plan.strength,
                     outside_penalty_ratio=self.outside_penalty_ratio,
+                    outside_penalty=self.plan.outside_penalty
+                    * (1.0 if span.spatial_role == "subject" else 0.25),
                 ),
                 dtype=torch.float32,
                 device=device,
@@ -126,7 +133,7 @@ class KreaSpatialAttentionOverride:
             if text_start < text_end:
                 scores[
                     :, :, text_start - start : text_end - start, text_count:
-                ].add_(pair.reshape(1, 1, 1, -1))
+                ].add_(pair.reshape(1, 1, 1, -1), alpha=self.step_scale)
 
             image_start = max(start, text_count)
             image_end = end
@@ -136,7 +143,19 @@ class KreaSpatialAttentionOverride:
                 ]
                 scores[
                     :, :, image_start - start : image_end - start, span.start : span.end
-                ].add_(image_pair.reshape(1, 1, -1, 1))
+                ].add_(image_pair.reshape(1, 1, -1, 1), alpha=self.step_scale)
+
+    def set_denoising_progress(self, completed_steps: int, total_steps: int) -> None:
+        """Keep placement strong early, then relax it for late detail refinement."""
+        if total_steps <= 0:
+            raise ValueError("total denoising steps must be positive")
+        progress = min(1.0, max(0.0, completed_steps / total_steps))
+        relaxation_start = 0.55
+        if progress <= relaxation_start:
+            self.step_scale = 1.0
+            return
+        fraction = (progress - relaxation_start) / (1.0 - relaxation_start)
+        self.step_scale = 1.0 + fraction * (self.plan.late_step_scale - 1.0)
 
     def clear(self) -> None:
         self._cache.clear()

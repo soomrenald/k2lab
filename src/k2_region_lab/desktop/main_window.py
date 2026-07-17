@@ -178,6 +178,18 @@ class MainWindow(QMainWindow):
         self.region_name.setEnabled(False)
         self.region_name.editingFinished.connect(self._region_name_edited)
         layout.addWidget(self.region_name)
+        layout.addWidget(QLabel("Selected region spatial role"))
+        self.region_role = QComboBox()
+        self.region_role.addItem("Auto (based on box width)", "auto")
+        self.region_role.addItem("Subject target", "subject")
+        self.region_role.addItem("Background band", "background")
+        self.region_role.setEnabled(False)
+        self.region_role.setToolTip(
+            "Subject targets pull content toward the box center; background bands "
+            "use softer full-box coverage"
+        )
+        self.region_role.currentIndexChanged.connect(self._region_role_changed)
+        layout.addWidget(self.region_role)
         layout.addWidget(QLabel("Selected region prompt"))
         self.region_prompt = QTextEdit()
         self.region_prompt.setPlaceholderText("Describe only the content controlled by this box...")
@@ -286,7 +298,16 @@ class MainWindow(QMainWindow):
         self.regional_prompt_strength_input.setToolTip(
             "Additive attention guidance between each regional text span and its image area"
         )
-        layout.addRow("Spatial guidance", self.regional_prompt_strength_input)
+        layout.addRow("Inside boost", self.regional_prompt_strength_input)
+        self.regional_outside_penalty_input = QDoubleSpinBox()
+        self.regional_outside_penalty_input.setRange(0.0, 10.0)
+        self.regional_outside_penalty_input.setSingleStep(0.1)
+        self.regional_outside_penalty_input.setValue(1.0)
+        self.regional_outside_penalty_input.setToolTip(
+            "Suppress subject prompt attention away from its target box; background "
+            "bands automatically use one quarter of this penalty"
+        )
+        layout.addRow("Outside penalty", self.regional_outside_penalty_input)
         self.regional_feather_input = QSpinBox()
         self.regional_feather_input.setRange(0, 2048)
         self.regional_feather_input.setSingleStep(16)
@@ -296,6 +317,22 @@ class MainWindow(QMainWindow):
             "Distance outside each box over which its attention guidance smoothly fades"
         )
         layout.addRow("Spatial falloff", self.regional_feather_input)
+        self.regional_subject_competition_input = QCheckBox(
+            "Separate overlapping subject targets"
+        )
+        self.regional_subject_competition_input.setChecked(True)
+        self.regional_subject_competition_input.setToolTip(
+            "Give overlapping subject boxes exclusive soft ownership of image tokens"
+        )
+        layout.addRow(self.regional_subject_competition_input)
+        self.regional_relaxation_input = QCheckBox(
+            "Relax spatial guidance during late steps"
+        )
+        self.regional_relaxation_input.setChecked(True)
+        self.regional_relaxation_input.setToolTip(
+            "Keep placement guidance strong early, then reduce it for final detail"
+        )
+        layout.addRow(self.regional_relaxation_input)
         preview_prompt = QPushButton("Preview unified prompt…")
         preview_prompt.clicked.connect(self._preview_unified_prompt)
         layout.addRow(preview_prompt)
@@ -422,7 +459,8 @@ class MainWindow(QMainWindow):
     def _region_label(region: RegionDefinition) -> str:
         box = region.box
         return (
-            f"{region.name}: [{box.x0:.0f}, {box.y0:.0f}, "
+            f"{region.name} [{region.spatial_role.title()}]: "
+            f"[{box.x0:.0f}, {box.y0:.0f}, "
             f"{box.x1:.0f}, {box.y1:.0f}] px"
         )
 
@@ -513,6 +551,7 @@ class MainWindow(QMainWindow):
     def _selected_region_changed(self, row: int) -> None:
         selected = 0 <= row < len(self.regions)
         self.region_name.setEnabled(selected)
+        self.region_role.setEnabled(selected)
         self.region_prompt.setEnabled(selected)
         self.region_negative_prompt.setEnabled(selected)
         self._loading_region_form = True
@@ -520,11 +559,14 @@ class MainWindow(QMainWindow):
             if selected:
                 region = self.regions[row]
                 self.region_name.setText(region.name)
+                role_index = self.region_role.findData(region.spatial_role)
+                self.region_role.setCurrentIndex(max(0, role_index))
                 self.region_prompt.setPlainText(region.prompt)
                 self.region_negative_prompt.setPlainText(region.negative_prompt)
                 self.canvas.select_region(region.region_id)
             else:
                 self.region_name.clear()
+                self.region_role.setCurrentIndex(0)
                 self.region_prompt.clear()
                 self.region_negative_prompt.clear()
         finally:
@@ -556,6 +598,24 @@ class MainWindow(QMainWindow):
         self.canvas.set_region_name(region.region_id, name)
         self._refresh_lora_scope()
         self.events.addItem(f"Renamed {region.name} to {name}")
+
+    def _region_role_changed(self, *_args) -> None:
+        if self._loading_region_form:
+            return
+        row = self.region_list.currentRow()
+        if not 0 <= row < len(self.regions):
+            return
+        region = self.regions[row]
+        spatial_role = str(self.region_role.currentData())
+        if spatial_role == region.spatial_role:
+            return
+        self.regions[row] = replace(region, spatial_role=spatial_role)
+        item = self._region_list_item(region.region_id)
+        if item is not None:
+            item.setText(self._region_label(self.regions[row]))
+        self.events.addItem(
+            f"Set {region.name} spatial role to {self.region_role.currentText()}"
+        )
 
     def _region_form_edited(self) -> None:
         if self._loading_region_form:
@@ -736,7 +796,12 @@ class MainWindow(QMainWindow):
             seed_mode=str(self.seed_mode_input.currentData()),
             regional_prompting=self.regional_prompting_input.isChecked(),
             regional_prompt_strength=self.regional_prompt_strength_input.value(),
+            regional_outside_penalty=self.regional_outside_penalty_input.value(),
             regional_feather_pixels=self.regional_feather_input.value(),
+            regional_subject_competition=(
+                self.regional_subject_competition_input.isChecked()
+            ),
+            regional_relaxation=self.regional_relaxation_input.isChecked(),
             regions=tuple(self.regions),
             loras=saved_loras,
             runtime=runtime,
@@ -858,7 +923,12 @@ class MainWindow(QMainWindow):
         self.seed_mode_input.setCurrentIndex(max(0, seed_mode_index))
         self.regional_prompting_input.setChecked(state.regional_prompting)
         self.regional_prompt_strength_input.setValue(state.regional_prompt_strength)
+        self.regional_outside_penalty_input.setValue(state.regional_outside_penalty)
         self.regional_feather_input.setValue(state.regional_feather_pixels)
+        self.regional_subject_competition_input.setChecked(
+            state.regional_subject_competition
+        )
+        self.regional_relaxation_input.setChecked(state.regional_relaxation)
         policy_index = self.memory_policy_input.findData(self.settings.memory_policy)
         self.memory_policy_input.setCurrentIndex(max(0, policy_index))
         self.reserve_vram_input.setValue(self.settings.reserve_vram_gb)
@@ -1061,7 +1131,16 @@ class MainWindow(QMainWindow):
                 ),
                 "regional_prompting": self.regional_prompting_input.isChecked(),
                 "regional_prompt_strength": self.regional_prompt_strength_input.value(),
+                "regional_outside_penalty": (
+                    self.regional_outside_penalty_input.value()
+                ),
                 "regional_feather_pixels": self.regional_feather_input.value(),
+                "regional_subject_competition": (
+                    self.regional_subject_competition_input.isChecked()
+                ),
+                "regional_late_step_scale": (
+                    0.35 if self.regional_relaxation_input.isChecked() else 1.0
+                ),
                 "regions": [
                     {
                         "id": region.region_id,
@@ -1076,6 +1155,7 @@ class MainWindow(QMainWindow):
                         "negative_prompt": region.negative_prompt,
                         "enabled": region.enabled,
                         "priority": region.priority,
+                        "spatial_role": region.spatial_role,
                     }
                     for region in self.regions
                 ],
@@ -1095,7 +1175,14 @@ class MainWindow(QMainWindow):
             self.global_prompt.toPlainText(),
             tuple(self.regions),
             strength=self.regional_prompt_strength_input.value(),
+            outside_penalty=self.regional_outside_penalty_input.value(),
             falloff_pixels=self.regional_feather_input.value(),
+            subject_competition=(
+                self.regional_subject_competition_input.isChecked()
+            ),
+            late_step_scale=(
+                0.35 if self.regional_relaxation_input.isChecked() else 1.0
+            ),
         )
         preview = QMessageBox(self)
         preview.setWindowTitle("Unified spatial prompt")

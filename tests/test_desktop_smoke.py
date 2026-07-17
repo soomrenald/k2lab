@@ -173,7 +173,10 @@ class DesktopSmokeTests(unittest.TestCase):
             )
             window.regional_prompting_input.setChecked(True)
             window.regional_prompt_strength_input.setValue(1.7)
+            window.regional_outside_penalty_input.setValue(1.2)
             window.regional_feather_input.setValue(48)
+            window.regional_subject_competition_input.setChecked(False)
+            window.regional_relaxation_input.setChecked(False)
             window.memory_policy_input.setCurrentIndex(
                 window.memory_policy_input.findData("balanced")
             )
@@ -187,6 +190,9 @@ class DesktopSmokeTests(unittest.TestCase):
             window.canvas.region_created.emit("subject", 32.0, 48.0, 320.0, 480.0)
             window.region_name.setText("Main subject")
             window._region_name_edited()
+            window.region_role.setCurrentIndex(
+                window.region_role.findData("subject")
+            )
             window.region_prompt.setPlainText("a person by the water")
             window.region_negative_prompt.setPlainText("blurry face")
             window._add_lora_path(lora_path)
@@ -205,7 +211,12 @@ class DesktopSmokeTests(unittest.TestCase):
             self.assertEqual(restored.seed_mode_input.currentData(), "increment")
             self.assertTrue(restored.regional_prompting_input.isChecked())
             self.assertEqual(restored.regional_prompt_strength_input.value(), 1.7)
+            self.assertEqual(restored.regional_outside_penalty_input.value(), 1.2)
             self.assertEqual(restored.regional_feather_input.value(), 48)
+            self.assertFalse(
+                restored.regional_subject_competition_input.isChecked()
+            )
+            self.assertFalse(restored.regional_relaxation_input.isChecked())
             self.assertEqual(restored.memory_policy_input.currentData(), "balanced")
             self.assertEqual(restored.reserve_vram_input.value(), 3.5)
             self.assertEqual(restored.minimum_ram_input.value(), 13.0)
@@ -213,6 +224,7 @@ class DesktopSmokeTests(unittest.TestCase):
             self.assertEqual(restored._output_directory, output_directory)
             self.assertEqual(restored.filename_prefix_input.text(), "beach-study")
             self.assertEqual(restored.regions[0].name, "Main subject")
+            self.assertEqual(restored.regions[0].spatial_role, "subject")
             self.assertEqual(restored.regions[0].prompt, "a person by the water")
             self.assertEqual(restored.regions[0].negative_prompt, "blurry face")
             self.assertEqual(restored.lora_list.count(), 1)
@@ -379,7 +391,11 @@ class DesktopSmokeTests(unittest.TestCase):
             self.assertEqual(payload["filename_prefix"], "teapot-test")
             self.assertTrue(payload["regional_prompting"])
             self.assertEqual(payload["regional_feather_pixels"], 128)
+            self.assertEqual(payload["regional_outside_penalty"], 1.0)
+            self.assertTrue(payload["regional_subject_competition"])
+            self.assertEqual(payload["regional_late_step_scale"], 0.35)
             self.assertEqual(payload["regions"][0]["id"], "teapot-region")
+            self.assertEqual(payload["regions"][0]["spatial_role"], "auto")
             self.assertEqual(
                 payload["regions"][0]["prompt"], "a detailed red teapot"
             )

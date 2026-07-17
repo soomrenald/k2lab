@@ -438,7 +438,10 @@ class ComfyBaselineRuntime:
         regions: tuple[RegionDefinition, ...] = (),
         regional_prompting: bool = True,
         regional_prompt_strength: float = 1.0,
+        regional_outside_penalty: float = 1.0,
         regional_feather_pixels: float = 128.0,
+        regional_subject_competition: bool = True,
+        regional_late_step_scale: float = 0.35,
         progress: Callable[[int, int, dict[str, Any]], None] | None = None,
         event: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
@@ -456,7 +459,10 @@ class ComfyBaselineRuntime:
                 prompt,
                 regions,
                 strength=regional_prompt_strength,
+                outside_penalty=regional_outside_penalty,
                 falloff_pixels=regional_feather_pixels,
+                subject_competition=regional_subject_competition,
+                late_step_scale=regional_late_step_scale,
             )
             if regional_prompting and regions
             else None
@@ -568,6 +574,8 @@ class ComfyBaselineRuntime:
 
         def callback(step: int, denoised, current, total: int) -> None:
             del denoised, current
+            if attention_override is not None:
+                attention_override.set_denoising_progress(step + 1, total)
             snapshot = self.memory_snapshot(f"denoising step {step + 1}/{total}")
             if progress is not None:
                 progress(

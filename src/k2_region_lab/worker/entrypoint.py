@@ -165,8 +165,17 @@ def main() -> int:
                     regional_prompt_strength=float(
                         payload.get("regional_prompt_strength", 1.0)
                     ),
+                    regional_outside_penalty=float(
+                        payload.get("regional_outside_penalty", 1.0)
+                    ),
                     regional_feather_pixels=float(
                         payload.get("regional_feather_pixels", 128.0)
+                    ),
+                    regional_subject_competition=bool(
+                        payload.get("regional_subject_competition", True)
+                    ),
+                    regional_late_step_scale=float(
+                        payload.get("regional_late_step_scale", 0.35)
                     ),
                     progress=progress,
                     event=runtime_event,

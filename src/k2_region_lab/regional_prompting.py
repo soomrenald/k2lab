@@ -8,7 +8,7 @@ from typing import Callable
 from k2_region_lab.regions import CanvasGeometry, PixelBox, RegionDefinition
 
 
-BACKEND = "krea-unified-spatial-attention-v1"
+BACKEND = "krea-unified-spatial-attention-v2"
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,6 +21,7 @@ class UnifiedPromptRegion:
     clause: str
     character_span: tuple[int, int]
     image_token_field: tuple[float, ...]
+    spatial_role: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,7 +32,10 @@ class RegionalPromptPlan:
     image_token_height: int
     prompt: str
     strength: float
+    outside_penalty: float
     falloff_pixels: float
+    subject_competition: bool
+    late_step_scale: float
     regions: tuple[UnifiedPromptRegion, ...]
     backend: str = BACKEND
 
@@ -56,6 +60,7 @@ class RegionalPromptPlan:
                     self.prompt[: region.character_span[1]]
                 ),
                 image_token_field=region.image_token_field,
+                spatial_role=region.spatial_role,
             )
             for region in self.regions
         )
@@ -73,7 +78,9 @@ class RegionalPromptPlan:
             text_token_count=text_token_count,
             image_token_count=self.image_token_count,
             strength=self.strength,
+            outside_penalty=self.outside_penalty,
             falloff_pixels=self.falloff_pixels,
+            late_step_scale=self.late_step_scale,
             spans=spans,
             backend=self.backend,
         )
@@ -83,7 +90,10 @@ class RegionalPromptPlan:
             "backend": self.backend,
             "compiled_prompt": self.prompt,
             "strength": self.strength,
+            "outside_penalty": self.outside_penalty,
             "falloff_pixels": self.falloff_pixels,
+            "subject_competition": self.subject_competition,
+            "late_step_scale": self.late_step_scale,
             "image_token_grid": [self.image_token_width, self.image_token_height],
             "region_count": len(self.regions),
             "regions": [
@@ -97,6 +107,7 @@ class RegionalPromptPlan:
                         region.box.y1,
                     ],
                     "character_span": list(region.character_span),
+                    "spatial_role": region.spatial_role,
                     "peak_spatial_weight": max(region.image_token_field),
                 }
                 for region in self.regions
@@ -111,6 +122,7 @@ class RegionalTokenSpan:
     start: int
     end: int
     image_token_field: tuple[float, ...]
+    spatial_role: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,7 +131,9 @@ class BoundRegionalPromptPlan:
     text_token_count: int
     image_token_count: int
     strength: float
+    outside_penalty: float
     falloff_pixels: float
+    late_step_scale: float
     spans: tuple[RegionalTokenSpan, ...]
     backend: str = BACKEND
 
@@ -128,7 +142,9 @@ class BoundRegionalPromptPlan:
             "backend": self.backend,
             "compiled_prompt": self.prompt,
             "strength": self.strength,
+            "outside_penalty": self.outside_penalty,
             "falloff_pixels": self.falloff_pixels,
+            "late_step_scale": self.late_step_scale,
             "text_token_count": self.text_token_count,
             "image_token_count": self.image_token_count,
             "region_count": len(self.spans),
@@ -137,6 +153,7 @@ class BoundRegionalPromptPlan:
                     "id": span.region_id,
                     "name": span.name,
                     "text_token_span": [span.start, span.end],
+                    "spatial_role": span.spatial_role,
                 }
                 for span in self.spans
             ],
@@ -150,12 +167,19 @@ def compile_regional_prompt_plan(
     regions: tuple[RegionDefinition, ...],
     *,
     strength: float = 1.0,
+    outside_penalty: float = 1.0,
     falloff_pixels: float = 128.0,
+    subject_competition: bool = True,
+    late_step_scale: float = 0.35,
 ) -> RegionalPromptPlan:
     if not 0.0 < strength <= 10.0:
         raise ValueError("spatial guidance strength must be in (0, 10]")
     if not 0.0 <= falloff_pixels <= 2048.0:
         raise ValueError("spatial falloff must be between 0 and 2048 pixels")
+    if not 0.0 <= outside_penalty <= 10.0:
+        raise ValueError("spatial outside penalty must be between 0 and 10")
+    if not 0.0 <= late_step_scale <= 1.0:
+        raise ValueError("late-step spatial scale must be between 0 and 1")
 
     geometry = CanvasGeometry.resolve(width, height)
     active = []
@@ -165,9 +189,24 @@ def compile_regional_prompt_plan(
         active.append((region, region.box.clipped(width, height)))
     active.sort(key=lambda item: _scene_order(item[0], item[1], width, height))
 
+    roles = tuple(_effective_spatial_role(region, box, width) for region, box in active)
+    raw_fields = tuple(
+        _subject_target_field(geometry, box, float(falloff_pixels))
+        if role == "subject"
+        else _soft_box_field(geometry, box, float(falloff_pixels))
+        for (_, box), role in zip(active, roles, strict=True)
+    )
+    fields = (
+        _apply_subject_competition(raw_fields, roles)
+        if subject_competition
+        else raw_fields
+    )
+
     prompt = _sentence(global_prompt.strip())
     compiled: list[UnifiedPromptRegion] = []
-    for region, box in active:
+    for (region, box), role, image_token_field in zip(
+        active, roles, fields, strict=True
+    ):
         clause = _regional_clause(region, box, width, height)
         if prompt:
             prompt += "\n"
@@ -183,9 +222,8 @@ def compile_regional_prompt_plan(
                 box=box,
                 clause=clause,
                 character_span=(start, end),
-                image_token_field=_soft_box_field(
-                    geometry, box, float(falloff_pixels)
-                ),
+                image_token_field=image_token_field,
+                spatial_role=role,
             )
         )
 
@@ -200,7 +238,10 @@ def compile_regional_prompt_plan(
         image_token_height=geometry.patch_height,
         prompt=prompt,
         strength=float(strength),
+        outside_penalty=float(outside_penalty),
         falloff_pixels=float(falloff_pixels),
+        subject_competition=bool(subject_competition),
+        late_step_scale=float(late_step_scale),
         regions=tuple(compiled),
     )
 
@@ -331,6 +372,70 @@ def _soft_box_field(
     return tuple(values)
 
 
+def _effective_spatial_role(
+    region: RegionDefinition, box: PixelBox, canvas_width: int
+) -> str:
+    if region.spatial_role != "auto":
+        return region.spatial_role
+    return "background" if box.width >= 0.70 * canvas_width else "subject"
+
+
+def _subject_target_field(
+    geometry: CanvasGeometry, box: PixelBox, falloff_pixels: float
+) -> tuple[float, ...]:
+    """Create a box target with a center peak and a half-strength boundary."""
+    values: list[float] = []
+    size = geometry.output_pixels_per_image_token
+    midpoint_x = (box.x0 + box.x1) / 2.0
+    midpoint_y = (box.y0 + box.y1) / 2.0
+    half_width = box.width / 2.0
+    half_height = box.height / 2.0
+    for row in range(geometry.patch_height):
+        center_y = (row + 0.5) * size
+        for column in range(geometry.patch_width):
+            center_x = (column + 0.5) * size
+            dx = max(box.x0 - center_x, 0.0, center_x - box.x1)
+            dy = max(box.y0 - center_y, 0.0, center_y - box.y1)
+            distance = hypot(dx, dy)
+            if distance == 0.0:
+                normalized = max(
+                    abs(center_x - midpoint_x) / half_width,
+                    abs(center_y - midpoint_y) / half_height,
+                )
+                u = min(1.0, normalized)
+                smooth = u * u * (3.0 - 2.0 * u)
+                value = 1.0 - 0.5 * smooth
+            elif falloff_pixels == 0.0 or distance >= falloff_pixels:
+                value = 0.0
+            else:
+                u = 1.0 - distance / falloff_pixels
+                smooth = u * u * (3.0 - 2.0 * u)
+                value = 0.5 * smooth
+            values.append(value)
+    return tuple(values)
+
+
+def _apply_subject_competition(
+    fields: tuple[tuple[float, ...], ...], roles: tuple[str, ...]
+) -> tuple[tuple[float, ...], ...]:
+    """Give overlapping subject targets exclusive soft ownership per image token."""
+    subject_indices = [index for index, role in enumerate(roles) if role == "subject"]
+    if len(subject_indices) < 2:
+        return fields
+    competed = [list(field) for field in fields]
+    for token_index in range(len(fields[0])):
+        squared = {
+            index: fields[index][token_index] ** 2 for index in subject_indices
+        }
+        denominator = sum(squared.values())
+        if denominator == 0.0:
+            continue
+        for index in subject_indices:
+            ownership = squared[index] / denominator
+            competed[index][token_index] *= ownership
+    return tuple(tuple(field) for field in competed)
+
+
 def krea_prompt_token_count(tokenized: dict[str, list[list[tuple]]]) -> int:
     """Count prompt-owned lanes after Krea's fixed Qwen wrapper prefix is removed."""
     if not tokenized:
@@ -379,6 +484,7 @@ def region_definitions_from_payload(items: list[dict]) -> tuple[RegionDefinition
             negative_prompt=str(item.get("negative_prompt", "")),
             enabled=bool(item.get("enabled", True)),
             priority=int(item.get("priority", 0)),
+            spatial_role=str(item.get("spatial_role", "auto")),
         )
         for item in items
     )

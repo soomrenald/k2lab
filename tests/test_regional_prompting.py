@@ -4,7 +4,7 @@ import json
 import unittest
 from pathlib import Path
 
-from k2_region_lab.project import project_state
+from k2_region_lab.project import PROJECT_VERSION, project_document, project_state
 from k2_region_lab.regional_prompting import (
     BACKEND,
     compile_regional_prompt_plan,
@@ -12,7 +12,7 @@ from k2_region_lab.regional_prompting import (
     region_definitions_from_payload,
 )
 from k2_region_lab.regions import PixelBox, RegionDefinition
-from k2_region_lab.spatial_attention import spatial_pair_bias
+from k2_region_lab.spatial_attention import KreaSpatialAttentionOverride, spatial_pair_bias
 
 
 class RegionalPromptingTests(unittest.TestCase):
@@ -43,6 +43,10 @@ class RegionalPromptingTests(unittest.TestCase):
             plan.prompt,
         )
         self.assertEqual(plan.backend, BACKEND)
+        self.assertEqual(
+            [region.spatial_role for region in plan.regions],
+            ["background", "background", "background", "subject", "subject", "subject"],
+        )
         for region in plan.regions:
             start, end = region.character_span
             self.assertEqual(plan.prompt[start:end], region.clause)
@@ -88,6 +92,122 @@ class RegionalPromptingTests(unittest.TestCase):
         self.assertEqual(values[1], 0.75)
         self.assertEqual(values[2], -0.5)
 
+        stronger_outside = spatial_pair_bias(
+            (1.0, 0.5, 0.0), 2.0, outside_penalty=1.5
+        )
+        self.assertEqual(stronger_outside, (2.0, 0.25, -1.5))
+
+    def test_attention_guidance_stays_strong_early_and_relaxes_late(self) -> None:
+        region = RegionDefinition(
+            "subject", "Subject", PixelBox(0, 0, 32, 32), "red vase"
+        )
+        plan = compile_regional_prompt_plan(
+            64, 64, "gallery", (region,), late_step_scale=0.35
+        )
+        override = KreaSpatialAttentionOverride(
+            plan.bind_tokens(lambda prefix: len(prefix.split()))
+        )
+
+        override.set_denoising_progress(4, 8)
+        self.assertEqual(override.step_scale, 1.0)
+        override.set_denoising_progress(8, 8)
+        self.assertAlmostEqual(override.step_scale, 0.35)
+
+    def test_subject_field_peaks_at_center_while_background_fills_its_box(self) -> None:
+        subject = RegionDefinition(
+            "subject",
+            "Subject",
+            PixelBox(16, 16, 80, 80),
+            "a person",
+            spatial_role="subject",
+        )
+        background = RegionDefinition(
+            "background",
+            "Background",
+            PixelBox(16, 16, 80, 80),
+            "a wall",
+            spatial_role="background",
+        )
+
+        subject_plan = compile_regional_prompt_plan(
+            96, 96, "scene", (subject,), falloff_pixels=16
+        )
+        background_plan = compile_regional_prompt_plan(
+            96, 96, "scene", (background,), falloff_pixels=16
+        )
+        center = 2 * 6 + 2
+        near_edge = 1 * 6 + 1
+
+        self.assertGreater(
+            subject_plan.regions[0].image_token_field[center],
+            subject_plan.regions[0].image_token_field[near_edge],
+        )
+        self.assertEqual(
+            background_plan.regions[0].image_token_field[center], 1.0
+        )
+        self.assertEqual(
+            background_plan.regions[0].image_token_field[near_edge], 1.0
+        )
+
+    def test_overlapping_subjects_compete_without_changing_background_field(self) -> None:
+        regions = (
+            RegionDefinition(
+                "left", "Left", PixelBox(8, 8, 56, 56), "red vase", spatial_role="subject"
+            ),
+            RegionDefinition(
+                "right", "Right", PixelBox(24, 8, 72, 56), "blue vase", spatial_role="subject"
+            ),
+            RegionDefinition(
+                "wall", "Wall", PixelBox(0, 0, 96, 96), "white wall", spatial_role="background"
+            ),
+        )
+        raw = compile_regional_prompt_plan(
+            96, 96, "gallery", regions, subject_competition=False
+        )
+        competed = compile_regional_prompt_plan(
+            96, 96, "gallery", regions, subject_competition=True
+        )
+        raw_by_id = {region.region_id: region for region in raw.regions}
+        competed_by_id = {region.region_id: region for region in competed.regions}
+
+        self.assertTrue(
+            any(
+                competed_value < raw_value
+                for competed_value, raw_value in zip(
+                    competed_by_id["left"].image_token_field,
+                    raw_by_id["left"].image_token_field,
+                    strict=True,
+                )
+            )
+        )
+        self.assertEqual(
+            competed_by_id["wall"].image_token_field,
+            raw_by_id["wall"].image_token_field,
+        )
+
+    def test_v1_project_migrates_to_auto_roles_and_v2_on_save(self) -> None:
+        old_document = {
+            "schema": "k2-region-lab-project",
+            "version": 1,
+            "canvas": {"width": 512, "height": 512},
+            "generation": {},
+            "regions": [
+                {
+                    "id": "legacy",
+                    "name": "Legacy",
+                    "box": {"x0": 0, "y0": 0, "x1": 256, "y1": 256},
+                    "prompt": "a tree",
+                }
+            ],
+        }
+
+        state = project_state(old_document)
+
+        self.assertEqual(state.regions[0].spatial_role, "auto")
+        self.assertEqual(state.regional_outside_penalty, 1.0)
+        self.assertTrue(state.regional_subject_competition)
+        self.assertEqual(project_document(state)["version"], PROJECT_VERSION)
+
     def test_krea_prompt_token_count_excludes_fixed_wrapper_and_suffix(self) -> None:
         tokenized = {
             "qwen3vl_4b": [
@@ -131,6 +251,7 @@ class RegionalPromptingTests(unittest.TestCase):
                     "negative_prompt": "building",
                     "enabled": True,
                     "priority": 3,
+                    "spatial_role": "subject",
                 }
             ]
         )
@@ -138,6 +259,7 @@ class RegionalPromptingTests(unittest.TestCase):
         self.assertEqual(regions[0].name, "Anything")
         self.assertEqual(regions[0].negative_prompt, "building")
         self.assertEqual(regions[0].priority, 3)
+        self.assertEqual(regions[0].spatial_role, "subject")
 
 
 if __name__ == "__main__":
