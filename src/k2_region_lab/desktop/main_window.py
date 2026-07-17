@@ -86,6 +86,9 @@ class MainWindow(QMainWindow):
         self._background_image_path: Path | None = None
         self._upscale_model_path: Path | None = None
         self._generation_active = False
+        self._pending_generation_payload: dict[str, object] | None = None
+        self._worker_bootstrap_stage: str | None = None
+        self._generation_completed = False
         self._output_directory = settings.output_directory or default_output_directory(
             settings.data_directory
         )
@@ -265,10 +268,10 @@ class MainWindow(QMainWindow):
         worker_buttons = QHBoxLayout()
         start_worker = QPushButton("Start worker")
         start_worker.clicked.connect(self._start_worker)
-        validate = QPushButton("Validate tensors")
-        validate.clicked.connect(self._validate_worker_models)
+        self.validate_models_button = QPushButton("Validate tensors")
+        self.validate_models_button.clicked.connect(self._validate_worker_models)
         worker_buttons.addWidget(start_worker)
-        worker_buttons.addWidget(validate)
+        worker_buttons.addWidget(self.validate_models_button)
         layout.addRow(worker_buttons)
         self.release_worker_button = QPushButton("Release K2 GPU memory…")
         self.release_worker_button.setToolTip(
@@ -361,6 +364,12 @@ class MainWindow(QMainWindow):
             "Give overlapping subject boxes exclusive soft ownership of image tokens"
         )
         layout.addRow(self.regional_subject_competition_input)
+        self.regional_subject_fill_input = QCheckBox("Make subjects fill their boxes")
+        self.regional_subject_fill_input.setChecked(True)
+        self.regional_subject_fill_input.setToolTip(
+            "Treat each subject box as its desired visible extent, not only its location"
+        )
+        layout.addRow(self.regional_subject_fill_input)
         self.regional_relaxation_input = QCheckBox(
             "Relax spatial guidance during late steps"
         )
@@ -603,6 +612,9 @@ class MainWindow(QMainWindow):
         self.text_status.setText(self._artifact_label(self.artifacts.text_encoder))
         self.vae_status.setText(self._artifact_label(self.artifacts.vae))
         state = "complete" if self.artifacts.complete else "incomplete"
+        self.generate_button.setEnabled(
+            bool(self.artifacts.complete and not self._generation_active)
+        )
         self.events.addItem(f"Model discovery {state}")
         self.statusBar().showMessage(f"Local model set: {state}")
 
@@ -996,6 +1008,7 @@ class MainWindow(QMainWindow):
             regional_subject_competition=(
                 self.regional_subject_competition_input.isChecked()
             ),
+            regional_subject_fill=self.regional_subject_fill_input.isChecked(),
             regional_relaxation=self.regional_relaxation_input.isChecked(),
             post_upscale=self.post_upscale_input.isChecked(),
             upscale_scale=int(self.upscale_scale_input.currentData()),
@@ -1127,6 +1140,7 @@ class MainWindow(QMainWindow):
         self.regional_subject_competition_input.setChecked(
             state.regional_subject_competition
         )
+        self.regional_subject_fill_input.setChecked(state.regional_subject_fill)
         self.regional_relaxation_input.setChecked(state.regional_relaxation)
         self.post_upscale_input.setChecked(state.post_upscale)
         scale_index = self.upscale_scale_input.findData(state.upscale_scale)
@@ -1226,12 +1240,17 @@ class MainWindow(QMainWindow):
         }
 
     def _start_worker(self) -> None:
+        if self.worker_client.running:
+            self._advance_pending_generation()
+            return
         self._model_loaded = False
+        self._accelerator_available = False
         if not self.worker_client.start():
             return
         if not self.worker_client.process.waitForStarted(3000):
             self.events.addItem("GPU worker did not start within three seconds")
             return
+        self._worker_bootstrap_stage = "probe"
         self.worker_client.send(CommandKind.PROBE, self._worker_payload())
 
     def _diagnose_accelerator(self) -> None:
@@ -1289,7 +1308,7 @@ class MainWindow(QMainWindow):
         self.accelerator_status.setText("Not probed")
         self.memory_status.setText("K2 workers stopped; GPU allocations released")
         self.load_model_button.setEnabled(False)
-        self.generate_button.setEnabled(False)
+        self.generate_button.setEnabled(bool(self.artifacts and self.artifacts.complete))
         self._set_memory_controls_enabled(True)
         if stopped:
             self.events.addItem(
@@ -1307,20 +1326,57 @@ class MainWindow(QMainWindow):
             )
         else:
             self.statusBar().showMessage(
-                "K2 GPU workers stopped; click Start worker when ready", 8000
+                "K2 GPU workers stopped; click Generate when ready", 8000
             )
 
     def _validate_worker_models(self) -> None:
+        if self._model_loaded:
+            self.events.addItem("Krea baseline is already loaded; validation skipped")
+            return
         if not self.worker_client.running:
             self._start_worker()
         if self.worker_client.running:
+            self._worker_bootstrap_stage = "validate"
             self.worker_client.send(CommandKind.VALIDATE_MODELS, self._worker_payload())
 
     def _load_worker_model(self) -> None:
-        if self.worker_client.running:
+        if self._model_loaded:
+            self.events.addItem("Krea baseline is already loaded; duplicate load skipped")
+            return
+        if self.worker_client.running and self._worker_bootstrap_stage is None:
+            self._worker_bootstrap_stage = "load"
             self.load_model_button.setEnabled(False)
             self._set_memory_controls_enabled(False)
             self.worker_client.send(CommandKind.LOAD_MODEL, self._worker_payload())
+
+    def _advance_pending_generation(self) -> None:
+        if self._pending_generation_payload is None or self._worker_bootstrap_stage:
+            return
+        if not self.worker_client.running:
+            self.events.addItem("Starting a fresh disposable generation worker")
+            self._start_worker()
+            return
+        if not self._accelerator_available:
+            self._worker_bootstrap_stage = "probe"
+            self.worker_client.send(CommandKind.PROBE, self._worker_payload())
+            return
+        if not self._models_compatible:
+            self._worker_bootstrap_stage = "validate"
+            self.worker_client.send(CommandKind.VALIDATE_MODELS, self._worker_payload())
+            return
+        if not self._model_loaded:
+            self._load_worker_model()
+            return
+        payload = self._pending_generation_payload
+        try:
+            self.worker_client.send(CommandKind.GENERATE_BASELINE, payload)
+        except RuntimeError as error:
+            self._pending_generation_payload = None
+            self._set_generation_active(False)
+            self.events.addItem(f"Could not start generation: {error}")
+            return
+        self._pending_generation_payload = None
+        self.events.addItem("Fresh worker ready; generation dispatched")
 
     def _generate_baseline(self) -> None:
         self._filename_prefix_edited()
@@ -1366,6 +1422,7 @@ class MainWindow(QMainWindow):
                 "regional_subject_competition": (
                     self.regional_subject_competition_input.isChecked()
                 ),
+                "regional_subject_fill": self.regional_subject_fill_input.isChecked(),
                 "regional_late_step_scale": (
                     0.35 if self.regional_relaxation_input.isChecked() else 1.0
                 ),
@@ -1398,12 +1455,10 @@ class MainWindow(QMainWindow):
                 "loras": self._lora_payload(),
             }
         )
+        self._pending_generation_payload = payload
+        self._generation_completed = False
         self._set_generation_active(True)
-        try:
-            self.worker_client.send(CommandKind.GENERATE_BASELINE, payload)
-        except RuntimeError as error:
-            self._set_generation_active(False)
-            self.events.addItem(f"Could not start generation: {error}")
+        self._advance_pending_generation()
 
     def _preview_unified_prompt(self) -> None:
         plan = compile_regional_prompt_plan(
@@ -1417,6 +1472,7 @@ class MainWindow(QMainWindow):
             subject_competition=(
                 self.regional_subject_competition_input.isChecked()
             ),
+            subject_fill=self.regional_subject_fill_input.isChecked(),
             late_step_scale=(
                 0.35 if self.regional_relaxation_input.isChecked() else 1.0
             ),
@@ -1435,13 +1491,17 @@ class MainWindow(QMainWindow):
 
     def _set_generation_active(self, active: bool) -> None:
         self._generation_active = active
-        self.generate_button.setEnabled(not active and self.worker_client.running)
+        self.generate_button.setEnabled(
+            bool(not active and self.artifacts is not None and self.artifacts.complete)
+        )
         self.stop_generation_button.setEnabled(active and self.worker_client.running)
 
     def _stop_generation(self) -> None:
         if not self._generation_active:
             return
         pid = self.worker_client.cancel_generation()
+        self._pending_generation_payload = None
+        self._worker_bootstrap_stage = None
         self._set_generation_active(False)
         self._accelerator_available = False
         self._model_loaded = False
@@ -1449,12 +1509,12 @@ class MainWindow(QMainWindow):
         self.accelerator_status.setText("Not probed")
         self.memory_status.setText("Generation stopped; worker memory released")
         self.load_model_button.setEnabled(False)
-        self.generate_button.setEnabled(False)
+        self.generate_button.setEnabled(bool(self.artifacts and self.artifacts.complete))
         self._set_memory_controls_enabled(True)
         detail = f" (worker PID {pid})" if pid is not None else ""
         self.events.addItem(f"Generation stopped by user{detail}; GPU/RAM released")
         self.statusBar().showMessage(
-            "Generation stopped — make changes, then start and reload the worker", 10000
+            "Generation stopped — make changes, then click Generate when ready", 10000
         )
 
     def _worker_event(self, event: dict) -> None:
@@ -1484,7 +1544,11 @@ class MainWindow(QMainWindow):
                 self.accelerator_status.setText("Unavailable — run diagnostic")
             self.diagnostic_button.setVisible(not self._accelerator_available)
             self.load_model_button.setEnabled(
-                bool(self._models_compatible and self._accelerator_available)
+                bool(
+                    self._models_compatible
+                    and self._accelerator_available
+                    and not self._model_loaded
+                )
             )
             self.events.addItem(
                 "Worker runtime: "
@@ -1496,12 +1560,32 @@ class MainWindow(QMainWindow):
                 error = payload.get("initialization_error") or payload.get("error")
                 if error:
                     self.events.addItem(f"Accelerator probe error: {error}")
+            if message == "Worker runtime probe complete":
+                self._worker_bootstrap_stage = None
+                if (
+                    self._pending_generation_payload is not None
+                    and not self._accelerator_available
+                ):
+                    self._pending_generation_payload = None
+                    self._set_generation_active(False)
+                    self.events.addItem(
+                        "Automatic generation stopped: accelerator probe failed"
+                    )
         if "manifests" in payload:
             compatible = payload.get("complete") and all(
                 manifest.get("compatible") for manifest in payload["manifests"]
             )
             self._models_compatible = bool(compatible)
-            self.load_model_button.setEnabled(bool(compatible and self._accelerator_available))
+            self._worker_bootstrap_stage = None
+            if self._pending_generation_payload is not None and not compatible:
+                self._pending_generation_payload = None
+                self._set_generation_active(False)
+                self.events.addItem(
+                    "Automatic generation stopped: model validation failed"
+                )
+            self.load_model_button.setEnabled(
+                bool(compatible and self._accelerator_available and not self._model_loaded)
+            )
             for manifest in payload["manifests"]:
                 self.events.addItem(
                     f"{manifest['kind']} manifest: {manifest['manifest_path']}"
@@ -1525,13 +1609,19 @@ class MainWindow(QMainWindow):
             report.setInformativeText("\n".join(recommendations))
             report.setDetailedText(json.dumps(payload, indent=2, sort_keys=True))
             report.exec()
-        elif message == "Krea 2 baseline components loaded":
+        elif message in {
+            "Krea 2 baseline components loaded",
+            "Krea 2 baseline already loaded",
+        }:
+            self._worker_bootstrap_stage = None
             self._model_loaded = True
             self.statusBar().showMessage("Krea 2 baseline loaded in GPU worker")
             if "reserve_vram_gb" in payload:
                 self.reserve_vram_input.setValue(float(payload["reserve_vram_gb"]))
             self._set_memory_controls_enabled(False)
-            self.generate_button.setEnabled(True)
+            self.validate_models_button.setEnabled(False)
+            self.load_model_button.setEnabled(False)
+            self._advance_pending_generation()
         elif message == "LoRA diagnostics complete":
             reports = payload.get("loras", [])
             if reports:
@@ -1559,17 +1649,29 @@ class MainWindow(QMainWindow):
                 report.setDetailedText(json.dumps(report_data, indent=2, sort_keys=True))
                 report.exec()
         elif message in {"Generation complete", "Baseline generation complete"}:
+            self._generation_completed = True
             self._set_generation_active(False)
             image_path = payload.get("image_path")
             if image_path and self.canvas.set_image(image_path):
                 self._background_image_path = Path(image_path)
                 self.statusBar().showMessage(f"Image saved to {image_path}")
             if payload.get("oom_recovered"):
-                self.events.addItem(
-                    "Generation recovered from GPU OOM with CPU VAE and a larger VRAM floor"
+                self.reserve_vram_input.setValue(
+                    max(5.0, self.reserve_vram_input.value())
                 )
-            self.generate_button.setEnabled(True)
+                self.cpu_vae_input.setChecked(True)
+                self.events.addItem(
+                    "Generation recovered from GPU OOM; future fresh workers will start "
+                    "with CPU VAE and at least 5 GiB reserved"
+                )
+            # The worker exits immediately after this event. Keep Generate disabled
+            # until QProcess confirms that all GPU/system allocations are gone.
+            self.generate_button.setEnabled(False)
+        elif message == "Generation worker releasing GPU and system RAM":
+            self.memory_status.setText("Releasing generation worker memory…")
         elif state == "error":
+            self._pending_generation_payload = None
+            self._worker_bootstrap_stage = None
             self._set_generation_active(False)
             if message != "LoRA diagnostics complete":
                 self._model_loaded = False
@@ -1591,6 +1693,9 @@ class MainWindow(QMainWindow):
                     15000,
                 )
 
+        if self._pending_generation_payload is not None and state != "error":
+            self._advance_pending_generation()
+
     def _worker_stderr(self, output: str) -> None:
         logging.getLogger(__name__).debug("worker stderr received: %s", output)
         for line in output.splitlines():
@@ -1600,9 +1705,24 @@ class MainWindow(QMainWindow):
         self.worker_status.setText(status)
         self.events.addItem(f"GPU worker process: {status}")
         if status.startswith("stopped") or "error" in status:
+            completed = self._generation_completed
+            self._generation_completed = False
+            if not completed:
+                self._pending_generation_payload = None
+            self._model_loaded = False
+            self._accelerator_available = False
+            self._models_compatible = False
+            self._worker_bootstrap_stage = None
             self._set_generation_active(False)
-            self.generate_button.setEnabled(False)
+            self.generate_button.setEnabled(bool(self.artifacts and self.artifacts.complete))
+            self.load_model_button.setEnabled(False)
+            self.validate_models_button.setEnabled(True)
             self._set_memory_controls_enabled(True)
+            if completed:
+                self.memory_status.setText("GPU and generation RAM released")
+                self.events.addItem(
+                    "Disposable generation worker exited; GPU/system RAM released"
+                )
 
     def closeEvent(self, event) -> None:
         self.worker_client.stop()

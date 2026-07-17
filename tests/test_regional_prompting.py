@@ -66,12 +66,18 @@ class RegionalPromptingTests(unittest.TestCase):
             [region.name for region in expected_scene_order],
         )
         self.assertIn("centered about 17% across and 64% down", plan.prompt)
+        self.assertIn("visible subject itself should nearly fill its target box", plan.prompt)
+        self.assertIn("prominent medium-to-large subject", plan.prompt)
         expected_order = (
             "From left to right, the subjects are "
             + ", ".join(region.name for region in subjects[:-1])
             + f", and {subjects[-1].name}"
         )
         self.assertIn(expected_order, plan.prompt)
+        self.assertIn(
+            "left subject and right subject are equally large, at the same camera distance",
+            plan.prompt,
+        )
         self.assertEqual(plan.backend, BACKEND)
         self.assertEqual(
             [region.spatial_role for region in plan.regions],
@@ -179,6 +185,30 @@ class RegionalPromptingTests(unittest.TestCase):
             background_plan.regions[0].image_token_field[near_edge], 1.0
         )
 
+    def test_subject_fill_strengthens_box_edges_and_can_be_disabled(self) -> None:
+        subject = RegionDefinition(
+            "subject",
+            "Subject",
+            PixelBox(16, 16, 80, 80),
+            "a standing person",
+            spatial_role="subject",
+        )
+        filled = compile_regional_prompt_plan(
+            96, 96, "scene", (subject,), falloff_pixels=16, subject_fill=True
+        )
+        positioned = compile_regional_prompt_plan(
+            96, 96, "scene", (subject,), falloff_pixels=16, subject_fill=False
+        )
+        near_edge = 1 * 6 + 1
+
+        self.assertGreater(
+            filled.regions[0].image_token_field[near_edge],
+            positioned.regions[0].image_token_field[near_edge],
+        )
+        self.assertIn("minimal empty margin", filled.prompt)
+        self.assertNotIn("minimal empty margin", positioned.prompt)
+        self.assertTrue(filled.summary()["subject_fill"])
+
     def test_overlapping_subjects_compete_without_changing_background_field(self) -> None:
         regions = (
             RegionDefinition(
@@ -236,6 +266,7 @@ class RegionalPromptingTests(unittest.TestCase):
         self.assertEqual(state.regions[0].spatial_role, "auto")
         self.assertEqual(state.regional_outside_penalty, 1.0)
         self.assertTrue(state.regional_subject_competition)
+        self.assertTrue(state.regional_subject_fill)
         self.assertEqual(project_document(state)["version"], PROJECT_VERSION)
 
     def test_krea_prompt_token_count_excludes_fixed_wrapper_and_suffix(self) -> None:

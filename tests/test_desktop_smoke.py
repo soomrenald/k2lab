@@ -7,7 +7,7 @@ import struct
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, PropertyMock, patch
 
 
 PYSIDE_AVAILABLE = importlib.util.find_spec("PySide6") is not None
@@ -22,6 +22,7 @@ if PYSIDE_AVAILABLE:
     from k2_region_lab.desktop.main_window import GLOBAL_SCOPE_ID, MainWindow
     from k2_region_lab.processes import WorkerProcess
     from k2_region_lab.project import ProjectState
+    from k2_region_lab.worker.protocol import CommandKind
 
 
 def write_lora(path: Path) -> None:
@@ -178,6 +179,7 @@ class DesktopSmokeTests(unittest.TestCase):
             window.regional_outside_penalty_input.setValue(1.2)
             window.regional_feather_input.setValue(48)
             window.regional_subject_competition_input.setChecked(False)
+            window.regional_subject_fill_input.setChecked(False)
             window.regional_relaxation_input.setChecked(False)
             upscale_path = root / "4x-upscaler.pth"
             upscale_path.write_bytes(b"test upscaler placeholder")
@@ -230,6 +232,7 @@ class DesktopSmokeTests(unittest.TestCase):
             self.assertFalse(
                 restored.regional_subject_competition_input.isChecked()
             )
+            self.assertFalse(restored.regional_subject_fill_input.isChecked())
             self.assertFalse(restored.regional_relaxation_input.isChecked())
             self.assertTrue(restored.post_upscale_input.isChecked())
             self.assertEqual(restored.upscale_scale_input.currentData(), 4)
@@ -387,6 +390,7 @@ class DesktopSmokeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             window = self.make_window(root)
+            window.artifacts = Mock(complete=True)
             window.global_prompt.setPlainText("a red ceramic teapot")
             window.width_input.setValue(513)
             window.height_input.setValue(517)
@@ -403,8 +407,17 @@ class DesktopSmokeTests(unittest.TestCase):
             )
             window.region_prompt.setPlainText("a detailed red teapot")
             window.worker_client.send = Mock()
+            window._accelerator_available = True
+            window._models_compatible = True
+            window._model_loaded = True
 
-            window._generate_baseline()
+            with patch.object(
+                type(window.worker_client),
+                "running",
+                new_callable=PropertyMock,
+                return_value=True,
+            ):
+                window._generate_baseline()
             command, payload = window.worker_client.send.call_args.args
             self.assertEqual(command.value, "generate_baseline")
             self.assertEqual(payload["prompt"], "a red ceramic teapot")
@@ -418,6 +431,7 @@ class DesktopSmokeTests(unittest.TestCase):
             self.assertEqual(payload["regional_feather_pixels"], 128)
             self.assertEqual(payload["regional_outside_penalty"], 1.0)
             self.assertTrue(payload["regional_subject_competition"])
+            self.assertTrue(payload["regional_subject_fill"])
             self.assertEqual(payload["regional_late_step_scale"], 0.35)
             self.assertFalse(payload["post_upscale"])
             self.assertEqual(payload["upscale_scale"], 2)
@@ -444,8 +458,77 @@ class DesktopSmokeTests(unittest.TestCase):
                     "payload": {"image_path": str(image_path)},
                 }
             )
+            window._worker_process_status("stopped (exit 0, NormalExit)")
             self.assertIsNotNone(window.canvas._image_item)
             self.assertEqual(window.canvas._image_item.zValue(), -100.0)
+            self.assertTrue(window.generate_button.isEnabled())
+            window.close()
+
+    def test_generate_bootstraps_fresh_worker_and_release_restores_button(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            window = self.make_window(Path(directory))
+            window.artifacts = Mock(complete=True)
+            window.worker_client.send = Mock()
+
+            with patch.object(
+                type(window.worker_client),
+                "running",
+                new_callable=PropertyMock,
+                return_value=True,
+            ):
+                window._generate_baseline()
+                self.assertEqual(
+                    window.worker_client.send.call_args.args[0], CommandKind.PROBE
+                )
+
+                window._worker_event(
+                    {
+                        "state": "unloaded",
+                        "message": "Worker runtime probe complete",
+                        "payload": {"accelerator_available": True, "devices": []},
+                    }
+                )
+                self.assertEqual(
+                    window.worker_client.send.call_args.args[0],
+                    CommandKind.VALIDATE_MODELS,
+                )
+
+                window._worker_event(
+                    {
+                        "state": "ready",
+                        "message": "Model artifacts validated",
+                        "payload": {"complete": True, "manifests": []},
+                    }
+                )
+                self.assertEqual(
+                    window.worker_client.send.call_args.args[0], CommandKind.LOAD_MODEL
+                )
+
+                window._worker_event(
+                    {
+                        "state": "ready",
+                        "message": "Krea 2 baseline components loaded",
+                        "payload": {},
+                    }
+                )
+                command, payload = window.worker_client.send.call_args.args
+                self.assertEqual(command, CommandKind.GENERATE_BASELINE)
+                self.assertIn("prompt", payload)
+
+                window._worker_event(
+                    {
+                        "state": "ready",
+                        "message": "Generation complete",
+                        "payload": {},
+                    }
+                )
+                window._worker_process_status("stopped (exit 0, NormalExit)")
+
+            self.assertFalse(window._model_loaded)
+            self.assertIsNone(window._pending_generation_payload)
+            self.assertEqual(
+                window.memory_status.text(), "GPU and generation RAM released"
+            )
             self.assertTrue(window.generate_button.isEnabled())
             window.close()
 
@@ -453,28 +536,38 @@ class DesktopSmokeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             window = self.make_window(Path(directory))
             window.worker_client.send = Mock()
+            window._accelerator_available = True
+            window._models_compatible = True
+            window._model_loaded = True
             window.seed_mode_input.setCurrentIndex(
                 window.seed_mode_input.findData("random")
             )
-            with patch(
-                "k2_region_lab.desktop.main_window.secrets.randbelow", return_value=9876
+            with patch.object(
+                type(window.worker_client),
+                "running",
+                new_callable=PropertyMock,
+                return_value=True,
             ):
-                window._generate_baseline()
-            random_payload = window.worker_client.send.call_args.args[1]
-            self.assertEqual(random_payload["seed"], 9876)
-            self.assertEqual(random_payload["seed_mode"], "random")
-            self.assertEqual(window.seed_input.value(), 9876)
+                with patch(
+                    "k2_region_lab.desktop.main_window.secrets.randbelow",
+                    return_value=9876,
+                ):
+                    window._generate_baseline()
+                random_payload = window.worker_client.send.call_args.args[1]
+                self.assertEqual(random_payload["seed"], 9876)
+                self.assertEqual(random_payload["seed_mode"], "random")
+                self.assertEqual(window.seed_input.value(), 9876)
 
-            window.worker_client.send.reset_mock()
-            window.seed_mode_input.setCurrentIndex(
-                window.seed_mode_input.findData("increment")
-            )
-            window.seed_input.setValue(41)
-            window._generate_baseline()
-            increment_payload = window.worker_client.send.call_args.args[1]
-            self.assertEqual(increment_payload["seed"], 41)
-            self.assertEqual(increment_payload["seed_mode"], "increment")
-            self.assertEqual(window.seed_input.value(), 42)
+                window.worker_client.send.reset_mock()
+                window.seed_mode_input.setCurrentIndex(
+                    window.seed_mode_input.findData("increment")
+                )
+                window.seed_input.setValue(41)
+                window._generate_baseline()
+                increment_payload = window.worker_client.send.call_args.args[1]
+                self.assertEqual(increment_payload["seed"], 41)
+                self.assertEqual(increment_payload["seed_mode"], "increment")
+                self.assertEqual(window.seed_input.value(), 42)
             window.close()
 
     def test_stop_generation_terminates_only_worker_and_resets_controls(self) -> None:

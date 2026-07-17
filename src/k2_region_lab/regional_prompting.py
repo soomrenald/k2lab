@@ -8,7 +8,7 @@ from typing import Callable
 from k2_region_lab.regions import CanvasGeometry, PixelBox, RegionDefinition
 
 
-BACKEND = "krea-unified-spatial-attention-v2"
+BACKEND = "krea-unified-spatial-attention-v3"
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,6 +35,7 @@ class RegionalPromptPlan:
     outside_penalty: float
     falloff_pixels: float
     subject_competition: bool
+    subject_fill: bool
     late_step_scale: float
     regions: tuple[UnifiedPromptRegion, ...]
     backend: str = BACKEND
@@ -93,6 +94,7 @@ class RegionalPromptPlan:
             "outside_penalty": self.outside_penalty,
             "falloff_pixels": self.falloff_pixels,
             "subject_competition": self.subject_competition,
+            "subject_fill": self.subject_fill,
             "late_step_scale": self.late_step_scale,
             "image_token_grid": [self.image_token_width, self.image_token_height],
             "region_count": len(self.regions),
@@ -170,6 +172,7 @@ def compile_regional_prompt_plan(
     outside_penalty: float = 1.0,
     falloff_pixels: float = 128.0,
     subject_competition: bool = True,
+    subject_fill: bool = True,
     late_step_scale: float = 0.35,
 ) -> RegionalPromptPlan:
     if not 0.0 < strength <= 10.0:
@@ -191,7 +194,12 @@ def compile_regional_prompt_plan(
 
     roles = tuple(_effective_spatial_role(region, box, width) for region, box in active)
     raw_fields = tuple(
-        _subject_target_field(geometry, box, float(falloff_pixels))
+        _subject_target_field(
+            geometry,
+            box,
+            float(falloff_pixels),
+            edge_weight=0.85 if subject_fill else 0.5,
+        )
         if role == "subject"
         else _soft_box_field(geometry, box, float(falloff_pixels))
         for (_, box), role in zip(active, roles, strict=True)
@@ -207,7 +215,14 @@ def compile_regional_prompt_plan(
     for (region, box), role, image_token_field in zip(
         active, roles, fields, strict=True
     ):
-        clause = _regional_clause(region, box, width, height)
+        clause = _regional_clause(
+            region,
+            box,
+            width,
+            height,
+            role=role,
+            subject_fill=subject_fill,
+        )
         if prompt:
             prompt += "\n"
         start = len(prompt)
@@ -241,6 +256,7 @@ def compile_regional_prompt_plan(
         outside_penalty=float(outside_penalty),
         falloff_pixels=float(falloff_pixels),
         subject_competition=bool(subject_competition),
+        subject_fill=bool(subject_fill),
         late_step_scale=float(late_step_scale),
         regions=tuple(compiled),
     )
@@ -263,7 +279,13 @@ def _sentence(text: str) -> str:
 
 
 def _regional_clause(
-    region: RegionDefinition, box: PixelBox, width: int, height: int
+    region: RegionDefinition,
+    box: PixelBox,
+    width: int,
+    height: int,
+    *,
+    role: str,
+    subject_fill: bool,
 ) -> str:
     center_x = 100.0 * (box.x0 + box.x1) / (2.0 * width)
     center_y = 100.0 * (box.y0 + box.y1) / (2.0 * height)
@@ -273,19 +295,46 @@ def _regional_clause(
     vertical = _vertical_position(center_y)
     description = region.prompt.strip().rstrip(".!? ")
 
-    if width_percent >= 70.0:
+    if role == "background":
         location = (
             f"Across the {vertical} of the image, occupying about "
             f"{height_percent:.0f}% of its height"
         )
-    else:
-        location = (
-            f"In the {vertical} {horizontal}, centered about {center_x:.0f}% "
-            f"across and {center_y:.0f}% down, occupying about "
-            f"{width_percent:.0f}% of the image width and {height_percent:.0f}% "
-            "of its height"
+        return f"{location}, there is {description}."
+
+    location = (
+        f"In the {vertical} {horizontal}, centered about {center_x:.0f}% "
+        f"across and {center_y:.0f}% down"
+    )
+    if not subject_fill:
+        return (
+            f"{location}, occupying about {width_percent:.0f}% of the image width "
+            f"and {height_percent:.0f}% of its height, there is {description}."
         )
-    return f"{location}, there is {description}."
+
+    x0_percent = 100.0 * box.x0 / width
+    x1_percent = 100.0 * box.x1 / width
+    y0_percent = 100.0 * box.y0 / height
+    y1_percent = 100.0 * box.y1 / height
+    framing = _subject_framing(height_percent)
+    return (
+        f"{location}, render {description} as {framing}. The visible subject itself "
+        f"should nearly fill its target box, extending from about {x0_percent:.0f}% "
+        f"to {x1_percent:.0f}% across and {y0_percent:.0f}% to {y1_percent:.0f}% "
+        "down. Place the subject's topmost visible point near the top boundary and its "
+        "bottommost visible point near the bottom boundary. Keep the complete subject "
+        "inside those boundaries with minimal empty margin."
+    )
+
+
+def _subject_framing(height_percent: float) -> str:
+    if height_percent >= 70.0:
+        return "a large prominent near-frame-height foreground subject"
+    if height_percent >= 45.0:
+        return "a prominent medium-to-large subject"
+    if height_percent >= 25.0:
+        return "a medium-size subject"
+    return "a small distant subject"
 
 
 def _horizontal_position(percent: float) -> str:
@@ -318,7 +367,7 @@ def _relationship_clause(
     subjects = [
         region
         for region in regions
-        if region.box.width < 0.70 * width
+        if region.spatial_role == "subject"
     ]
     if len(subjects) < 2:
         return ""
@@ -346,6 +395,21 @@ def _relationship_clause(
     lowest_center = (lowest.box.y0 + lowest.box.y1) / 2.0
     if other_centers and lowest_center - sum(other_centers) / len(other_centers) > 0.08 * height:
         ordering += f"; {lowest.name} is positioned below the other subjects"
+    equally_scaled = []
+    for index, first in enumerate(left_to_right):
+        for second in left_to_right[index + 1 :]:
+            height_ratio = first.box.height / second.box.height
+            center_difference = abs(
+                (first.box.y0 + first.box.y1)
+                - (second.box.y0 + second.box.y1)
+            ) / (2.0 * height)
+            if 0.85 <= height_ratio <= 1.15 and center_difference <= 0.10:
+                equally_scaled.append(
+                    f"{first.name} and {second.name} are equally large, at the same "
+                    "camera distance, with matching top and bottom levels"
+                )
+    if equally_scaled:
+        ordering += "; " + "; ".join(equally_scaled)
     return f"{ordering}."
 
 
@@ -381,9 +445,13 @@ def _effective_spatial_role(
 
 
 def _subject_target_field(
-    geometry: CanvasGeometry, box: PixelBox, falloff_pixels: float
+    geometry: CanvasGeometry,
+    box: PixelBox,
+    falloff_pixels: float,
+    *,
+    edge_weight: float,
 ) -> tuple[float, ...]:
-    """Create a box target with a center peak and a half-strength boundary."""
+    """Create a box target with a center peak and configurable boundary strength."""
     values: list[float] = []
     size = geometry.output_pixels_per_image_token
     midpoint_x = (box.x0 + box.x1) / 2.0
@@ -404,13 +472,13 @@ def _subject_target_field(
                 )
                 u = min(1.0, normalized)
                 smooth = u * u * (3.0 - 2.0 * u)
-                value = 1.0 - 0.5 * smooth
+                value = 1.0 - (1.0 - edge_weight) * smooth
             elif falloff_pixels == 0.0 or distance >= falloff_pixels:
                 value = 0.0
             else:
                 u = 1.0 - distance / falloff_pixels
                 smooth = u * u * (3.0 - 2.0 * u)
-                value = 0.5 * smooth
+                value = edge_weight * smooth
             values.append(value)
     return tuple(values)
 

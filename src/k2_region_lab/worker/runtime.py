@@ -912,6 +912,7 @@ class ComfyBaselineRuntime:
         regional_outside_penalty: float = 1.0,
         regional_feather_pixels: float = 128.0,
         regional_subject_competition: bool = True,
+        regional_subject_fill: bool = True,
         regional_late_step_scale: float = 0.35,
         post_upscale: bool = False,
         upscale_scale: int = 2,
@@ -941,6 +942,7 @@ class ComfyBaselineRuntime:
                 outside_penalty=regional_outside_penalty,
                 falloff_pixels=regional_feather_pixels,
                 subject_competition=regional_subject_competition,
+                subject_fill=regional_subject_fill,
                 late_step_scale=regional_late_step_scale,
             )
             if regional_prompting and regions

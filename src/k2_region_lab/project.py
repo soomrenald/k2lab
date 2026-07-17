@@ -9,8 +9,8 @@ from k2_region_lab.regions import PixelBox, RegionDefinition
 
 
 PROJECT_SCHEMA = "k2-region-lab-project"
-PROJECT_VERSION = 5
-SUPPORTED_PROJECT_VERSIONS = {1, 2, 3, 4, PROJECT_VERSION}
+PROJECT_VERSION = 6
+SUPPORTED_PROJECT_VERSIONS = {1, 2, 3, 4, 5, PROJECT_VERSION}
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,6 +38,7 @@ class ProjectState:
     regional_outside_penalty: float = 1.0
     regional_feather_pixels: int = 128
     regional_subject_competition: bool = True
+    regional_subject_fill: bool = True
     regional_relaxation: bool = True
     post_upscale: bool = False
     upscale_scale: int = 2
@@ -111,6 +112,7 @@ def project_document(state: ProjectState) -> dict[str, Any]:
             "regional_outside_penalty": state.regional_outside_penalty,
             "regional_feather_pixels": state.regional_feather_pixels,
             "regional_subject_competition": state.regional_subject_competition,
+            "regional_subject_fill": state.regional_subject_fill,
             "regional_relaxation": state.regional_relaxation,
             "post_upscale": state.post_upscale,
             "upscale_scale": state.upscale_scale,
@@ -204,6 +206,7 @@ def project_state(document: dict[str, Any]) -> ProjectState:
         regional_subject_competition=bool(
             generation.get("regional_subject_competition", True)
         ),
+        regional_subject_fill=bool(generation.get("regional_subject_fill", True)),
         regional_relaxation=bool(generation.get("regional_relaxation", True)),
         post_upscale=bool(generation.get("post_upscale", False)),
         upscale_scale=int(generation.get("upscale_scale", 2)),

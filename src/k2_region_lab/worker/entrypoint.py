@@ -58,6 +58,7 @@ def main() -> int:
     emit(WorkerState.UNLOADED, "GPU worker started")
     for encoded in sys.stdin:
         command_id: str | None = None
+        kind: CommandKind | None = None
         try:
             command = json.loads(encoded)
             command_id = command.get("command_id")
@@ -98,6 +99,14 @@ def main() -> int:
                     payload={"complete": artifacts.complete, "manifests": manifests},
                 )
             elif kind == CommandKind.LOAD_MODEL:
+                if runtime is not None and runtime.loaded:
+                    emit(
+                        WorkerState.READY,
+                        "Krea 2 baseline already loaded",
+                        command_id=command_id,
+                        payload={"reused": True},
+                    )
+                    continue
                 if artifacts is None:
                     directories = model_directories(payload)
                     artifacts = discover_model_artifacts(directories)
@@ -190,6 +199,9 @@ def main() -> int:
                     regional_subject_competition=bool(
                         payload.get("regional_subject_competition", True)
                     ),
+                    regional_subject_fill=bool(
+                        payload.get("regional_subject_fill", True)
+                    ),
                     regional_late_step_scale=float(
                         payload.get("regional_late_step_scale", 0.35)
                     ),
@@ -211,6 +223,12 @@ def main() -> int:
                     command_id=command_id,
                     payload=generated,
                 )
+                emit(
+                    WorkerState.COMPLETE,
+                    "Generation worker releasing GPU and system RAM",
+                    command_id=command_id,
+                )
+                return 0
             elif kind == CommandKind.SHUTDOWN:
                 emit(WorkerState.COMPLETE, "GPU worker stopped", command_id=command_id)
                 return 0
@@ -225,6 +243,8 @@ def main() -> int:
                 command_id=command_id,
                 payload={"exception_type": type(error).__name__},
             )
+            if kind in {CommandKind.LOAD_MODEL, CommandKind.GENERATE_BASELINE}:
+                return 1
     return 0
 
 
