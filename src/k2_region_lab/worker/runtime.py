@@ -630,6 +630,30 @@ class ComfyBaselineRuntime:
         patched_model.set_injections("k2_routed_loras", injections)
         return patched_model, manager.get_hook_count()
 
+    def _prepare_vae_handoff(
+        self,
+        generation_model,
+        event: Callable[[str, dict[str, Any]], None] | None,
+    ) -> None:
+        """Offload denoising state before VAE decode enters inference mode.
+
+        Comfy may otherwise decide to unload the quantized transformer from inside
+        ``VAE.decode``. PyTorch forbids Comfy's quantized parameter reconstruction
+        when that unload happens under inference mode.
+        """
+
+        import comfy.model_management
+
+        comfy.model_management.unload_all_models()
+        generation_model.remove_injections("k2_routed_loras")
+        gc.collect()
+        comfy.model_management.soft_empty_cache(force=True)
+        if event is not None:
+            event(
+                "Transformer offloaded before VAE decode",
+                {"memory": self.memory_snapshot("VAE handoff complete")},
+            )
+
     def memory_snapshot(self, stage: str) -> dict[str, Any]:
         import psutil
         import torch
@@ -731,7 +755,7 @@ class ComfyBaselineRuntime:
         before = self.memory_snapshot("before OOM cleanup")
         if before["ram_available_bytes"] < before["minimum_ram_bytes"]:
             raise MemoryError(
-                "GPU OOM recovery stopped because available system RAM is below "
+                "GPU OOM recovery could not start because available system RAM is below "
                 f"the {self.minimum_system_ram_gb:.1f} GiB guard"
             )
         device = comfy.model_management.get_torch_device()
@@ -995,6 +1019,7 @@ class ComfyBaselineRuntime:
                     {"lora_id": report["id"], **delta_summary},
                 )
         self._ensure_memory("before VAE decode", event)
+        self._prepare_vae_handoff(generation_model, event)
         images = self._decode_vae(samples)
         image_tensor = images[0]
         while image_tensor.ndim > 3 and image_tensor.shape[0] == 1:

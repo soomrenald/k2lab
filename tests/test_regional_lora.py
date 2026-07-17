@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import sys
 import unittest
+from types import ModuleType
 from types import MethodType
+from unittest.mock import patch
 
 from k2_region_lab.regional_lora import compile_lora_delta_routes
 from k2_region_lab.regional_prompting import compile_regional_prompt_plan
@@ -180,6 +183,39 @@ class RegionalLoraRoutingTests(unittest.TestCase):
         self.assertEqual(
             [report["status"] for report in reports],
             ["applied_global", "applied_regional"],
+        )
+
+    def test_vae_handoff_unloads_model_before_discarding_adapter_hooks(self) -> None:
+        calls = []
+        comfy = ModuleType("comfy")
+        comfy.__path__ = []
+        management = ModuleType("comfy.model_management")
+        management.unload_all_models = lambda: calls.append("unload")
+        management.soft_empty_cache = lambda force=False: calls.append(
+            f"empty:{force}"
+        )
+        comfy.model_management = management
+
+        class FakeGenerationModel:
+            def remove_injections(self, key):
+                self.assert_unloaded(key)
+
+            @staticmethod
+            def assert_unloaded(key):
+                if calls != ["unload"]:
+                    raise AssertionError("adapter hooks were removed before model unload")
+                calls.append(f"remove:{key}")
+
+        runtime = object.__new__(ComfyBaselineRuntime)
+        with patch.dict(
+            sys.modules,
+            {"comfy": comfy, "comfy.model_management": management},
+        ):
+            runtime._prepare_vae_handoff(FakeGenerationModel(), None)
+
+        self.assertEqual(
+            calls,
+            ["unload", "remove:k2_routed_loras", "empty:True"],
         )
 
 

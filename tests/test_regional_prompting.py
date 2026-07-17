@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import json
 import unittest
-from pathlib import Path
 
 from k2_region_lab.project import PROJECT_VERSION, project_document, project_state
 from k2_region_lab.regional_prompting import (
@@ -16,32 +14,58 @@ from k2_region_lab.spatial_attention import KreaSpatialAttentionOverride, spatia
 
 
 class RegionalPromptingTests(unittest.TestCase):
-    def test_testone_compiles_one_scene_ordered_prompt(self) -> None:
-        document = json.loads(
-            (Path(__file__).parents[1] / "testone.k2lab.json").read_text(
-                encoding="utf-8"
-            )
+    def test_scene_compiles_one_scene_ordered_prompt(self) -> None:
+        regions = (
+            RegionDefinition(
+                "dog", "dog", PixelBox(440, 800, 600, 980), "a small brown dog"
+            ),
+            RegionDefinition(
+                "sand", "sand", PixelBox(0, 680, 1024, 1024), "white sand"
+            ),
+            RegionDefinition(
+                "left", "left subject", PixelBox(100, 410, 250, 900), "a woman in red"
+            ),
+            RegionDefinition(
+                "sky", "sky", PixelBox(0, 0, 1024, 320), "clear blue sky"
+            ),
+            RegionDefinition(
+                "right",
+                "right subject",
+                PixelBox(650, 390, 850, 910),
+                "a woman in blue",
+            ),
+            RegionDefinition(
+                "ocean", "ocean", PixelBox(0, 320, 1024, 680), "tropical ocean"
+            ),
         )
-        state = project_state(document)
+        global_prompt = "photorealistic beach scene"
 
         plan = compile_regional_prompt_plan(
-            state.canvas_width,
-            state.canvas_height,
-            state.global_prompt,
-            state.regions,
+            1024,
+            1024,
+            global_prompt,
+            regions,
         )
 
-        self.assertTrue(plan.prompt.startswith(state.global_prompt.strip()))
+        self.assertTrue(plan.prompt.startswith(global_prompt))
         ordered_names = [region.name for region in plan.regions]
-        self.assertEqual(
-            ordered_names,
-            ["sky", "ocean", "sand", "red bikini woman", "lface", "dog"],
+        expected_scene_order = sorted(
+            regions,
+            key=lambda region: (
+                0 if region.box.width >= 0.70 * 1024 else 1,
+                (region.box.y0 + region.box.y1) / 2.0,
+                (region.box.x0 + region.box.x1) / 2.0,
+            ),
         )
-        self.assertIn("centered about 17% across and 64% down", plan.prompt)
         subjects = sorted(
-            (region for region in state.regions if region.box.width < 0.70 * state.canvas_width),
+            (region for region in regions if region.box.width < 0.70 * 1024),
             key=lambda region: (region.box.x0 + region.box.x1) / 2.0,
         )
+        self.assertEqual(
+            ordered_names,
+            [region.name for region in expected_scene_order],
+        )
+        self.assertIn("centered about 17% across and 64% down", plan.prompt)
         expected_order = (
             "From left to right, the subjects are "
             + ", ".join(region.name for region in subjects[:-1])

@@ -81,6 +81,8 @@ Each loaded LoRA has a saved model-strength control and an **Inspect selected Lo
 
 The prompt-attention field and LoRA gate intentionally have different semantics. Prompt placement can feather outside a box so the model composes a coherent scene. LoRA parameter deltas do not use that falloff. Information can still propagate from an enabled lane through the transformer's normal self-attention, but no LoRA projection is evaluated into an unassigned output lane. Delta-magnitude-driven attention tuning is the next control stage built on these measurements.
 
+Before VAE decode, the worker explicitly offloads the denoising transformer and releases routed adapter hooks outside PyTorch inference mode. This both frees the additional VRAM held by multiple LoRAs and prevents ComfyUI's quantized FP8 parameter reconstruction from receiving inference tensors during the VAE memory handoff.
+
 If the accelerator probe fails, **Diagnose accelerator…** appears below the status. It restarts the worker with a clean environment and reports the interpreter, Torch/ROCm versions, device-file access, visibility variables, initialization errors, and suggested fixes without closing the application.
 
 Use **Release K2 GPU memory…** if a failed run leaves a K2 worker holding VRAM. The confirmation dialog lists every matching current-user K2 worker PID, then stops only those processes. It deliberately does not terminate ComfyUI or other ROCm applications.
