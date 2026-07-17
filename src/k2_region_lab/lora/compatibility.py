@@ -14,6 +14,7 @@ _ADAPTER_SUFFIXES = (
     ".lora_down.weight",
     ".lora_up.weight",
 )
+_AUXILIARY_SUFFIXES = (".alpha", ".dora_scale")
 _KREA_INTERNAL_PREFIXES = ("blocks.", "txtfusion.")
 
 
@@ -33,6 +34,35 @@ def normalize_krea_lora_state_dict(state: dict[str, _T]) -> dict[str, _T]:
             raise ValueError(f"LoRA key normalization collision: {target}")
         normalized[target] = value
     return normalized
+
+
+def _adapter_base(key: str) -> str | None:
+    for suffix in (*_ADAPTER_SUFFIXES, *_AUXILIARY_SUFFIXES):
+        if key.endswith(suffix):
+            return key[: -len(suffix)]
+    return None
+
+
+def align_krea_lora_state_dict(
+    state: dict[str, _T], supported_prefixes: Iterable[str]
+) -> dict[str, _T]:
+    """Choose the original or normalized Krea namespace supported by this worker."""
+    supported = set(supported_prefixes)
+    aligned: dict[str, _T] = {}
+    for key, value in state.items():
+        original_base = _adapter_base(key)
+        normalized_key = normalize_krea_lora_key(key)
+        normalized_base = _adapter_base(normalized_key)
+        if original_base in supported:
+            target = key
+        elif normalized_base in supported:
+            target = normalized_key
+        else:
+            target = key
+        if target in aligned:
+            raise ValueError(f"LoRA key alignment collision: {target}")
+        aligned[target] = value
+    return aligned
 
 
 def adapter_prefixes(keys: Iterable[str]) -> tuple[str, ...]:

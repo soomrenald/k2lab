@@ -9,6 +9,7 @@ from pathlib import Path
 
 from k2_region_lab.lora import (
     LoraLibrary,
+    align_krea_lora_state_dict,
     inspect_lora_header,
     normalize_krea_lora_key,
     normalize_krea_lora_state_dict,
@@ -98,6 +99,23 @@ class LoraLibraryTests(unittest.TestCase):
         self.assertEqual(
             normalized, {"txtfusion.refiner_blocks.0.attn.wq.alpha": 32}
         )
+        original = {
+            "diffusion_model.blocks.0.attn.wq.lora_A.weight": "a",
+            "diffusion_model.blocks.0.attn.wq.lora_B.weight": "b",
+        }
+        self.assertEqual(
+            align_krea_lora_state_dict(
+                original, {"diffusion_model.blocks.0.attn.wq"}
+            ),
+            original,
+        )
+        self.assertEqual(
+            align_krea_lora_state_dict(original, {"blocks.0.attn.wq"}),
+            {
+                "blocks.0.attn.wq.lora_A.weight": "a",
+                "blocks.0.attn.wq.lora_B.weight": "b",
+            },
+        )
 
     def test_header_inspection_reports_adapter_pairs_and_rank(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -136,6 +154,7 @@ class LoraLibraryTests(unittest.TestCase):
                 {f"diffusion_model.{name}.weight": object()},
                 None,
                 {
+                    "id": name,
                     "display_name": name,
                     "compatible": True,
                     "adapter_count": 1,
@@ -143,20 +162,21 @@ class LoraLibraryTests(unittest.TestCase):
                 },
             )
 
+        def fake_install(self, generation_model, patches, strength, lora_id):
+            del self, lora_id
+            patched_model = generation_model.clone()
+            patched_model.applied.append((tuple(patches), strength))
+            return patched_model, len(patches)
+
         runtime._load_lora_patches = MethodType(fake_load, runtime)
+        runtime._install_global_lora_bypass = MethodType(fake_install, runtime)
         specifications = [
             {
                 "path": "/unused/one.safetensors",
                 "name": "one",
                 "strength": 0.6,
                 "global": True,
-            },
-            {
-                "path": "/unused/two.safetensors",
-                "name": "two",
-                "strength": 0.9,
-                "global": True,
-            },
+            }
         ]
 
         generated_model, reports = runtime._apply_global_loras(specifications, None)
@@ -164,15 +184,13 @@ class LoraLibraryTests(unittest.TestCase):
         self.assertEqual(runtime.model.applied, [])
         self.assertEqual(
             generated_model.applied,
-            [
-                (("diffusion_model.one.weight",), 0.6),
-                (("diffusion_model.two.weight",), 0.9),
-            ],
+            [(("diffusion_model.one.weight",), 0.6)],
         )
         self.assertEqual(
             [report["status"] for report in reports],
-            ["applied_global", "applied_global"],
+            ["applied_global"],
         )
+        self.assertEqual(reports[0]["application_mode"], "unfused_bypass")
 
 
 if __name__ == "__main__":

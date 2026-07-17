@@ -12,7 +12,11 @@ from pathlib import Path
 from typing import Any, Callable
 
 from k2_region_lab.config import ModelDirectories
-from k2_region_lab.lora import inspect_lora_header, normalize_krea_lora_state_dict
+from k2_region_lab.lora import (
+    adapter_prefixes,
+    align_krea_lora_state_dict,
+    inspect_lora_header,
+)
 from k2_region_lab.model import ArtifactSet, discover_model_artifacts
 from k2_region_lab.model.manifests import build_tensor_manifest
 from k2_region_lab.memory import (
@@ -318,10 +322,14 @@ class ComfyBaselineRuntime:
         state, metadata = comfy.utils.load_torch_file(
             str(path), safe_load=True, return_metadata=True
         )
-        normalized = normalize_krea_lora_state_dict(state)
-        converted = comfy.lora_convert.convert_lora(normalized)
         key_map = comfy.lora.model_lora_keys_unet(self.model.model, {})
+        aligned = align_krea_lora_state_dict(state, key_map)
+        converted = comfy.lora_convert.convert_lora(aligned)
         patches = comfy.lora.load_lora(converted, key_map, log_missing=False)
+        normalized_prefixes = adapter_prefixes(converted)
+        unmatched_prefixes = [
+            prefix for prefix in normalized_prefixes if prefix not in key_map
+        ]
         header = inspect_lora_header(path)
         adapter_count = int(header["adapter_count"])
         report = {
@@ -339,6 +347,12 @@ class ComfyBaselineRuntime:
                 and int(header["complete_adapter_pairs"]) == adapter_count
             ),
             "model_only": True,
+            "unmatched_prefix_examples": unmatched_prefixes[:8],
+            "model_mapping_examples": [
+                key
+                for key in key_map
+                if "blocks.0" in key or "transformer_blocks.0" in key
+            ][:12],
         }
         return patches, metadata, report
 
@@ -359,6 +373,16 @@ class ComfyBaselineRuntime:
     ):
         generation_model = self.model
         reports: list[dict[str, Any]] = []
+        active_globals = [
+            specification
+            for specification in specifications
+            if bool(specification.get("global", True))
+            and float(specification.get("strength", 1.0)) != 0.0
+        ]
+        if len(active_globals) > 1:
+            raise ValueError(
+                "this LoRA milestone supports one active Global LoRA per generation"
+            )
         for specification in specifications:
             path = Path(str(specification["path"])).expanduser().resolve()
             if not bool(specification.get("global", True)):
@@ -406,18 +430,18 @@ class ComfyBaselineRuntime:
                     f"{report['matched_model_targets']}/{report['adapter_count']} "
                     "Krea 2 model targets"
                 )
-            patched_model = generation_model.clone()
-            applied = patched_model.add_patches(patches, strength)
-            if len(applied) != len(patches):
-                raise ValueError(
-                    f"LoRA {report['display_name']} mapped {len(patches)} targets but "
-                    f"only {len(applied)} could be patched"
-                )
+            patched_model, applied_count = self._install_global_lora_bypass(
+                generation_model,
+                patches,
+                strength,
+                str(report["id"]),
+            )
             if metadata:
                 patched_model.set_attachments("lora_metadata", metadata)
             generation_model = patched_model
             report["status"] = "applied_global"
-            report["applied_model_targets"] = len(applied)
+            report["application_mode"] = "unfused_bypass"
+            report["applied_model_targets"] = applied_count
             reports.append(report)
             if event is not None:
                 event(
@@ -425,6 +449,39 @@ class ComfyBaselineRuntime:
                     {"lora": report},
                 )
         return generation_model, reports
+
+    @staticmethod
+    def _install_global_lora_bypass(
+        generation_model,
+        patches: dict,
+        strength: float,
+        lora_id: str,
+    ):
+        import comfy.weight_adapter
+
+        manager = comfy.weight_adapter.BypassInjectionManager()
+        unsupported = []
+        for key, patch in patches.items():
+            if isinstance(patch, comfy.weight_adapter.WeightAdapterBase):
+                manager.add_adapter(key, patch, strength=strength)
+            else:
+                unsupported.append(key)
+        if unsupported:
+            raise ValueError(
+                "unfused Global LoRA loading does not support non-adapter patches: "
+                + ", ".join(map(str, unsupported[:4]))
+            )
+
+        patched_model = generation_model.clone()
+        injections = manager.create_injections(patched_model.model)
+        applied_count = manager.get_hook_count()
+        if applied_count != len(patches):
+            raise ValueError(
+                f"LoRA mapped {len(patches)} targets but only {applied_count} "
+                "could be installed as unfused adapters"
+            )
+        patched_model.set_injections(f"k2_global_lora_{lora_id}", injections)
+        return patched_model, applied_count
 
     def memory_snapshot(self, stage: str) -> dict[str, Any]:
         import psutil
