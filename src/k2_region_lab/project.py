@@ -9,8 +9,8 @@ from k2_region_lab.regions import PixelBox, RegionDefinition
 
 
 PROJECT_SCHEMA = "k2-region-lab-project"
-PROJECT_VERSION = 2
-SUPPORTED_PROJECT_VERSIONS = {1, PROJECT_VERSION}
+PROJECT_VERSION = 3
+SUPPORTED_PROJECT_VERSIONS = {1, 2, PROJECT_VERSION}
 
 
 @dataclass(frozen=True, slots=True)
@@ -18,6 +18,11 @@ class SavedLora:
     path: Path
     global_scope: bool = True
     region_ids: tuple[str, ...] = ()
+    strength: float = 1.0
+
+    def __post_init__(self) -> None:
+        if not -4.0 <= self.strength <= 4.0:
+            raise ValueError("saved LoRA strength must be between -4 and 4")
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,6 +126,7 @@ def project_document(state: ProjectState) -> dict[str, Any]:
                 "path": str(lora.path),
                 "global": lora.global_scope,
                 "region_ids": list(lora.region_ids),
+                "strength": lora.strength,
             }
             for lora in state.loras
         ],
@@ -159,6 +165,7 @@ def project_state(document: dict[str, Any]) -> ProjectState:
             path=Path(item["path"]).expanduser(),
             global_scope=bool(item.get("global", True)),
             region_ids=tuple(str(region_id) for region_id in item.get("region_ids", [])),
+            strength=float(item.get("strength", 1.0)),
         )
         for item in document.get("loras", [])
     )

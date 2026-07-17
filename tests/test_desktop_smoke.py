@@ -94,6 +94,8 @@ class DesktopSmokeTests(unittest.TestCase):
             self.assertTrue(window._add_lora_path(lora_path))
             lora_id = window.lora_list.currentItem().data(Qt.ItemDataRole.UserRole)
             self.assertTrue(window.lora_library.binding_for(lora_id).global_scope)
+            window.lora_strength_input.setValue(0.75)
+            self.assertEqual(window.lora_library.binding_for(lora_id).strength, 0.75)
             self.assertEqual(
                 window.lora_scope_list.item(0).data(Qt.ItemDataRole.UserRole),
                 GLOBAL_SCOPE_ID,
@@ -196,6 +198,7 @@ class DesktopSmokeTests(unittest.TestCase):
             window.region_prompt.setPlainText("a person by the water")
             window.region_negative_prompt.setPlainText("blurry face")
             window._add_lora_path(lora_path)
+            window.lora_strength_input.setValue(0.6)
             window.lora_scope_list.item(1).setCheckState(Qt.CheckState.Checked)
             project_path = root / "beach.k2lab.json"
             self.assertTrue(window._save_project_to(project_path))
@@ -232,6 +235,9 @@ class DesktopSmokeTests(unittest.TestCase):
             self.assertEqual(
                 restored.lora_library.binding_for(lora_id).region_ids,
                 ("subject",),
+            )
+            self.assertEqual(
+                restored.lora_library.binding_for(lora_id).strength, 0.6
             )
             restored.close()
 
@@ -373,6 +379,10 @@ class DesktopSmokeTests(unittest.TestCase):
             window.seed_input.setValue(1234)
             window._output_directory = root / "renders"
             window.filename_prefix_input.setText("teapot-test")
+            lora_path = root / "global-style.safetensors"
+            write_lora(lora_path)
+            window._add_lora_path(lora_path)
+            window.lora_strength_input.setValue(0.8)
             window.canvas.region_created.emit(
                 "teapot-region", 16.0, 16.0, 256.0, 256.0
             )
@@ -396,6 +406,10 @@ class DesktopSmokeTests(unittest.TestCase):
             self.assertEqual(payload["regional_late_step_scale"], 0.35)
             self.assertEqual(payload["regions"][0]["id"], "teapot-region")
             self.assertEqual(payload["regions"][0]["spatial_role"], "auto")
+            self.assertEqual(len(payload["loras"]), 1)
+            self.assertTrue(payload["loras"][0]["global"])
+            self.assertEqual(payload["loras"][0]["strength"], 0.8)
+            self.assertEqual(payload["loras"][0]["path"], str(lora_path.resolve()))
             self.assertEqual(
                 payload["regions"][0]["prompt"], "a detailed red teapot"
             )

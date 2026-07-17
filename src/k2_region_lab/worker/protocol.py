@@ -10,6 +10,7 @@ class CommandKind(StrEnum):
     DIAGNOSE_ACCELERATOR = "diagnose_accelerator"
     DISCOVER_MODELS = "discover_models"
     VALIDATE_MODELS = "validate_models"
+    VALIDATE_LORAS = "validate_loras"
     LOAD_MODEL = "load_model"
     INITIALIZE_RUN = "initialize_run"
     GENERATE_BASELINE = "generate_baseline"

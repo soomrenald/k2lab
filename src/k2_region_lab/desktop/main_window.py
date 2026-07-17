@@ -76,7 +76,9 @@ class MainWindow(QMainWindow):
         self._region_number = 0
         self._loading_region_form = False
         self._syncing_lora_scope = False
+        self._syncing_lora_strength = False
         self._models_compatible = False
+        self._model_loaded = False
         self._current_project_path: Path | None = None
         self._background_image_path: Path | None = None
         self._generation_active = False
@@ -407,6 +409,26 @@ class MainWindow(QMainWindow):
         self.lora_list = QListWidget()
         self.lora_list.currentItemChanged.connect(self._selected_lora_changed)
         layout.addWidget(self.lora_list)
+        strength_row = QFormLayout()
+        self.lora_strength_input = QDoubleSpinBox()
+        self.lora_strength_input.setRange(-4.0, 4.0)
+        self.lora_strength_input.setSingleStep(0.05)
+        self.lora_strength_input.setDecimals(2)
+        self.lora_strength_input.setValue(1.0)
+        self.lora_strength_input.setEnabled(False)
+        self.lora_strength_input.setToolTip(
+            "Model-only LoRA multiplier; set to zero to disable without removing"
+        )
+        self.lora_strength_input.valueChanged.connect(self._lora_strength_changed)
+        strength_row.addRow("Selected strength", self.lora_strength_input)
+        layout.addLayout(strength_row)
+        self.lora_diagnostic_button = QPushButton("Inspect selected LoRA…")
+        self.lora_diagnostic_button.setEnabled(False)
+        self.lora_diagnostic_button.clicked.connect(self._diagnose_selected_lora)
+        layout.addWidget(self.lora_diagnostic_button)
+        self.lora_status = QLabel("Select a LoRA to inspect its Krea compatibility")
+        self.lora_status.setWordWrap(True)
+        layout.addWidget(self.lora_status)
         layout.addWidget(QLabel("Apply selected LoRA to Global or one or more regions"))
         self.lora_scope_list = QListWidget()
         self.lora_scope_list.itemChanged.connect(self._lora_scope_changed)
@@ -661,13 +683,18 @@ class MainWindow(QMainWindow):
 
         existing = self._lora_list_item(entry.lora_id)
         if existing is None:
-            existing = QListWidgetItem(entry.display_name)
+            existing = QListWidgetItem(self._lora_label(entry.lora_id))
             existing.setData(Qt.ItemDataRole.UserRole, entry.lora_id)
             existing.setToolTip(str(entry.path))
             self.lora_list.addItem(existing)
             self.events.addItem(f"Loaded LoRA {entry.display_name}; scope defaults to Global")
         self.lora_list.setCurrentItem(existing)
         return True
+
+    def _lora_label(self, lora_id: str) -> str:
+        entry = self.lora_library.get(lora_id)
+        binding = self.lora_library.binding_for(lora_id)
+        return f"{entry.display_name}  ×{binding.strength:.2f}"
 
     def _remove_selected_lora(self) -> None:
         item = self.lora_list.currentItem()
@@ -694,6 +721,67 @@ class MainWindow(QMainWindow):
     def _selected_lora_changed(self, current, previous) -> None:
         del current, previous
         self._refresh_lora_scope()
+        lora_id = self._current_lora_id()
+        self._syncing_lora_strength = True
+        try:
+            self.lora_strength_input.setEnabled(lora_id is not None)
+            self.lora_diagnostic_button.setEnabled(lora_id is not None)
+            if lora_id is None:
+                self.lora_strength_input.setValue(1.0)
+                self.lora_status.setText("Select a LoRA to inspect its Krea compatibility")
+            else:
+                binding = self.lora_library.binding_for(lora_id)
+                self.lora_strength_input.setValue(binding.strength)
+                entry = self.lora_library.get(lora_id)
+                self.lora_status.setText(
+                    f"{entry.summary.tensor_count} tensors; compatibility not yet checked"
+                )
+        finally:
+            self._syncing_lora_strength = False
+
+    def _lora_strength_changed(self, strength: float) -> None:
+        if self._syncing_lora_strength:
+            return
+        lora_id = self._current_lora_id()
+        if lora_id is None:
+            return
+        self.lora_library.set_strength(lora_id, strength)
+        item = self._lora_list_item(lora_id)
+        if item is not None:
+            item.setText(self._lora_label(lora_id))
+        entry = self.lora_library.get(lora_id)
+        self.events.addItem(f"Set {entry.display_name} strength to {strength:.2f}")
+
+    def _lora_payload(self, lora_ids: set[str] | None = None) -> list[dict[str, object]]:
+        payload = []
+        for entry in self.lora_library.entries():
+            if lora_ids is not None and entry.lora_id not in lora_ids:
+                continue
+            binding = self.lora_library.binding_for(entry.lora_id)
+            payload.append(
+                {
+                    "id": entry.lora_id,
+                    "name": entry.display_name,
+                    "path": str(entry.path),
+                    "strength": binding.strength,
+                    "global": binding.global_scope,
+                    "region_ids": list(binding.region_ids),
+                }
+            )
+        return payload
+
+    def _diagnose_selected_lora(self) -> None:
+        lora_id = self._current_lora_id()
+        if lora_id is None:
+            return
+        if not self.worker_client.running or not self._model_loaded:
+            self.events.addItem("Load the Krea 2 baseline before inspecting LoRA compatibility")
+            self.lora_status.setText("Baseline must be loaded before compatibility testing")
+            return
+        payload = self._worker_payload()
+        payload["loras"] = self._lora_payload({lora_id})
+        self.lora_status.setText("Inspecting model-key compatibility…")
+        self.worker_client.send(CommandKind.VALIDATE_LORAS, payload)
 
     def _refresh_lora_scope(self) -> None:
         self._syncing_lora_scope = True
@@ -784,6 +872,7 @@ class MainWindow(QMainWindow):
                 path=entry.path,
                 global_scope=(binding := self.lora_library.binding_for(entry.lora_id)).global_scope,
                 region_ids=binding.region_ids,
+                strength=binding.strength,
             )
             for entry in self.lora_library.entries()
         )
@@ -974,7 +1063,11 @@ class MainWindow(QMainWindow):
                 self.lora_library.assign_global(lora_id)
             else:
                 self.lora_library.assign_regions(lora_id, saved_lora.region_ids)
-        self._refresh_lora_scope()
+            self.lora_library.set_strength(lora_id, saved_lora.strength)
+            item = self._lora_list_item(lora_id)
+            if item is not None:
+                item.setText(self._lora_label(lora_id))
+        self._selected_lora_changed(self.lora_list.currentItem(), None)
 
         self.canvas.clear_image()
         self._background_image_path = None
@@ -1013,6 +1106,7 @@ class MainWindow(QMainWindow):
         }
 
     def _start_worker(self) -> None:
+        self._model_loaded = False
         if not self.worker_client.start():
             return
         if not self.worker_client.process.waitForStarted(3000):
@@ -1023,6 +1117,7 @@ class MainWindow(QMainWindow):
     def _diagnose_accelerator(self) -> None:
         self.events.addItem("Restarting the GPU worker for a clean accelerator diagnostic")
         self.worker_client.stop()
+        self._model_loaded = False
         self._accelerator_available = False
         self.load_model_button.setEnabled(False)
         self.accelerator_status.setText("Diagnosing…")
@@ -1069,6 +1164,7 @@ class MainWindow(QMainWindow):
             stopped.add(current_pid)
 
         self._accelerator_available = False
+        self._model_loaded = False
         self.worker_status.setText("Stopped")
         self.accelerator_status.setText("Not probed")
         self.memory_status.setText("K2 workers stopped; GPU allocations released")
@@ -1159,6 +1255,7 @@ class MainWindow(QMainWindow):
                     }
                     for region in self.regions
                 ],
+                "loras": self._lora_payload(),
             }
         )
         self._set_generation_active(True)
@@ -1207,6 +1304,7 @@ class MainWindow(QMainWindow):
         pid = self.worker_client.cancel_generation()
         self._set_generation_active(False)
         self._accelerator_available = False
+        self._model_loaded = False
         self.worker_status.setText("Stopped")
         self.accelerator_status.setText("Not probed")
         self.memory_status.setText("Generation stopped; worker memory released")
@@ -1288,11 +1386,37 @@ class MainWindow(QMainWindow):
             report.setDetailedText(json.dumps(payload, indent=2, sort_keys=True))
             report.exec()
         elif message == "Krea 2 baseline components loaded":
+            self._model_loaded = True
             self.statusBar().showMessage("Krea 2 baseline loaded in GPU worker")
             if "reserve_vram_gb" in payload:
                 self.reserve_vram_input.setValue(float(payload["reserve_vram_gb"]))
             self._set_memory_controls_enabled(False)
             self.generate_button.setEnabled(True)
+        elif message == "LoRA diagnostics complete":
+            reports = payload.get("loras", [])
+            if reports:
+                report_data = reports[0]
+                matched = int(report_data.get("matched_model_targets", 0))
+                adapters = int(report_data.get("adapter_count", 0))
+                compatible = bool(report_data.get("compatible"))
+                self.lora_status.setText(
+                    f"{'Compatible' if compatible else 'Incompatible'}: "
+                    f"{matched}/{adapters} Krea model targets matched"
+                )
+                report = QMessageBox(self)
+                report.setWindowTitle("LoRA compatibility")
+                report.setIcon(
+                    QMessageBox.Icon.Information
+                    if compatible
+                    else QMessageBox.Icon.Warning
+                )
+                report.setText(self.lora_status.text())
+                report.setInformativeText(
+                    "This milestone applies compatible Global LoRAs to the "
+                    "transformer. Regional scopes are diagnosed but not yet applied."
+                )
+                report.setDetailedText(json.dumps(report_data, indent=2, sort_keys=True))
+                report.exec()
         elif message in {"Generation complete", "Baseline generation complete"}:
             self._set_generation_active(False)
             image_path = payload.get("image_path")
@@ -1306,6 +1430,8 @@ class MainWindow(QMainWindow):
             self.generate_button.setEnabled(True)
         elif state == "error":
             self._set_generation_active(False)
+            if message != "LoRA diagnostics complete":
+                self._model_loaded = False
             self.load_model_button.setEnabled(self._accelerator_available)
             self.generate_button.setEnabled(False)
             self._set_memory_controls_enabled(True)

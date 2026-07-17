@@ -38,10 +38,16 @@ class RegionalPromptingTests(unittest.TestCase):
             ["sky", "ocean", "sand", "red bikini woman", "lface", "dog"],
         )
         self.assertIn("centered about 17% across and 64% down", plan.prompt)
-        self.assertIn(
-            "From left to right, the subjects are red bikini woman, dog, and lface",
-            plan.prompt,
+        subjects = sorted(
+            (region for region in state.regions if region.box.width < 0.70 * state.canvas_width),
+            key=lambda region: (region.box.x0 + region.box.x1) / 2.0,
         )
+        expected_order = (
+            "From left to right, the subjects are "
+            + ", ".join(region.name for region in subjects[:-1])
+            + f", and {subjects[-1].name}"
+        )
+        self.assertIn(expected_order, plan.prompt)
         self.assertEqual(plan.backend, BACKEND)
         self.assertEqual(
             [region.spatial_role for region in plan.regions],
@@ -185,7 +191,7 @@ class RegionalPromptingTests(unittest.TestCase):
             raw_by_id["wall"].image_token_field,
         )
 
-    def test_v1_project_migrates_to_auto_roles_and_v2_on_save(self) -> None:
+    def test_v1_project_migrates_to_current_schema_on_save(self) -> None:
         old_document = {
             "schema": "k2-region-lab-project",
             "version": 1,

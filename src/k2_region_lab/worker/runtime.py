@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from k2_region_lab.config import ModelDirectories
+from k2_region_lab.lora import inspect_lora_header, normalize_krea_lora_state_dict
 from k2_region_lab.model import ArtifactSet, discover_model_artifacts
 from k2_region_lab.model.manifests import build_tensor_manifest
 from k2_region_lab.memory import (
@@ -301,6 +302,130 @@ class ComfyBaselineRuntime:
     def loaded(self) -> bool:
         return all(component is not None for component in (self.model, self.clip, self.vae))
 
+    def _load_lora_patches(
+        self, specification: dict[str, Any]
+    ) -> tuple[dict, dict[str, str] | None, dict[str, Any]]:
+        if not self.loaded:
+            raise RuntimeError("load the Krea 2 baseline before validating LoRAs")
+        path = Path(str(specification["path"])).expanduser().resolve()
+        if path.suffix.casefold() != ".safetensors" or not path.is_file():
+            raise ValueError(f"LoRA path is not a readable safetensors file: {path}")
+
+        import comfy.lora
+        import comfy.lora_convert
+        import comfy.utils
+
+        state, metadata = comfy.utils.load_torch_file(
+            str(path), safe_load=True, return_metadata=True
+        )
+        normalized = normalize_krea_lora_state_dict(state)
+        converted = comfy.lora_convert.convert_lora(normalized)
+        key_map = comfy.lora.model_lora_keys_unet(self.model.model, {})
+        patches = comfy.lora.load_lora(converted, key_map, log_missing=False)
+        header = inspect_lora_header(path)
+        adapter_count = int(header["adapter_count"])
+        report = {
+            **header,
+            "id": str(specification.get("id", path.stem)),
+            "display_name": str(specification.get("name", path.stem)),
+            "strength": float(specification.get("strength", 1.0)),
+            "global": bool(specification.get("global", True)),
+            "region_ids": list(specification.get("region_ids", [])),
+            "matched_model_targets": len(patches),
+            "unmatched_adapter_targets": max(0, adapter_count - len(patches)),
+            "compatible": (
+                bool(patches)
+                and len(patches) == adapter_count
+                and int(header["complete_adapter_pairs"]) == adapter_count
+            ),
+            "model_only": True,
+        }
+        return patches, metadata, report
+
+    def diagnose_loras(self, specifications: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        reports = []
+        for specification in specifications:
+            patches, _metadata, report = self._load_lora_patches(specification)
+            report["status"] = "compatible" if report["compatible"] else "incompatible"
+            reports.append(report)
+            del patches
+        gc.collect()
+        return reports
+
+    def _apply_global_loras(
+        self,
+        specifications: list[dict[str, Any]],
+        event: Callable[[str, dict[str, Any]], None] | None,
+    ):
+        generation_model = self.model
+        reports: list[dict[str, Any]] = []
+        for specification in specifications:
+            path = Path(str(specification["path"])).expanduser().resolve()
+            if not bool(specification.get("global", True)):
+                report = {
+                    **inspect_lora_header(path),
+                    "id": str(specification.get("id", path.stem)),
+                    "display_name": str(specification.get("name", path.stem)),
+                    "strength": float(specification.get("strength", 1.0)),
+                    "global": False,
+                    "region_ids": list(specification.get("region_ids", [])),
+                    "status": "regional_pending",
+                    "compatible": None,
+                    "model_only": True,
+                }
+                reports.append(report)
+                if event is not None:
+                    event(
+                        f"Regional LoRA {report['display_name']} is not applied yet",
+                        {"lora": report},
+                    )
+                continue
+
+            strength = float(specification.get("strength", 1.0))
+            if not -4.0 <= strength <= 4.0:
+                raise ValueError("LoRA strength must be between -4 and 4")
+            if strength == 0.0:
+                report = {
+                    **inspect_lora_header(path),
+                    "id": str(specification.get("id", path.stem)),
+                    "display_name": str(specification.get("name", path.stem)),
+                    "strength": strength,
+                    "global": True,
+                    "region_ids": [],
+                    "status": "disabled",
+                    "compatible": None,
+                    "model_only": True,
+                }
+                reports.append(report)
+                continue
+
+            patches, metadata, report = self._load_lora_patches(specification)
+            if not report["compatible"]:
+                raise ValueError(
+                    f"LoRA {report['display_name']} matched "
+                    f"{report['matched_model_targets']}/{report['adapter_count']} "
+                    "Krea 2 model targets"
+                )
+            patched_model = generation_model.clone()
+            applied = patched_model.add_patches(patches, strength)
+            if len(applied) != len(patches):
+                raise ValueError(
+                    f"LoRA {report['display_name']} mapped {len(patches)} targets but "
+                    f"only {len(applied)} could be patched"
+                )
+            if metadata:
+                patched_model.set_attachments("lora_metadata", metadata)
+            generation_model = patched_model
+            report["status"] = "applied_global"
+            report["applied_model_targets"] = len(applied)
+            reports.append(report)
+            if event is not None:
+                event(
+                    f"Applied global LoRA {report['display_name']} at {strength:.2f}",
+                    {"lora": report},
+                )
+        return generation_model, reports
+
     def memory_snapshot(self, stage: str) -> dict[str, Any]:
         import psutil
         import torch
@@ -442,6 +567,7 @@ class ComfyBaselineRuntime:
         regional_feather_pixels: float = 128.0,
         regional_subject_competition: bool = True,
         regional_late_step_scale: float = 0.35,
+        loras: list[dict[str, Any]] | None = None,
         progress: Callable[[int, int, dict[str, Any]], None] | None = None,
         event: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
@@ -479,6 +605,7 @@ class ComfyBaselineRuntime:
                 output_directory=output_directory,
                 filename_prefix=filename_prefix,
                 regional_plan=regional_plan,
+                loras=list(loras or []),
                 progress=progress,
                 event=event,
                 oom_recovered=False,
@@ -509,6 +636,7 @@ class ComfyBaselineRuntime:
             output_directory=output_directory,
             filename_prefix=filename_prefix,
             regional_plan=regional_plan,
+            loras=list(loras or []),
             progress=progress,
             event=event,
             oom_recovered=True,
@@ -525,6 +653,7 @@ class ComfyBaselineRuntime:
         output_directory: Path,
         filename_prefix: str,
         regional_plan: RegionalPromptPlan | None,
+        loras: list[dict[str, Any]],
         progress: Callable[[int, int, dict[str, Any]], None] | None,
         event: Callable[[str, dict[str, Any]], None] | None,
         oom_recovered: bool,
@@ -571,6 +700,9 @@ class ComfyBaselineRuntime:
             self.model, latent, downscale_ratio_spacial=8
         )
         noise = comfy.sample.prepare_noise(latent, seed)
+        if loras:
+            self._ensure_memory("before LoRA loading", event)
+        generation_model, lora_reports = self._apply_global_loras(loras, event)
 
         def callback(step: int, denoised, current, total: int) -> None:
             del denoised, current
@@ -595,7 +727,7 @@ class ComfyBaselineRuntime:
             if bound_regional_plan is not None
             else None
         )
-        transformer_options = self.model.model_options.setdefault(
+        transformer_options = generation_model.model_options.setdefault(
             "transformer_options", {}
         )
         missing = object()
@@ -610,7 +742,7 @@ class ComfyBaselineRuntime:
             transformer_options["optimized_attention_override"] = attention_override
         try:
             samples = comfy.sample.sample(
-                self.model,
+                generation_model,
                 noise,
                 steps,
                 1.0,
@@ -671,6 +803,7 @@ class ComfyBaselineRuntime:
             regional_plan, bound_regional_plan, attention_override
         )
         metadata.add_text("regional_prompting", json.dumps(regional_summary))
+        metadata.add_text("loras", json.dumps(lora_reports))
         metadata.add_text("memory_policy", self.memory_policy_key)
         metadata.add_text("oom_recovered", str(oom_recovered).lower())
         metadata.add_text("cpu_vae", str(self.cpu_vae).lower())
@@ -683,6 +816,7 @@ class ComfyBaselineRuntime:
             "seed": seed,
             "filename_prefix": filename_prefix,
             "regional_prompting": regional_summary,
+            "loras": lora_reports,
             "sampler": "euler",
             "scheduler": "simple",
             "cfg": 1.0,

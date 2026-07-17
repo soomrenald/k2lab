@@ -23,10 +23,13 @@ class LoraBinding:
     lora_id: str
     global_scope: bool = True
     region_ids: tuple[str, ...] = ()
+    strength: float = 1.0
 
     def __post_init__(self) -> None:
         if self.global_scope and self.region_ids:
             raise ValueError("a LoRA cannot be global and region-scoped at the same time")
+        if not -4.0 <= self.strength <= 4.0:
+            raise ValueError("LoRA strength must be between -4 and 4")
 
 
 class LoraLibrary:
@@ -84,6 +87,11 @@ class LoraLibrary:
         binding = replace(
             self.binding_for(lora_id), global_scope=False, region_ids=unique_ids
         )
+        self._bindings[lora_id] = binding
+        return binding
+
+    def set_strength(self, lora_id: str, strength: float) -> LoraBinding:
+        binding = replace(self.binding_for(lora_id), strength=float(strength))
         self._bindings[lora_id] = binding
         return binding
 

@@ -123,6 +123,22 @@ def main() -> int:
                     command_id=command_id,
                     payload=loaded,
                 )
+            elif kind == CommandKind.VALIDATE_LORAS:
+                if runtime is None or not runtime.loaded:
+                    raise RuntimeError("load the Krea 2 baseline before validating LoRAs")
+                emit(
+                    WorkerState.VALIDATING,
+                    "Validating LoRA compatibility",
+                    command_id=command_id,
+                )
+                reports = runtime.diagnose_loras(list(payload.get("loras", [])))
+                compatible = bool(reports) and all(report["compatible"] for report in reports)
+                emit(
+                    WorkerState.READY if compatible else WorkerState.ERROR,
+                    "LoRA diagnostics complete",
+                    command_id=command_id,
+                    payload={"compatible": compatible, "loras": reports},
+                )
             elif kind == CommandKind.GENERATE_BASELINE:
                 if runtime is None or not runtime.loaded:
                     raise RuntimeError("load the Krea 2 baseline before generating")
@@ -177,6 +193,7 @@ def main() -> int:
                     regional_late_step_scale=float(
                         payload.get("regional_late_step_scale", 0.35)
                     ),
+                    loras=list(payload.get("loras", [])),
                     progress=progress,
                     event=runtime_event,
                 )
