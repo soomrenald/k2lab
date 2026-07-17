@@ -22,10 +22,13 @@ from k2_region_lab.memory import (
 )
 from k2_region_lab.output import validate_filename_prefix
 from k2_region_lab.regional_prompting import (
+    BoundRegionalPromptPlan,
     RegionalPromptPlan,
     compile_regional_prompt_plan,
+    krea_prompt_token_count,
 )
 from k2_region_lab.regions import RegionDefinition
+from k2_region_lab.spatial_attention import KreaSpatialAttentionOverride
 
 
 class CriticalGpuMemoryPressure(RuntimeError):
@@ -435,7 +438,7 @@ class ComfyBaselineRuntime:
         regions: tuple[RegionDefinition, ...] = (),
         regional_prompting: bool = True,
         regional_prompt_strength: float = 1.0,
-        regional_feather_pixels: float = 32.0,
+        regional_feather_pixels: float = 128.0,
         progress: Callable[[int, int, dict[str, Any]], None] | None = None,
         event: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
@@ -537,9 +540,21 @@ class ComfyBaselineRuntime:
             self.clip.tokenize(conditioned_prompt)
         )
         negative = self.clip.encode_from_tokens_scheduled(self.clip.tokenize(""))
+        bound_regional_plan: BoundRegionalPromptPlan | None = None
         if regional_plan is not None and regional_plan.regions:
+            if not positive:
+                raise RuntimeError("Krea text encoder returned no positive conditioning")
+            text_token_counts = {int(condition[0].shape[1]) for condition in positive}
+            if len(text_token_counts) != 1:
+                raise RuntimeError(
+                    "unified spatial prompting requires one conditioning sequence length"
+                )
+            bound_regional_plan = regional_plan.bind_tokens(
+                lambda prefix: krea_prompt_token_count(self.clip.tokenize(prefix)),
+                conditioning_text_token_count=text_token_counts.pop(),
+            )
             if event is not None:
-                event("Unified regional prompt prepared", regional_plan.summary())
+                event("Unified spatial prompt prepared", bound_regional_plan.summary())
         self._ensure_memory("before denoising", event)
         latent = torch.zeros(
             [1, 4, height // 8, width // 8],
@@ -567,21 +582,57 @@ class ComfyBaselineRuntime:
                     f"{snapshot['gpu_free_bytes'] / GIB:.2f} GiB free"
                 )
 
-        samples = comfy.sample.sample(
-            self.model,
-            noise,
-            steps,
-            1.0,
-            "euler",
-            "simple",
-            positive,
-            negative,
-            latent,
-            denoise=1.0,
-            callback=callback,
-            disable_pbar=True,
-            seed=seed,
+        attention_override = (
+            KreaSpatialAttentionOverride(bound_regional_plan)
+            if bound_regional_plan is not None
+            else None
         )
+        transformer_options = self.model.model_options.setdefault(
+            "transformer_options", {}
+        )
+        missing = object()
+        previous_override = transformer_options.get(
+            "optimized_attention_override", missing
+        )
+        if attention_override is not None:
+            if previous_override is not missing:
+                raise RuntimeError(
+                    "another optimized-attention override is already installed"
+                )
+            transformer_options["optimized_attention_override"] = attention_override
+        try:
+            samples = comfy.sample.sample(
+                self.model,
+                noise,
+                steps,
+                1.0,
+                "euler",
+                "simple",
+                positive,
+                negative,
+                latent,
+                denoise=1.0,
+                callback=callback,
+                disable_pbar=True,
+                seed=seed,
+            )
+        finally:
+            if attention_override is not None:
+                attention_override.clear()
+                if previous_override is missing:
+                    transformer_options.pop("optimized_attention_override", None)
+                else:
+                    transformer_options["optimized_attention_override"] = previous_override
+        if attention_override is not None:
+            if attention_override.matched_calls == 0:
+                raise RuntimeError(
+                    "Krea main-stream attention was not reached by the spatial override"
+                )
+            if event is not None:
+                event(
+                    "Unified spatial attention applied",
+                    {"attention_calls": attention_override.matched_calls},
+                )
         self._ensure_memory("before VAE decode", event)
         images = self._decode_vae(samples)
         image_tensor = images[0]
@@ -608,10 +659,8 @@ class ComfyBaselineRuntime:
         metadata.add_text("steps", str(steps))
         metadata.add_text("size", f"{width}x{height}")
         metadata.add_text("filename_prefix", filename_prefix)
-        regional_summary = (
-            regional_plan.summary()
-            if regional_plan is not None and regional_plan.regions
-            else {"backend": "disabled", "region_count": 0}
+        regional_summary = self._regional_summary(
+            regional_plan, bound_regional_plan, attention_override
         )
         metadata.add_text("regional_prompting", json.dumps(regional_summary))
         metadata.add_text("memory_policy", self.memory_policy_key)
@@ -644,3 +693,23 @@ class ComfyBaselineRuntime:
         # when the tiled accumulator was created as an inference tensor.
         with torch.inference_mode():
             return self.vae.decode(samples)
+
+    @staticmethod
+    def _regional_summary(regional_plan, bound_plan, attention_override):
+        if regional_plan is None or not regional_plan.regions:
+            return {"backend": "disabled", "region_count": 0}
+        summary = regional_plan.summary()
+        if bound_plan is not None:
+            summary["text_token_count"] = bound_plan.text_token_count
+            token_spans = {
+                span.region_id: [span.start, span.end] for span in bound_plan.spans
+            }
+            for region in summary["regions"]:
+                region["text_token_span"] = token_spans[region["id"]]
+        if attention_override is not None:
+            summary["attention_calls"] = attention_override.matched_calls
+            summary["attention_implementation"] = "chunked-exact-softmax-v1"
+            summary["attention_query_chunk_size"] = (
+                attention_override.query_chunk_size
+            )
+        return summary

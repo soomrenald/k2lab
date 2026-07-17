@@ -8,9 +8,11 @@ from k2_region_lab.project import project_state
 from k2_region_lab.regional_prompting import (
     BACKEND,
     compile_regional_prompt_plan,
+    krea_prompt_token_count,
     region_definitions_from_payload,
 )
 from k2_region_lab.regions import PixelBox, RegionDefinition
+from k2_region_lab.spatial_attention import spatial_pair_bias
 
 
 class RegionalPromptingTests(unittest.TestCase):
@@ -78,6 +80,34 @@ class RegionalPromptingTests(unittest.TestCase):
         self.assertLess(bound.spans[0].start, bound.spans[0].end)
         self.assertLessEqual(bound.spans[0].end, bound.spans[1].start)
         self.assertEqual(bound.image_token_count, 16)
+
+    def test_spatial_pair_bias_boosts_core_and_only_softly_penalizes_far_field(self) -> None:
+        values = spatial_pair_bias((1.0, 0.5, 0.0), 2.0)
+
+        self.assertEqual(values[0], 2.0)
+        self.assertEqual(values[1], 0.75)
+        self.assertEqual(values[2], -0.5)
+
+    def test_krea_prompt_token_count_excludes_fixed_wrapper_and_suffix(self) -> None:
+        tokenized = {
+            "qwen3vl_4b": [
+                [
+                    (151644, 1.0),
+                    (999, 1.0),
+                    (151645, 1.0),
+                    (151644, 1.0),
+                    (872, 1.0),
+                    (198, 1.0),
+                    (11, 1.0),
+                    (12, 1.0),
+                    (151645, 1.0),
+                    (198, 1.0),
+                    (151644, 1.0),
+                ]
+            ]
+        }
+
+        self.assertEqual(krea_prompt_token_count(tokenized), 2)
 
     def test_disabled_and_empty_prompt_regions_do_not_compile(self) -> None:
         disabled = RegionDefinition(

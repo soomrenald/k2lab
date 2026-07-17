@@ -378,7 +378,7 @@ class DesktopSmokeTests(unittest.TestCase):
             self.assertEqual(payload["output_directory"], str(root / "renders"))
             self.assertEqual(payload["filename_prefix"], "teapot-test")
             self.assertTrue(payload["regional_prompting"])
-            self.assertEqual(payload["regional_feather_pixels"], 32)
+            self.assertEqual(payload["regional_feather_pixels"], 128)
             self.assertEqual(payload["regions"][0]["id"], "teapot-region")
             self.assertEqual(
                 payload["regions"][0]["prompt"], "a detailed red teapot"

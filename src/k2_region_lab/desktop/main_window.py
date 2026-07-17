@@ -47,6 +47,7 @@ from k2_region_lab.model import ArtifactSet, discover_model_artifacts
 from k2_region_lab.output import default_output_directory, validate_filename_prefix
 from k2_region_lab.processes import find_owned_k2_workers, terminate_workers
 from k2_region_lab.project import ProjectState, SavedLora, load_project, save_project
+from k2_region_lab.regional_prompting import compile_regional_prompt_plan
 from k2_region_lab.regions import CanvasGeometry, PixelBox, RegionDefinition
 from k2_region_lab.worker.protocol import CommandKind
 
@@ -275,7 +276,7 @@ class MainWindow(QMainWindow):
         self.seed_mode_input.addItem("Random", "random")
         self.seed_mode_input.addItem("Increment", "increment")
         layout.addRow("Seed behavior", self.seed_mode_input)
-        self.regional_prompting_input = QCheckBox("Use enabled regional prompts")
+        self.regional_prompting_input = QCheckBox("Use unified spatial prompting")
         self.regional_prompting_input.setChecked(True)
         layout.addRow(self.regional_prompting_input)
         self.regional_prompt_strength_input = QDoubleSpinBox()
@@ -283,18 +284,21 @@ class MainWindow(QMainWindow):
         self.regional_prompt_strength_input.setSingleStep(0.1)
         self.regional_prompt_strength_input.setValue(1.0)
         self.regional_prompt_strength_input.setToolTip(
-            "Blend weight for each region's denoiser prediction against the global prompt"
+            "Additive attention guidance between each regional text span and its image area"
         )
-        layout.addRow("Regional strength", self.regional_prompt_strength_input)
+        layout.addRow("Spatial guidance", self.regional_prompt_strength_input)
         self.regional_feather_input = QSpinBox()
-        self.regional_feather_input.setRange(0, 1024)
-        self.regional_feather_input.setSingleStep(8)
+        self.regional_feather_input.setRange(0, 2048)
+        self.regional_feather_input.setSingleStep(16)
         self.regional_feather_input.setSuffix(" px")
-        self.regional_feather_input.setValue(32)
+        self.regional_feather_input.setValue(128)
         self.regional_feather_input.setToolTip(
-            "Smoothly reduce regional influence to zero at the inside edge of each box"
+            "Distance outside each box over which its attention guidance smoothly fades"
         )
-        layout.addRow("Region feather", self.regional_feather_input)
+        layout.addRow("Spatial falloff", self.regional_feather_input)
+        preview_prompt = QPushButton("Preview unified prompt…")
+        preview_prompt.clicked.connect(self._preview_unified_prompt)
+        layout.addRow(preview_prompt)
         output_row = QWidget()
         output_layout = QHBoxLayout(output_row)
         output_layout.setContentsMargins(0, 0, 0, 0)
@@ -1083,6 +1087,27 @@ class MainWindow(QMainWindow):
         except RuntimeError as error:
             self._set_generation_active(False)
             self.events.addItem(f"Could not start generation: {error}")
+
+    def _preview_unified_prompt(self) -> None:
+        plan = compile_regional_prompt_plan(
+            self.width_input.value(),
+            self.height_input.value(),
+            self.global_prompt.toPlainText(),
+            tuple(self.regions),
+            strength=self.regional_prompt_strength_input.value(),
+            falloff_pixels=self.regional_feather_input.value(),
+        )
+        preview = QMessageBox(self)
+        preview.setWindowTitle("Unified spatial prompt")
+        preview.setIcon(QMessageBox.Icon.Information)
+        preview.setText(
+            f"{len(plan.regions)} regional clauses will be encoded in one prompt."
+        )
+        preview.setInformativeText(
+            "Pixel boxes are applied separately as a hidden soft attention grid."
+        )
+        preview.setDetailedText(plan.prompt)
+        preview.exec()
 
     def _set_generation_active(self, active: bool) -> None:
         self._generation_active = active

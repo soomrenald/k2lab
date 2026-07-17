@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from math import hypot
+from numbers import Integral
 from typing import Callable
 
 from k2_region_lab.regions import CanvasGeometry, PixelBox, RegionDefinition
 
 
-BACKEND = "krea-unified-prompt-v1"
+BACKEND = "krea-unified-spatial-attention-v1"
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,7 +40,10 @@ class RegionalPromptPlan:
         return self.image_token_width * self.image_token_height
 
     def bind_tokens(
-        self, prompt_prefix_token_count: Callable[[str], int]
+        self,
+        prompt_prefix_token_count: Callable[[str], int],
+        *,
+        conditioning_text_token_count: int | None = None,
     ) -> "BoundRegionalPromptPlan":
         spans = tuple(
             RegionalTokenSpan(
@@ -57,9 +61,16 @@ class RegionalPromptPlan:
         )
         if any(span.end <= span.start for span in spans):
             raise ValueError("each regional prompt must own at least one text token")
+        text_token_count = (
+            prompt_prefix_token_count(self.prompt)
+            if conditioning_text_token_count is None
+            else conditioning_text_token_count
+        )
+        if spans and max(span.end for span in spans) > text_token_count:
+            raise ValueError("regional text span exceeds the conditioning sequence")
         return BoundRegionalPromptPlan(
             prompt=self.prompt,
-            text_token_count=prompt_prefix_token_count(self.prompt),
+            text_token_count=text_token_count,
             image_token_count=self.image_token_count,
             strength=self.strength,
             falloff_pixels=self.falloff_pixels,
@@ -159,7 +170,7 @@ def compile_regional_prompt_plan(
     for region, box in active:
         clause = _regional_clause(region, box, width, height)
         if prompt:
-            prompt += " "
+            prompt += "\n"
         start = len(prompt)
         prompt += clause
         end = len(prompt)
@@ -180,7 +191,7 @@ def compile_regional_prompt_plan(
 
     relationship_clause = _relationship_clause(compiled, width, height)
     if relationship_clause:
-        prompt += f" {relationship_clause}"
+        prompt += f"\n{relationship_clause}"
 
     return RegionalPromptPlan(
         width=geometry.aligned_width,
@@ -318,6 +329,39 @@ def _soft_box_field(
                 value = u * u * (3.0 - 2.0 * u)
             values.append(value)
     return tuple(values)
+
+
+def krea_prompt_token_count(tokenized: dict[str, list[list[tuple]]]) -> int:
+    """Count prompt-owned lanes after Krea's fixed Qwen wrapper prefix is removed."""
+    if not tokenized:
+        raise ValueError("Krea tokenization returned no token groups")
+    batches = next(iter(tokenized.values()))
+    if len(batches) != 1:
+        raise ValueError("Krea unified prompting requires one token batch")
+    pairs = batches[0]
+    second_im_start: int | None = None
+    seen = 0
+    for index, pair in enumerate(pairs):
+        token = pair[0]
+        if isinstance(token, Integral) and token == 151644:
+            seen += 1
+            if seen == 2:
+                second_im_start = index
+                break
+    if second_im_start is None:
+        raise ValueError("Krea Qwen wrapper is missing its second <|im_start|> token")
+
+    prompt_start = second_im_start + 1
+    if (
+        len(pairs) > prompt_start + 1
+        and pairs[prompt_start][0] == 872
+        and pairs[prompt_start + 1][0] == 198
+    ):
+        prompt_start += 2
+    for index in range(prompt_start, len(pairs)):
+        if pairs[index][0] == 151645:
+            return index - prompt_start
+    raise ValueError("Krea Qwen wrapper is missing the user <|im_end|> token")
 
 
 def region_definitions_from_payload(items: list[dict]) -> tuple[RegionDefinition, ...]:

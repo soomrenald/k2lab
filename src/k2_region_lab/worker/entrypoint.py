@@ -166,7 +166,7 @@ def main() -> int:
                         payload.get("regional_prompt_strength", 1.0)
                     ),
                     regional_feather_pixels=float(
-                        payload.get("regional_feather_pixels", 32.0)
+                        payload.get("regional_feather_pixels", 128.0)
                     ),
                     progress=progress,
                     event=runtime_event,

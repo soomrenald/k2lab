@@ -29,7 +29,7 @@ class ProjectState:
     seed_mode: str = "fixed"
     regional_prompting: bool = True
     regional_prompt_strength: float = 1.0
-    regional_feather_pixels: int = 32
+    regional_feather_pixels: int = 128
     regions: tuple[RegionDefinition, ...] = ()
     loras: tuple[SavedLora, ...] = ()
     runtime: dict[str, Any] | None = None
@@ -46,8 +46,8 @@ class ProjectState:
             raise ValueError(f"unsupported seed mode: {self.seed_mode!r}")
         if not 0.0 < self.regional_prompt_strength <= 10.0:
             raise ValueError("regional prompt strength must be in (0, 10]")
-        if not 0 <= self.regional_feather_pixels <= 1024:
-            raise ValueError("regional feather must be between 0 and 1024 pixels")
+        if not 0 <= self.regional_feather_pixels <= 2048:
+            raise ValueError("spatial falloff must be between 0 and 2048 pixels")
         region_ids = [region.region_id for region in self.regions]
         if len(region_ids) != len(set(region_ids)):
             raise ValueError("project region IDs must be unique")
@@ -163,7 +163,7 @@ def project_state(document: dict[str, Any]) -> ProjectState:
         regional_prompt_strength=float(
             generation.get("regional_prompt_strength", 1.0)
         ),
-        regional_feather_pixels=int(generation.get("regional_feather_pixels", 32)),
+        regional_feather_pixels=int(generation.get("regional_feather_pixels", 128)),
         regions=regions,
         loras=loras,
         runtime=dict(document.get("runtime", {})),
