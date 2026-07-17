@@ -65,7 +65,11 @@ from k2_region_lab.projector import (
     PROJECTOR_PRESETS,
     PROJECTOR_PRESET_LABELS,
 )
-from k2_region_lab.regional_prompting import compile_regional_prompt_plan
+from k2_region_lab.regional_prompting import (
+    GLOBAL_EMPHASIS_SCOPE,
+    PromptEmphasis,
+    compile_regional_prompt_plan,
+)
 from k2_region_lab.regions import CanvasGeometry, PixelBox, RegionDefinition
 from k2_region_lab.worker.protocol import CommandKind
 
@@ -90,12 +94,14 @@ class MainWindow(QMainWindow):
         self.settings = settings
         self.artifacts: ArtifactSet | None = None
         self.regions: list[RegionDefinition] = []
+        self.prompt_emphases: list[PromptEmphasis] = []
         self.lora_library = LoraLibrary()
         self._region_number = 0
         self._loading_region_form = False
         self._syncing_lora_scope = False
         self._syncing_lora_strength = False
         self._syncing_projector_fields = False
+        self._syncing_prompt_emphases = False
         self._models_compatible = False
         self._model_loaded = False
         self._current_project_path: Path | None = None
@@ -518,10 +524,60 @@ class MainWindow(QMainWindow):
         generation_button_layout.addWidget(self.generate_button)
         generation_button_layout.addWidget(self.stop_generation_button)
         layout.addRow(generation_buttons)
+        self._build_token_emphasis_tab()
         self._build_projector_tab()
         dock.setWidget(body)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
         self.model_dock = dock
+
+    def _build_token_emphasis_tab(self) -> None:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        explanation = QLabel(
+            "Highlight a complete word or phrase in the Global prompt or Selected "
+            "region prompt, then add it here. The boost applies to its resolved Qwen "
+            "tokens; regional phrases are boosted only through their box's soft field."
+        )
+        explanation.setWordWrap(True)
+        layout.addWidget(explanation)
+        self.emphasis_strength_input = QDoubleSpinBox()
+        self.emphasis_strength_input.setRange(0.0, 2.0)
+        self.emphasis_strength_input.setDecimals(2)
+        self.emphasis_strength_input.setSingleStep(0.1)
+        self.emphasis_strength_input.setValue(0.5)
+        self.emphasis_strength_input.setToolTip(
+            "Additive attention-logit boost. Start around 0.30–0.60; very high "
+            "values can make a concept dominate the image."
+        )
+        form = QFormLayout()
+        form.addRow("Selected phrase boost", self.emphasis_strength_input)
+        layout.addLayout(form)
+        actions = QHBoxLayout()
+        add_global = QPushButton("Emphasize global selection")
+        add_global.clicked.connect(
+            lambda: self._add_prompt_emphasis(
+                GLOBAL_EMPHASIS_SCOPE, self.global_prompt
+            )
+        )
+        add_region = QPushButton("Emphasize region selection")
+        add_region.clicked.connect(self._add_selected_region_emphasis)
+        actions.addWidget(add_global)
+        actions.addWidget(add_region)
+        layout.addLayout(actions)
+        layout.addWidget(QLabel("Emphasized phrases"))
+        self.prompt_emphasis_list = QListWidget()
+        self.prompt_emphasis_list.setMinimumHeight(150)
+        self.prompt_emphasis_list.currentRowChanged.connect(
+            self._selected_prompt_emphasis_changed
+        )
+        layout.addWidget(self.prompt_emphasis_list, 1)
+        remove = QPushButton("Remove selected emphasis")
+        remove.clicked.connect(self._remove_selected_prompt_emphasis)
+        layout.addWidget(remove)
+        self.emphasis_strength_input.valueChanged.connect(
+            self._prompt_emphasis_strength_changed
+        )
+        self.settings_tabs.addTab(self._scrollable(page), "Token emphasis")
 
     def _build_projector_tab(self) -> None:
         page = QWidget()
@@ -650,6 +706,94 @@ class MainWindow(QMainWindow):
 
     def _set_lora_delta_adaptation_controls_enabled(self, enabled: bool) -> None:
         self.regional_lora_delta_adaptation_gain_input.setEnabled(enabled)
+
+    def _add_selected_region_emphasis(self) -> None:
+        row = self.region_list.currentRow()
+        if not 0 <= row < len(self.regions):
+            self.statusBar().showMessage("Select a region prompt first", 5000)
+            return
+        self._add_prompt_emphasis(self.regions[row].region_id, self.region_prompt)
+
+    def _add_prompt_emphasis(self, scope_id: str, editor: QTextEdit) -> None:
+        cursor = editor.textCursor()
+        phrase = cursor.selectedText().replace("\u2029", "\n")
+        if scope_id != GLOBAL_EMPHASIS_SCOPE:
+            phrase = phrase.rstrip(".!? ")
+        if not phrase.strip():
+            self.statusBar().showMessage(
+                "Highlight a complete word or phrase before adding emphasis", 5000
+            )
+            return
+        source = editor.toPlainText()
+        selection_start = cursor.selectionStart()
+        occurrence = 0
+        offset = source.find(phrase)
+        while 0 <= offset < selection_start:
+            occurrence += 1
+            offset = source.find(phrase, offset + len(phrase))
+        self.prompt_emphases.append(
+            PromptEmphasis(
+                scope_id=scope_id,
+                phrase=phrase,
+                strength=self.emphasis_strength_input.value(),
+                occurrence=occurrence,
+            )
+        )
+        self._refresh_prompt_emphases(select_row=len(self.prompt_emphases) - 1)
+        scope = self._prompt_emphasis_scope_label(scope_id)
+        self.events.addItem(f"Added {scope} token emphasis: {phrase!r}")
+
+    def _prompt_emphasis_scope_label(self, scope_id: str) -> str:
+        if scope_id == GLOBAL_EMPHASIS_SCOPE:
+            return "Global"
+        return next(
+            (region.name for region in self.regions if region.region_id == scope_id),
+            "Missing region",
+        )
+
+    def _refresh_prompt_emphases(self, *, select_row: int | None = None) -> None:
+        self._syncing_prompt_emphases = True
+        try:
+            self.prompt_emphasis_list.clear()
+            for index, emphasis in enumerate(self.prompt_emphases):
+                scope = self._prompt_emphasis_scope_label(emphasis.scope_id)
+                item = QListWidgetItem(
+                    f"{scope}: {emphasis.phrase!r}  ({emphasis.strength:.2f})"
+                )
+                item.setData(Qt.ItemDataRole.UserRole, index)
+                self.prompt_emphasis_list.addItem(item)
+            if select_row is not None and 0 <= select_row < len(self.prompt_emphases):
+                self.prompt_emphasis_list.setCurrentRow(select_row)
+        finally:
+            self._syncing_prompt_emphases = False
+
+    def _selected_prompt_emphasis_changed(self, row: int) -> None:
+        if self._syncing_prompt_emphases or not 0 <= row < len(self.prompt_emphases):
+            return
+        self._syncing_prompt_emphases = True
+        try:
+            self.emphasis_strength_input.setValue(self.prompt_emphases[row].strength)
+        finally:
+            self._syncing_prompt_emphases = False
+
+    def _prompt_emphasis_strength_changed(self, strength: float) -> None:
+        if self._syncing_prompt_emphases:
+            return
+        row = self.prompt_emphasis_list.currentRow()
+        if not 0 <= row < len(self.prompt_emphases):
+            return
+        self.prompt_emphases[row] = replace(
+            self.prompt_emphases[row], strength=float(strength)
+        )
+        self._refresh_prompt_emphases(select_row=row)
+
+    def _remove_selected_prompt_emphasis(self) -> None:
+        row = self.prompt_emphasis_list.currentRow()
+        if not 0 <= row < len(self.prompt_emphases):
+            return
+        removed = self.prompt_emphases.pop(row)
+        self._refresh_prompt_emphases(select_row=min(row, len(self.prompt_emphases) - 1))
+        self.events.addItem(f"Removed token emphasis: {removed.phrase!r}")
 
     def _memory_policy_changed(self) -> None:
         key = self.memory_policy_input.currentData()
@@ -865,6 +1009,16 @@ class MainWindow(QMainWindow):
         if item is not None:
             self.region_list.takeItem(self.region_list.row(item))
         self.lora_library.drop_region(region_id)
+        removed_emphases = sum(
+            emphasis.scope_id == region_id for emphasis in self.prompt_emphases
+        )
+        self.prompt_emphases = [
+            emphasis
+            for emphasis in self.prompt_emphases
+            if emphasis.scope_id != region_id
+        ]
+        if removed_emphases:
+            self._refresh_prompt_emphases()
         self._normalize_region_priorities()
         self._sync_canvas_region_stack()
         self._refresh_lora_scope()
@@ -966,6 +1120,7 @@ class MainWindow(QMainWindow):
             item.setText(self._region_label(self.regions[row]))
         self.canvas.set_region_name(region.region_id, name)
         self._refresh_lora_scope()
+        self._refresh_prompt_emphases()
         self.events.addItem(f"Renamed {region.name} to {name}")
 
     def _region_role_changed(self, *_args) -> None:
@@ -1246,6 +1401,7 @@ class MainWindow(QMainWindow):
             regional_lora_delta_adaptation_gain=(
                 self.regional_lora_delta_adaptation_gain_input.value()
             ),
+            prompt_emphases=tuple(self.prompt_emphases),
             projector_enabled=self.projector_enabled_input.isChecked(),
             projector_preset=str(self.projector_preset_input.currentData()),
             projector_values=self._projector_values(),
@@ -1400,6 +1556,8 @@ class MainWindow(QMainWindow):
         self.regional_lora_delta_adaptation_gain_input.setValue(
             state.regional_lora_delta_adaptation_gain
         )
+        self.prompt_emphases = list(state.prompt_emphases)
+        self._refresh_prompt_emphases()
         self._set_projector_controls(
             enabled=state.projector_enabled,
             preset=state.projector_preset,
@@ -1700,6 +1858,15 @@ class MainWindow(QMainWindow):
                 "regional_lora_delta_adaptation_gain": (
                     self.regional_lora_delta_adaptation_gain_input.value()
                 ),
+                "prompt_emphases": [
+                    {
+                        "scope_id": emphasis.scope_id,
+                        "phrase": emphasis.phrase,
+                        "strength": emphasis.strength,
+                        "occurrence": emphasis.occurrence,
+                    }
+                    for emphasis in self.prompt_emphases
+                ],
                 "projector_enabled": self.projector_enabled_input.isChecked(),
                 "projector_preset": str(self.projector_preset_input.currentData()),
                 "projector_values": list(self._projector_values()),
@@ -1756,6 +1923,7 @@ class MainWindow(QMainWindow):
                 if self.regional_relaxation_input.isChecked()
                 else 1.0
             ),
+            emphases=tuple(self.prompt_emphases),
         )
         preview = QDialog(self)
         preview.setWindowTitle("Unified spatial prompt")

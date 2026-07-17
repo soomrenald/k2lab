@@ -10,7 +10,10 @@ from typing import Any
 from k2_region_lab.config import ModelDirectories
 from k2_region_lab.debug import configure_debug_logging
 from k2_region_lab.model import discover_model_artifacts
-from k2_region_lab.regional_prompting import region_definitions_from_payload
+from k2_region_lab.regional_prompting import (
+    prompt_emphases_from_payload,
+    region_definitions_from_payload,
+)
 from k2_region_lab.worker.protocol import CommandKind, WorkerState
 from k2_region_lab.worker.runtime import (
     ComfyBaselineRuntime,
@@ -186,6 +189,9 @@ def main() -> int:
                     output_directory=Path(payload["output_directory"]),
                     filename_prefix=str(payload.get("filename_prefix", "baseline")),
                     regions=region_definitions_from_payload(payload.get("regions", [])),
+                    emphases=prompt_emphases_from_payload(
+                        payload.get("prompt_emphases", [])
+                    ),
                     regional_prompting=bool(payload.get("regional_prompting", True)),
                     regional_prompt_strength=float(
                         payload.get("regional_prompt_strength", 1.0)

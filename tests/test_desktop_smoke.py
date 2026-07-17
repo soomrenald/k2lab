@@ -28,6 +28,7 @@ if PYSIDE_AVAILABLE:
     from k2_region_lab.desktop.main_window import GLOBAL_SCOPE_ID, MainWindow
     from k2_region_lab.processes import WorkerProcess
     from k2_region_lab.project import ProjectState
+    from k2_region_lab.regional_prompting import PromptEmphasis
     from k2_region_lab.worker.protocol import CommandKind
 
 
@@ -91,10 +92,11 @@ class DesktopSmokeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             window = self.make_window(Path(directory))
 
-            self.assertEqual(window.settings_tabs.count(), 3)
+            self.assertEqual(window.settings_tabs.count(), 4)
             self.assertEqual(window.settings_tabs.tabText(0), "Model & memory")
             self.assertEqual(window.settings_tabs.tabText(1), "Generation & spatial")
-            self.assertEqual(window.settings_tabs.tabText(2), "Projector")
+            self.assertEqual(window.settings_tabs.tabText(2), "Token emphasis")
+            self.assertEqual(window.settings_tabs.tabText(3), "Projector")
             runtime_page = window.settings_tabs.widget(0)
             generation_page = window.settings_tabs.widget(1)
             self.assertFalse(runtime_page.isHidden())
@@ -103,6 +105,24 @@ class DesktopSmokeTests(unittest.TestCase):
             window.settings_tabs.setCurrentIndex(1)
             self.assertTrue(runtime_page.isHidden())
             self.assertFalse(generation_page.isHidden())
+
+    def test_highlighted_prompt_text_creates_editable_emphasis(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            window = self.make_window(Path(directory))
+            window.global_prompt.setPlainText("two distinct people on a beach")
+            cursor = window.global_prompt.textCursor()
+            cursor.setPosition(4)
+            cursor.setPosition(19, cursor.MoveMode.KeepAnchor)
+            window.global_prompt.setTextCursor(cursor)
+            window.emphasis_strength_input.setValue(0.6)
+
+            window._add_prompt_emphasis("__global__", window.global_prompt)
+
+            self.assertEqual(len(window.prompt_emphases), 1)
+            emphasis = window.prompt_emphases[0]
+            self.assertEqual(emphasis.phrase, "distinct people")
+            self.assertEqual(emphasis.strength, 0.6)
+            window.close()
             window.close()
 
     def test_projector_preset_autofills_twelve_vectors_and_marks_custom_edits(self) -> None:
@@ -347,6 +367,10 @@ class DesktopSmokeTests(unittest.TestCase):
             )
             window.region_prompt.setPlainText("a person by the water")
             window.region_negative_prompt.setPlainText("blurry face")
+            window.prompt_emphases = [
+                PromptEmphasis("subject", "person", strength=0.4)
+            ]
+            window._refresh_prompt_emphases()
             window._add_lora_path(lora_path)
             window.lora_strength_input.setValue(0.6)
             window.lora_scope_list.item(1).setCheckState(Qt.CheckState.Checked)
@@ -396,6 +420,8 @@ class DesktopSmokeTests(unittest.TestCase):
             self.assertEqual(restored.regions[0].spatial_role, "subject")
             self.assertEqual(restored.regions[0].prompt, "a person by the water")
             self.assertEqual(restored.regions[0].negative_prompt, "blurry face")
+            self.assertEqual(restored.prompt_emphases[0].phrase, "person")
+            self.assertEqual(restored.prompt_emphases[0].strength, 0.4)
             self.assertEqual(restored.lora_list.count(), 1)
             lora_id = restored.lora_list.currentItem().data(Qt.ItemDataRole.UserRole)
             self.assertEqual(
@@ -583,6 +609,7 @@ class DesktopSmokeTests(unittest.TestCase):
             self.assertEqual(payload["regional_late_step_scale"], 0.35)
             self.assertFalse(payload["regional_lora_delta_adaptation"])
             self.assertEqual(payload["regional_lora_delta_adaptation_gain"], 0.35)
+            self.assertEqual(payload["prompt_emphases"], [])
             self.assertFalse(payload["projector_enabled"])
             self.assertEqual(payload["projector_preset"], "filter_bypass2")
             self.assertEqual(len(payload["projector_values"]), 12)

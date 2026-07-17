@@ -39,6 +39,7 @@ from k2_region_lab.regional_lora import (
 )
 from k2_region_lab.regional_prompting import (
     BoundRegionalPromptPlan,
+    PromptEmphasis,
     RegionalPromptPlan,
     compile_regional_prompt_plan,
     krea_prompt_token_count,
@@ -1032,6 +1033,7 @@ class ComfyBaselineRuntime:
         output_directory: Path,
         filename_prefix: str = "baseline",
         regions: tuple[RegionDefinition, ...] = (),
+        emphases: tuple[PromptEmphasis, ...] = (),
         regional_prompting: bool = True,
         regional_prompt_strength: float = 1.0,
         regional_outside_penalty: float = 1.0,
@@ -1077,8 +1079,9 @@ class ComfyBaselineRuntime:
                 subject_competition=regional_subject_competition,
                 subject_fill=regional_subject_fill,
                 late_step_scale=regional_late_step_scale,
+                emphases=emphases,
             )
-            if regional_prompting and regions
+            if regional_prompting and (regions or emphases)
             else None
         )
 
@@ -1186,7 +1189,8 @@ class ComfyBaselineRuntime:
 
         conditioned_prompt = (
             regional_plan.prompt
-            if regional_plan is not None and regional_plan.regions
+            if regional_plan is not None
+            and (regional_plan.regions or regional_plan.emphases)
             else prompt
         )
         positive = self.clip.encode_from_tokens_scheduled(
@@ -1200,7 +1204,9 @@ class ComfyBaselineRuntime:
             raise RuntimeError("Krea conditioning must use one text sequence length")
         conditioning_text_token_count = text_token_counts.pop()
         bound_regional_plan: BoundRegionalPromptPlan | None = None
-        if regional_plan is not None and regional_plan.regions:
+        if regional_plan is not None and (
+            regional_plan.regions or regional_plan.emphases
+        ):
             bound_regional_plan = regional_plan.bind_tokens(
                 lambda prefix: krea_prompt_token_count(self.clip.tokenize(prefix)),
                 conditioning_text_token_count=conditioning_text_token_count,
@@ -1269,6 +1275,7 @@ class ComfyBaselineRuntime:
                 lora_delta_adaptation_gain=regional_lora_delta_adaptation_gain,
             )
             if bound_regional_plan is not None
+            and (bound_regional_plan.spans or bound_regional_plan.emphases)
             else None
         )
         if regional_lora_delta_adaptation and attention_override is not None and event is not None:
@@ -1432,7 +1439,9 @@ class ComfyBaselineRuntime:
 
     @staticmethod
     def _regional_summary(regional_plan, bound_plan, attention_override):
-        if regional_plan is None or not regional_plan.regions:
+        if regional_plan is None or not (
+            regional_plan.regions or regional_plan.emphases
+        ):
             return {"backend": "disabled", "region_count": 0}
         summary = regional_plan.summary()
         if bound_plan is not None:
@@ -1442,6 +1451,15 @@ class ComfyBaselineRuntime:
             }
             for region in summary["regions"]:
                 region["text_token_span"] = token_spans[region["id"]]
+            summary["emphases"] = [
+                {
+                    "scope_id": emphasis.scope_id,
+                    "phrase": emphasis.phrase,
+                    "strength": emphasis.strength,
+                    "text_token_span": [emphasis.start, emphasis.end],
+                }
+                for emphasis in bound_plan.emphases
+            ]
         if attention_override is not None:
             summary["attention_calls"] = attention_override.matched_calls
             summary["attention_implementation"] = "chunked-exact-softmax-v1"

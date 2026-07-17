@@ -9,6 +9,46 @@ from k2_region_lab.regions import CanvasGeometry, PixelBox, RegionDefinition
 
 
 BACKEND = "krea-unified-spatial-attention-v4"
+GLOBAL_EMPHASIS_SCOPE = "__global__"
+
+
+@dataclass(frozen=True, slots=True)
+class PromptEmphasis:
+    """A user-selected phrase to reinforce in global or regional conditioning."""
+
+    scope_id: str
+    phrase: str
+    strength: float = 0.5
+    occurrence: int = 0
+
+    def __post_init__(self) -> None:
+        if not self.scope_id:
+            raise ValueError("prompt emphasis scope must not be empty")
+        if not self.phrase.strip():
+            raise ValueError("prompt emphasis phrase must not be empty")
+        if not 0.0 <= self.strength <= 2.0:
+            raise ValueError("prompt emphasis strength must be between zero and two")
+        if self.occurrence < 0:
+            raise ValueError("prompt emphasis occurrence must not be negative")
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedPromptEmphasis:
+    scope_id: str
+    phrase: str
+    strength: float
+    character_span: tuple[int, int]
+    image_token_field: tuple[float, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class TextTokenEmphasis:
+    scope_id: str
+    phrase: str
+    strength: float
+    start: int
+    end: int
+    image_token_field: tuple[float, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,6 +78,7 @@ class RegionalPromptPlan:
     subject_fill: bool
     late_step_scale: float
     regions: tuple[UnifiedPromptRegion, ...]
+    emphases: tuple[ResolvedPromptEmphasis, ...] = ()
     backend: str = BACKEND
 
     @property
@@ -74,6 +115,25 @@ class RegionalPromptPlan:
         )
         if spans and max(span.end for span in spans) > text_token_count:
             raise ValueError("regional text span exceeds the conditioning sequence")
+        emphases = tuple(
+            TextTokenEmphasis(
+                scope_id=emphasis.scope_id,
+                phrase=emphasis.phrase,
+                strength=emphasis.strength,
+                start=prompt_prefix_token_count(
+                    self.prompt[: emphasis.character_span[0]]
+                ),
+                end=prompt_prefix_token_count(
+                    self.prompt[: emphasis.character_span[1]]
+                ),
+                image_token_field=emphasis.image_token_field,
+            )
+            for emphasis in self.emphases
+        )
+        if any(emphasis.end <= emphasis.start for emphasis in emphases):
+            raise ValueError("each emphasized phrase must own at least one text token")
+        if emphases and max(emphasis.end for emphasis in emphases) > text_token_count:
+            raise ValueError("emphasized text span exceeds the conditioning sequence")
         return BoundRegionalPromptPlan(
             prompt=self.prompt,
             text_token_count=text_token_count,
@@ -83,6 +143,7 @@ class RegionalPromptPlan:
             falloff_pixels=self.falloff_pixels,
             late_step_scale=self.late_step_scale,
             spans=spans,
+            emphases=emphases,
             backend=self.backend,
         )
 
@@ -98,6 +159,15 @@ class RegionalPromptPlan:
             "late_step_scale": self.late_step_scale,
             "image_token_grid": [self.image_token_width, self.image_token_height],
             "region_count": len(self.regions),
+            "emphases": [
+                {
+                    "scope_id": emphasis.scope_id,
+                    "phrase": emphasis.phrase,
+                    "strength": emphasis.strength,
+                    "character_span": list(emphasis.character_span),
+                }
+                for emphasis in self.emphases
+            ],
             "regions": [
                 {
                     "id": region.region_id,
@@ -137,6 +207,7 @@ class BoundRegionalPromptPlan:
     falloff_pixels: float
     late_step_scale: float
     spans: tuple[RegionalTokenSpan, ...]
+    emphases: tuple[TextTokenEmphasis, ...] = ()
     backend: str = BACKEND
 
     def summary(self) -> dict[str, object]:
@@ -150,6 +221,15 @@ class BoundRegionalPromptPlan:
             "text_token_count": self.text_token_count,
             "image_token_count": self.image_token_count,
             "region_count": len(self.spans),
+            "emphases": [
+                {
+                    "scope_id": emphasis.scope_id,
+                    "phrase": emphasis.phrase,
+                    "strength": emphasis.strength,
+                    "text_token_span": [emphasis.start, emphasis.end],
+                }
+                for emphasis in self.emphases
+            ],
             "regions": [
                 {
                     "id": span.region_id,
@@ -174,6 +254,7 @@ def compile_regional_prompt_plan(
     subject_competition: bool = True,
     subject_fill: bool = True,
     late_step_scale: float = 0.35,
+    emphases: tuple[PromptEmphasis, ...] = (),
 ) -> RegionalPromptPlan:
     if not 0.0 < strength <= 10.0:
         raise ValueError("spatial guidance strength must be in (0, 10]")
@@ -247,6 +328,12 @@ def compile_regional_prompt_plan(
     relationship_clause = _relationship_clause(compiled, width, height)
     if relationship_clause:
         prompt += f"\n{relationship_clause}"
+    resolved_emphases = _resolve_prompt_emphases(
+        prompt,
+        compiled,
+        tuple(emphases),
+        image_token_count=geometry.image_lane_count,
+    )
 
     return RegionalPromptPlan(
         width=geometry.aligned_width,
@@ -261,7 +348,90 @@ def compile_regional_prompt_plan(
         subject_fill=bool(subject_fill),
         late_step_scale=float(late_step_scale),
         regions=tuple(compiled),
+        emphases=resolved_emphases,
     )
+
+
+def prompt_emphases_from_payload(
+    payload: list[dict[str, object]] | tuple[dict[str, object], ...],
+) -> tuple[PromptEmphasis, ...]:
+    return tuple(
+        PromptEmphasis(
+            scope_id=str(item.get("scope_id", GLOBAL_EMPHASIS_SCOPE)),
+            phrase=str(item.get("phrase", "")),
+            strength=float(item.get("strength", 0.5)),
+            occurrence=int(item.get("occurrence", 0)),
+        )
+        for item in payload
+    )
+
+
+def _resolve_prompt_emphases(
+    prompt: str,
+    regions: list[UnifiedPromptRegion],
+    emphases: tuple[PromptEmphasis, ...],
+    *,
+    image_token_count: int,
+) -> tuple[ResolvedPromptEmphasis, ...]:
+    if not emphases:
+        return ()
+    by_id = {region.region_id: region for region in regions}
+    global_end = regions[0].character_span[0] if regions else len(prompt)
+    resolved: list[ResolvedPromptEmphasis] = []
+    for emphasis in emphases:
+        if emphasis.scope_id == GLOBAL_EMPHASIS_SCOPE:
+            start = _nth_occurrence(
+                prompt[:global_end], emphasis.phrase, emphasis.occurrence
+            )
+            field = (1.0,) * image_token_count
+        else:
+            region = by_id.get(emphasis.scope_id)
+            if region is None:
+                raise ValueError(
+                    "prompt emphasis references a region without an active prompt: "
+                    f"{emphasis.scope_id}"
+                )
+            source_offset = _nth_occurrence(
+                region.prompt, emphasis.phrase, emphasis.occurrence
+            )
+            description = region.prompt.strip().rstrip(".!? ")
+            description_offset = region.clause.find(description)
+            if description_offset < 0:
+                raise ValueError(
+                    f"could not locate emphasized phrase {emphasis.phrase!r} "
+                    "in its compiled regional clause"
+                )
+            leading_whitespace = len(region.prompt) - len(region.prompt.lstrip())
+            start = (
+                region.character_span[0]
+                + description_offset
+                + source_offset
+                - leading_whitespace
+            )
+            field = region.image_token_field
+        resolved.append(
+            ResolvedPromptEmphasis(
+                scope_id=emphasis.scope_id,
+                phrase=emphasis.phrase,
+                strength=emphasis.strength,
+                character_span=(start, start + len(emphasis.phrase)),
+                image_token_field=field,
+            )
+        )
+    return tuple(resolved)
+
+
+def _nth_occurrence(text: str, phrase: str, occurrence: int) -> int:
+    start = 0
+    for _ in range(occurrence + 1):
+        start = text.find(phrase, start)
+        if start < 0:
+            raise ValueError(
+                f"emphasized phrase {phrase!r} no longer occurs in its prompt scope"
+            )
+        if _ < occurrence:
+            start += len(phrase)
+    return start
 
 
 def _sentence(text: str) -> str:

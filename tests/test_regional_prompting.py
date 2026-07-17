@@ -5,6 +5,8 @@ import unittest
 from k2_region_lab.project import PROJECT_VERSION, project_document, project_state
 from k2_region_lab.regional_prompting import (
     BACKEND,
+    GLOBAL_EMPHASIS_SCOPE,
+    PromptEmphasis,
     compile_regional_prompt_plan,
     krea_prompt_token_count,
     region_definitions_from_payload,
@@ -186,6 +188,33 @@ class RegionalPromptingTests(unittest.TestCase):
         summary = override.summary()
         self.assertTrue(summary["lora_delta_adaptation"])
         self.assertEqual(summary["final_region_scales"], {"subject": 1.5})
+
+    def test_prompt_emphasis_binds_global_and_region_phrases_to_tokens(self) -> None:
+        region = RegionDefinition(
+            "subject", "Subject", PixelBox(0, 0, 32, 64), "a red glass vase"
+        )
+        plan = compile_regional_prompt_plan(
+            64,
+            64,
+            "two distinct people in a gallery",
+            (region,),
+            emphases=(
+                PromptEmphasis(GLOBAL_EMPHASIS_SCOPE, "distinct people", 0.5),
+                PromptEmphasis("subject", "red glass", 0.4),
+            ),
+        )
+
+        bound = plan.bind_tokens(lambda prefix: len(prefix.split()))
+
+        self.assertEqual(len(bound.emphases), 2)
+        self.assertEqual(bound.emphases[0].phrase, "distinct people")
+        self.assertEqual(bound.emphases[0].image_token_field, (1.0,) * 16)
+        self.assertEqual(bound.emphases[1].phrase, "red glass")
+        self.assertEqual(
+            bound.emphases[1].image_token_field, plan.regions[0].image_token_field
+        )
+        self.assertLess(bound.emphases[0].start, bound.emphases[0].end)
+        self.assertLess(bound.emphases[1].start, bound.emphases[1].end)
 
     def test_subject_field_peaks_at_center_while_background_fills_its_box(self) -> None:
         subject = RegionDefinition(

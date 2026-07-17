@@ -11,12 +11,17 @@ from k2_region_lab.projector import (
     PROJECTOR_PRESETS,
     validate_projector_values,
 )
+from k2_region_lab.regional_prompting import (
+    GLOBAL_EMPHASIS_SCOPE,
+    PromptEmphasis,
+    prompt_emphases_from_payload,
+)
 from k2_region_lab.regions import PixelBox, RegionDefinition
 
 
 PROJECT_SCHEMA = "k2-region-lab-project"
-PROJECT_VERSION = 10
-SUPPORTED_PROJECT_VERSIONS = {1, 2, 3, 4, 5, 6, 7, 8, 9, PROJECT_VERSION}
+PROJECT_VERSION = 11
+SUPPORTED_PROJECT_VERSIONS = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, PROJECT_VERSION}
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,6 +54,7 @@ class ProjectState:
     regional_late_step_scale: float = 0.35
     regional_lora_delta_adaptation: bool = False
     regional_lora_delta_adaptation_gain: float = 0.35
+    prompt_emphases: tuple[PromptEmphasis, ...] = ()
     projector_enabled: bool = False
     projector_preset: str = DEFAULT_PROJECTOR_PRESET
     projector_values: tuple[float, ...] = PROJECTOR_PRESETS[DEFAULT_PROJECTOR_PRESET]
@@ -102,6 +108,9 @@ class ProjectState:
         if any(not name.strip() for name in names) or len(names) != len(set(names)):
             raise ValueError("project region names must be non-empty and unique")
         known_ids = set(region_ids)
+        for emphasis in self.prompt_emphases:
+            if emphasis.scope_id != GLOBAL_EMPHASIS_SCOPE and emphasis.scope_id not in known_ids:
+                raise ValueError("a prompt emphasis references a region missing from the project")
         for region in self.regions:
             box = region.box
             if box.width < 16 or box.height < 16:
@@ -144,6 +153,15 @@ def project_document(state: ProjectState) -> dict[str, Any]:
             "regional_lora_delta_adaptation_gain": (
                 state.regional_lora_delta_adaptation_gain
             ),
+            "prompt_emphases": [
+                {
+                    "scope_id": emphasis.scope_id,
+                    "phrase": emphasis.phrase,
+                    "strength": emphasis.strength,
+                    "occurrence": emphasis.occurrence,
+                }
+                for emphasis in state.prompt_emphases
+            ],
             "projector_enabled": state.projector_enabled,
             "projector_preset": state.projector_preset,
             "projector_values": list(state.projector_values),
@@ -250,6 +268,9 @@ def project_state(document: dict[str, Any]) -> ProjectState:
         ),
         regional_lora_delta_adaptation_gain=float(
             generation.get("regional_lora_delta_adaptation_gain", 0.35)
+        ),
+        prompt_emphases=prompt_emphases_from_payload(
+            generation.get("prompt_emphases", [])
         ),
         projector_enabled=bool(generation.get("projector_enabled", False)),
         projector_preset=str(

@@ -95,12 +95,12 @@ class KreaSpatialAttentionOverride:
             device=v.device,
         )
         key_transposed = k.transpose(-2, -1)
-        pair_fields = self._pair_fields(q)
+        pair_fields, emphasis_fields = self._pair_fields(q)
         for start in range(0, q.shape[-2], self.query_chunk_size):
             end = min(q.shape[-2], start + self.query_chunk_size)
             scores = torch.matmul(q[:, :, start:end], key_transposed) * scale
             scores = scores.float()
-            self._add_spatial_bias(scores, start, end, pair_fields)
+            self._add_spatial_bias(scores, start, end, pair_fields, emphasis_fields)
             probabilities = torch.softmax(scores, dim=-1).to(v.dtype)
             output[:, :, start:end] = torch.matmul(probabilities, v)
             del scores, probabilities
@@ -129,10 +129,19 @@ class KreaSpatialAttentionOverride:
             )
             for span in self.plan.spans
         )
-        self._cache[key] = fields
-        return fields
+        emphasis_fields = tuple(
+            torch.tensor(
+                emphasis.image_token_field,
+                dtype=torch.float32,
+                device=device,
+            )
+            for emphasis in self.plan.emphases
+        )
+        cached = fields, emphasis_fields
+        self._cache[key] = cached
+        return cached
 
-    def _add_spatial_bias(self, scores, start, end, pair_fields) -> None:
+    def _add_spatial_bias(self, scores, start, end, pair_fields, emphasis_fields) -> None:
         text_count = self.plan.text_token_count
         for span, pair in zip(self.plan.spans, pair_fields, strict=True):
             text_start = max(start, span.start)
@@ -157,6 +166,23 @@ class KreaSpatialAttentionOverride:
                     image_pair.reshape(1, 1, -1, 1),
                     alpha=self.step_scale * self.region_scales.get(span.region_id, 1.0),
                 )
+        for emphasis, image_field in zip(
+            self.plan.emphases, emphasis_fields, strict=True
+        ):
+            text_start = max(start, emphasis.start)
+            text_end = min(end, emphasis.end)
+            image_start = max(start, text_count)
+            image_end = end
+            if text_start >= text_end or image_start >= image_end:
+                continue
+            scores[
+                :, :, image_start - start : image_end - start, text_start : text_end
+            ].add_(
+                image_field[
+                    image_start - text_count : image_end - text_count
+                ].reshape(1, 1, -1, 1),
+                alpha=self.step_scale * emphasis.strength,
+            )
 
     def set_lora_delta_scales(self, scales: dict[str, float]) -> None:
         """Set bounded, per-region multipliers for the next attention calls."""
