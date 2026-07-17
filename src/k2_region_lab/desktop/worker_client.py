@@ -53,6 +53,11 @@ class ExternalWorkerClient(QObject):
             "PYTORCH_CUDA_ALLOC_CONF"
         ):
             environment.insert("PYTORCH_ALLOC_CONF", "expandable_segments:True")
+        if not environment.contains("TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL"):
+            # Recent PyTorch/ROCm releases otherwise disable the memory-efficient
+            # attention backend on newer AMD architectures. The baseline does not
+            # fit reliably in 16 GiB when it falls back to eager attention.
+            environment.insert("TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL", "1")
         environment.insert(
             "PATH",
             os.pathsep.join(

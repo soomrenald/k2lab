@@ -45,3 +45,8 @@ def memory_policy(key: str) -> MemoryPolicy:
 def effective_reserve_vram_gb(key: str, requested_gb: float) -> float:
     """Apply the selected policy's non-negotiable VRAM reserve floor."""
     return max(0.5, float(requested_gb), memory_policy(key).reserve_vram_gb)
+
+
+def effective_minimum_system_ram_gb(key: str, requested_gb: float) -> float:
+    """Apply the selected policy's non-negotiable system-RAM floor."""
+    return max(4.0, float(requested_gb), memory_policy(key).minimum_system_ram_gb)

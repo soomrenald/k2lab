@@ -36,6 +36,7 @@ from k2_region_lab.desktop.worker_client import ExternalWorkerClient
 from k2_region_lab.lora import LoraLibrary
 from k2_region_lab.memory import (
     MEMORY_POLICIES,
+    effective_minimum_system_ram_gb,
     effective_reserve_vram_gb,
     memory_policy,
 )
@@ -671,6 +672,13 @@ class MainWindow(QMainWindow):
         runtime = state.runtime or {}
         current = self.settings
         current_directories = current.model_directories
+        # A launch-time interpreter selection is an operator override. This lets
+        # an old project run on a newer ROCm worker without first rewriting it.
+        worker_python = (
+            current.worker_python
+            if "K2LAB_WORKER_PYTHON" in os.environ
+            else Path(runtime.get("worker_python", current.worker_python)).expanduser()
+        )
         return AppSettings(
             model_directories=ModelDirectories(
                 Path(
@@ -682,7 +690,7 @@ class MainWindow(QMainWindow):
             data_directory=Path(
                 runtime.get("data_directory", current.data_directory)
             ).expanduser(),
-            worker_python=Path(runtime.get("worker_python", current.worker_python)).expanduser(),
+            worker_python=worker_python,
             comfyui_root=Path(runtime.get("comfyui_root", current.comfyui_root)).expanduser(),
             auto_start_worker=current.auto_start_worker,
             memory_policy=str(runtime.get("memory_policy", current.memory_policy)),
@@ -785,7 +793,9 @@ class MainWindow(QMainWindow):
             "reserve_vram_gb": effective_reserve_vram_gb(
                 policy_key, self.reserve_vram_input.value()
             ),
-            "minimum_system_ram_gb": self.minimum_ram_input.value(),
+            "minimum_system_ram_gb": effective_minimum_system_ram_gb(
+                policy_key, self.minimum_ram_input.value()
+            ),
             "cpu_vae": self.cpu_vae_input.isChecked(),
             "oom_recovery": self.oom_recovery_input.isChecked(),
         }

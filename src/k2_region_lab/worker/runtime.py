@@ -13,7 +13,12 @@ from typing import Any, Callable
 from k2_region_lab.config import ModelDirectories
 from k2_region_lab.model import ArtifactSet, discover_model_artifacts
 from k2_region_lab.model.manifests import build_tensor_manifest
-from k2_region_lab.memory import GIB, effective_reserve_vram_gb, memory_policy
+from k2_region_lab.memory import (
+    GIB,
+    effective_minimum_system_ram_gb,
+    effective_reserve_vram_gb,
+    memory_policy,
+)
 
 
 class CriticalGpuMemoryPressure(RuntimeError):
@@ -236,7 +241,9 @@ class ComfyBaselineRuntime:
         )
         self.warning_free_gb = max(self.reserve_vram_gb, policy.warning_free_gb)
         self.critical_free_gb = min(self.warning_free_gb, policy.critical_free_gb)
-        self.minimum_system_ram_gb = max(4.0, minimum_system_ram_gb)
+        self.minimum_system_ram_gb = effective_minimum_system_ram_gb(
+            policy.key, minimum_system_ram_gb
+        )
         self.cpu_vae = bool(cpu_vae)
         self.oom_recovery = bool(oom_recovery)
         import psutil

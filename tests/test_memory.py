@@ -7,6 +7,7 @@ from unittest.mock import Mock
 
 from k2_region_lab.memory import (
     MEMORY_POLICIES,
+    effective_minimum_system_ram_gb,
     effective_reserve_vram_gb,
     memory_policy,
 )
@@ -28,6 +29,9 @@ class MemoryPolicyTests(unittest.TestCase):
         self.assertEqual(effective_reserve_vram_gb("safe_16gb", 2.0), 4.0)
         self.assertEqual(effective_reserve_vram_gb("emergency", 4.0), 5.5)
         self.assertEqual(effective_reserve_vram_gb("balanced", 3.5), 3.5)
+        self.assertEqual(effective_minimum_system_ram_gb("safe_16gb", 12.0), 14.0)
+        self.assertEqual(effective_minimum_system_ram_gb("emergency", 14.0), 16.0)
+        self.assertEqual(effective_minimum_system_ram_gb("balanced", 13.0), 13.0)
 
     def test_critical_pressure_uses_the_single_oom_recovery_path(self) -> None:
         self.assertTrue(

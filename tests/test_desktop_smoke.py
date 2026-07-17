@@ -21,6 +21,7 @@ if PYSIDE_AVAILABLE:
     from k2_region_lab.config import AppSettings, ModelDirectories
     from k2_region_lab.desktop.main_window import GLOBAL_SCOPE_ID, MainWindow
     from k2_region_lab.processes import WorkerProcess
+    from k2_region_lab.project import ProjectState
 
 
 def write_lora(path: Path) -> None:
@@ -260,17 +261,44 @@ class DesktopSmokeTests(unittest.TestCase):
             self.assertIn("exceeded the 16 GB limit", window.statusBar().currentMessage())
             window.close()
 
-    def test_safe_worker_payload_enforces_four_gib_floor(self) -> None:
+    def test_safe_worker_payload_enforces_memory_floors(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             window = self.make_window(Path(directory))
             window.memory_policy_input.setCurrentIndex(
                 window.memory_policy_input.findData("safe_16gb")
             )
             window.reserve_vram_input.setValue(2.0)
+            window.minimum_ram_input.setValue(12.0)
 
             payload = window._worker_payload()
 
             self.assertEqual(payload["reserve_vram_gb"], 4.0)
+            self.assertEqual(payload["minimum_system_ram_gb"], 14.0)
+            window.close()
+
+    def test_explicit_worker_python_overrides_saved_project_runtime(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            selected = root / "rocm7" / "bin" / "python"
+            window = self.make_window(root)
+            window.settings = AppSettings(
+                model_directories=window.settings.model_directories,
+                data_directory=root,
+                worker_python=selected,
+                auto_start_worker=False,
+            )
+            state = ProjectState(
+                1024,
+                1024,
+                runtime={"worker_python": str(root / "rocm6" / "bin" / "python")},
+            )
+
+            with patch.dict(
+                os.environ, {"K2LAB_WORKER_PYTHON": str(selected)}, clear=False
+            ):
+                restored = window._settings_from_project(state)
+
+            self.assertEqual(restored.worker_python, selected)
             window.close()
 
     def test_release_gpu_memory_only_targets_discovered_k2_workers(self) -> None:
