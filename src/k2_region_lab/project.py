@@ -26,6 +26,7 @@ class ProjectState:
     global_prompt: str = ""
     steps: int = 8
     seed: int = 0
+    seed_mode: str = "fixed"
     regions: tuple[RegionDefinition, ...] = ()
     loras: tuple[SavedLora, ...] = ()
     runtime: dict[str, Any] | None = None
@@ -38,6 +39,8 @@ class ProjectState:
             raise ValueError("steps must be between 1 and 100")
         if self.seed < 0:
             raise ValueError("seed must not be negative")
+        if self.seed_mode not in {"fixed", "random", "increment"}:
+            raise ValueError(f"unsupported seed mode: {self.seed_mode!r}")
         region_ids = [region.region_id for region in self.regions]
         if len(region_ids) != len(set(region_ids)):
             raise ValueError("project region IDs must be unique")
@@ -74,6 +77,7 @@ def project_document(state: ProjectState) -> dict[str, Any]:
             "global_prompt": state.global_prompt,
             "steps": state.steps,
             "seed": state.seed,
+            "seed_mode": state.seed_mode,
         },
         "regions": [
             {
@@ -144,6 +148,7 @@ def project_state(document: dict[str, Any]) -> ProjectState:
         global_prompt=str(generation.get("global_prompt", "")),
         steps=int(generation.get("steps", 8)),
         seed=int(generation.get("seed", 0)),
+        seed_mode=str(generation.get("seed_mode", "fixed")),
         regions=regions,
         loras=loras,
         runtime=dict(document.get("runtime", {})),

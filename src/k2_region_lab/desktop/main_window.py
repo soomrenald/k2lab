@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import secrets
 from dataclasses import replace
 from pathlib import Path
 
@@ -24,6 +25,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QSplitter,
     QSpinBox,
     QTextEdit,
     QVBoxLayout,
@@ -32,6 +34,7 @@ from PySide6.QtWidgets import (
 
 from k2_region_lab.config import AppSettings, ModelDirectories
 from k2_region_lab.desktop.region_canvas import RegionCanvas
+from k2_region_lab.desktop.resource_monitor import ResourceMonitorWidget
 from k2_region_lab.desktop.worker_client import ExternalWorkerClient
 from k2_region_lab.lora import LoraLibrary
 from k2_region_lab.memory import (
@@ -75,6 +78,7 @@ class MainWindow(QMainWindow):
         self._models_compatible = False
         self._current_project_path: Path | None = None
         self._background_image_path: Path | None = None
+        self._generation_active = False
         self._output_directory = settings.output_directory or default_output_directory(
             settings.data_directory
         )
@@ -258,6 +262,11 @@ class MainWindow(QMainWindow):
         self.seed_input.setValue(0)
         layout.addRow("Turbo steps", self.steps_input)
         layout.addRow("Seed", self.seed_input)
+        self.seed_mode_input = QComboBox()
+        self.seed_mode_input.addItem("Fixed", "fixed")
+        self.seed_mode_input.addItem("Random", "random")
+        self.seed_mode_input.addItem("Increment", "increment")
+        layout.addRow("Seed behavior", self.seed_mode_input)
         output_row = QWidget()
         output_layout = QHBoxLayout(output_row)
         output_layout.setContentsMargins(0, 0, 0, 0)
@@ -272,10 +281,21 @@ class MainWindow(QMainWindow):
         self.filename_prefix_input.setPlaceholderText("baseline")
         self.filename_prefix_input.editingFinished.connect(self._filename_prefix_edited)
         layout.addRow("Filename prefix", self.filename_prefix_input)
+        generation_buttons = QWidget()
+        generation_layout = QHBoxLayout(generation_buttons)
+        generation_layout.setContentsMargins(0, 0, 0, 0)
         self.generate_button = QPushButton("Generate baseline")
         self.generate_button.setEnabled(False)
         self.generate_button.clicked.connect(self._generate_baseline)
-        layout.addRow(self.generate_button)
+        self.stop_generation_button = QPushButton("Stop generation")
+        self.stop_generation_button.setEnabled(False)
+        self.stop_generation_button.setToolTip(
+            "Stop only the K2 GPU worker and release its GPU/system memory"
+        )
+        self.stop_generation_button.clicked.connect(self._stop_generation)
+        generation_layout.addWidget(self.generate_button)
+        generation_layout.addWidget(self.stop_generation_button)
+        layout.addRow(generation_buttons)
         dock.setWidget(body)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
 
@@ -328,8 +348,15 @@ class MainWindow(QMainWindow):
     def _build_event_dock(self) -> None:
         dock = QDockWidget("Events", self)
         dock.setAllowedAreas(Qt.DockWidgetArea.BottomDockWidgetArea)
-        self.events = EventListWidget(dock)
-        dock.setWidget(self.events)
+        splitter = QSplitter(Qt.Orientation.Horizontal, dock)
+        self.events = EventListWidget(splitter)
+        self.resource_monitor = ResourceMonitorWidget(splitter)
+        splitter.addWidget(self.events)
+        splitter.addWidget(self.resource_monitor)
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 0)
+        splitter.setSizes([1100, 320])
+        dock.setWidget(splitter)
         self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, dock)
 
     def _browse_output_directory(self) -> None:
@@ -669,6 +696,7 @@ class MainWindow(QMainWindow):
             global_prompt=self.global_prompt.toPlainText(),
             steps=self.steps_input.value(),
             seed=self.seed_input.value(),
+            seed_mode=str(self.seed_mode_input.currentData()),
             regions=tuple(self.regions),
             loras=saved_loras,
             runtime=runtime,
@@ -786,6 +814,8 @@ class MainWindow(QMainWindow):
         self.global_prompt.setPlainText(state.global_prompt)
         self.steps_input.setValue(state.steps)
         self.seed_input.setValue(state.seed)
+        seed_mode_index = self.seed_mode_input.findData(state.seed_mode)
+        self.seed_mode_input.setCurrentIndex(max(0, seed_mode_index))
         policy_index = self.memory_policy_input.findData(self.settings.memory_policy)
         self.memory_policy_input.setCurrentIndex(max(0, policy_index))
         self.reserve_vram_input.setValue(self.settings.reserve_vram_gb)
@@ -965,6 +995,13 @@ class MainWindow(QMainWindow):
 
     def _generate_baseline(self) -> None:
         self._filename_prefix_edited()
+        seed_mode = str(self.seed_mode_input.currentData())
+        seed = self.seed_input.value()
+        if seed_mode == "random":
+            seed = secrets.randbelow(2_147_483_648)
+            self.seed_input.setValue(seed)
+        elif seed_mode == "increment":
+            self.seed_input.setValue((seed + 1) % 2_147_483_648)
         geometry = CanvasGeometry.resolve(self.width_input.value(), self.height_input.value())
         payload = self._worker_payload()
         payload.update(
@@ -973,15 +1010,43 @@ class MainWindow(QMainWindow):
                 "width": geometry.aligned_width,
                 "height": geometry.aligned_height,
                 "steps": self.steps_input.value(),
-                "seed": self.seed_input.value(),
+                "seed": seed,
+                "seed_mode": seed_mode,
                 "output_directory": str(self._output_directory),
                 "filename_prefix": validate_filename_prefix(
                     self.filename_prefix_input.text()
                 ),
             }
         )
+        self._set_generation_active(True)
+        try:
+            self.worker_client.send(CommandKind.GENERATE_BASELINE, payload)
+        except RuntimeError as error:
+            self._set_generation_active(False)
+            self.events.addItem(f"Could not start generation: {error}")
+
+    def _set_generation_active(self, active: bool) -> None:
+        self._generation_active = active
+        self.generate_button.setEnabled(not active and self.worker_client.running)
+        self.stop_generation_button.setEnabled(active and self.worker_client.running)
+
+    def _stop_generation(self) -> None:
+        if not self._generation_active:
+            return
+        pid = self.worker_client.cancel_generation()
+        self._set_generation_active(False)
+        self._accelerator_available = False
+        self.worker_status.setText("Stopped")
+        self.accelerator_status.setText("Not probed")
+        self.memory_status.setText("Generation stopped; worker memory released")
+        self.load_model_button.setEnabled(False)
         self.generate_button.setEnabled(False)
-        self.worker_client.send(CommandKind.GENERATE_BASELINE, payload)
+        self._set_memory_controls_enabled(True)
+        detail = f" (worker PID {pid})" if pid is not None else ""
+        self.events.addItem(f"Generation stopped by user{detail}; GPU/RAM released")
+        self.statusBar().showMessage(
+            "Generation stopped — make changes, then start and reload the worker", 10000
+        )
 
     def _worker_event(self, event: dict) -> None:
         state = event.get("state", "unknown")
@@ -1058,6 +1123,7 @@ class MainWindow(QMainWindow):
             self._set_memory_controls_enabled(False)
             self.generate_button.setEnabled(True)
         elif message == "Baseline generation complete":
+            self._set_generation_active(False)
             image_path = payload.get("image_path")
             if image_path and self.canvas.set_image(image_path):
                 self._background_image_path = Path(image_path)
@@ -1068,6 +1134,7 @@ class MainWindow(QMainWindow):
                 )
             self.generate_button.setEnabled(True)
         elif state == "error":
+            self._set_generation_active(False)
             self.load_model_button.setEnabled(self._accelerator_available)
             self.generate_button.setEnabled(False)
             self._set_memory_controls_enabled(True)
@@ -1091,6 +1158,8 @@ class MainWindow(QMainWindow):
         self.worker_status.setText(status)
         self.events.addItem(f"GPU worker process: {status}")
         if status.startswith("stopped") or "error" in status:
+            self._set_generation_active(False)
+            self.generate_button.setEnabled(False)
             self._set_memory_controls_enabled(True)
 
     def closeEvent(self, event) -> None:

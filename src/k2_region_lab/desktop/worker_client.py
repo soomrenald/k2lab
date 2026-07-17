@@ -30,6 +30,7 @@ class ExternalWorkerClient(QObject):
             lambda error: self.process_status.emit(f"process error: {error.name}")
         )
         self._stdout_buffer = ""
+        self._expected_stop_reason: str | None = None
 
     @property
     def running(self) -> bool:
@@ -124,6 +125,18 @@ class ExternalWorkerClient(QObject):
         self.process.waitForFinished(1500)
         return pid
 
+    def cancel_generation(self, timeout_ms: int = 1500) -> int | None:
+        """Terminate the isolated worker while leaving the desktop process alive."""
+        if not self.running:
+            return None
+        pid = int(self.process.processId())
+        self._expected_stop_reason = "generation cancelled"
+        self.process.terminate()
+        if not self.process.waitForFinished(timeout_ms):
+            self.process.kill()
+            self.process.waitForFinished(1500)
+        return pid
+
     def _read_stdout(self) -> None:
         self._stdout_buffer += bytes(self.process.readAllStandardOutput()).decode(
             "utf-8", errors="replace"
@@ -152,6 +165,9 @@ class ExternalWorkerClient(QObject):
         logging.getLogger(__name__).debug(
             "worker finished exit_code=%s exit_status=%s", exit_code, exit_status.name
         )
-        self.process_status.emit(
-            f"stopped (exit {exit_code}, {exit_status.name})"
-        )
+        if self._expected_stop_reason is not None:
+            status = f"stopped ({self._expected_stop_reason})"
+            self._expected_stop_reason = None
+        else:
+            status = f"stopped (exit {exit_code}, {exit_status.name})"
+        self.process_status.emit(status)

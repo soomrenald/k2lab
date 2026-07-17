@@ -67,6 +67,8 @@ K2LAB_FILENAME_PREFIX
 
 Use **Validate tensors** before **Load Krea 2 baseline**. Validation reads only safetensors headers and writes complete manifests under the configured K2 Lab data directory. After loading, **Generate baseline** runs an eight-step Euler/simple Turbo pass by default and displays the saved image behind the editable region boxes. The model panel provides an output-folder browser and editable filename prefix; both are saved in project JSON. The event viewer follows new messages only while its scrollbar is already at the latest event.
 
+The compact monitor beside Events reads Linux DRM/sysfs and `/proc/meminfo` directly once per second, showing current GPU VRAM, system RAM, GPU activity, and a two-minute VRAM/RAM history without trying to embed `nvtop`. Seed behavior can be **Fixed**, **Random**, or **Increment** and is stored in the project. **Stop generation** terminates only the isolated K2 GPU worker, releases its GPU and system-memory allocations, and leaves the desktop open; start and reload the worker before the next run.
+
 If the accelerator probe fails, **Diagnose accelerator…** appears below the status. It restarts the worker with a clean environment and reports the interpreter, Torch/ROCm versions, device-file access, visibility variables, initialization errors, and suggested fixes without closing the application.
 
 Use **Release K2 GPU memory…** if a failed run leaves a K2 worker holding VRAM. The confirmation dialog lists every matching current-user K2 worker PID, then stops only those processes. It deliberately does not terminate ComfyUI or other ROCm applications.

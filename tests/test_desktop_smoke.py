@@ -168,6 +168,9 @@ class DesktopSmokeTests(unittest.TestCase):
             window.canvas.set_canvas_size(768, 512)
             window.steps_input.setValue(6)
             window.seed_input.setValue(42)
+            window.seed_mode_input.setCurrentIndex(
+                window.seed_mode_input.findData("increment")
+            )
             window.memory_policy_input.setCurrentIndex(
                 window.memory_policy_input.findData("balanced")
             )
@@ -195,6 +198,7 @@ class DesktopSmokeTests(unittest.TestCase):
             self.assertEqual(restored.height_input.value(), 512)
             self.assertEqual(restored.steps_input.value(), 6)
             self.assertEqual(restored.seed_input.value(), 42)
+            self.assertEqual(restored.seed_mode_input.currentData(), "increment")
             self.assertEqual(restored.memory_policy_input.currentData(), "balanced")
             self.assertEqual(restored.reserve_vram_input.value(), 3.5)
             self.assertEqual(restored.minimum_ram_input.value(), 13.0)
@@ -376,6 +380,54 @@ class DesktopSmokeTests(unittest.TestCase):
             self.assertIsNotNone(window.canvas._image_item)
             self.assertEqual(window.canvas._image_item.zValue(), -100.0)
             self.assertTrue(window.generate_button.isEnabled())
+            window.close()
+
+    def test_random_and_increment_seed_modes_select_the_dispatched_seed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            window = self.make_window(Path(directory))
+            window.worker_client.send = Mock()
+            window.seed_mode_input.setCurrentIndex(
+                window.seed_mode_input.findData("random")
+            )
+            with patch(
+                "k2_region_lab.desktop.main_window.secrets.randbelow", return_value=9876
+            ):
+                window._generate_baseline()
+            random_payload = window.worker_client.send.call_args.args[1]
+            self.assertEqual(random_payload["seed"], 9876)
+            self.assertEqual(random_payload["seed_mode"], "random")
+            self.assertEqual(window.seed_input.value(), 9876)
+
+            window.worker_client.send.reset_mock()
+            window.seed_mode_input.setCurrentIndex(
+                window.seed_mode_input.findData("increment")
+            )
+            window.seed_input.setValue(41)
+            window._generate_baseline()
+            increment_payload = window.worker_client.send.call_args.args[1]
+            self.assertEqual(increment_payload["seed"], 41)
+            self.assertEqual(increment_payload["seed_mode"], "increment")
+            self.assertEqual(window.seed_input.value(), 42)
+            window.close()
+
+    def test_stop_generation_terminates_only_worker_and_resets_controls(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            window = self.make_window(Path(directory))
+            window.worker_client.cancel_generation = Mock(return_value=4321)
+            window._generation_active = True
+
+            window._stop_generation()
+
+            window.worker_client.cancel_generation.assert_called_once()
+            self.assertFalse(window._generation_active)
+            self.assertFalse(window.generate_button.isEnabled())
+            self.assertFalse(window.stop_generation_button.isEnabled())
+            self.assertTrue(window.memory_policy_input.isEnabled())
+            messages = [
+                window.events.item(index).text()
+                for index in range(window.events.count())
+            ]
+            self.assertTrue(any("worker PID 4321" in message for message in messages))
             window.close()
 
     def test_event_view_follows_only_when_already_at_latest_event(self) -> None:
