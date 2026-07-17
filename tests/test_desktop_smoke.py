@@ -171,6 +171,9 @@ class DesktopSmokeTests(unittest.TestCase):
             window.seed_mode_input.setCurrentIndex(
                 window.seed_mode_input.findData("increment")
             )
+            window.regional_prompting_input.setChecked(True)
+            window.regional_prompt_strength_input.setValue(1.7)
+            window.regional_feather_input.setValue(48)
             window.memory_policy_input.setCurrentIndex(
                 window.memory_policy_input.findData("balanced")
             )
@@ -185,6 +188,7 @@ class DesktopSmokeTests(unittest.TestCase):
             window.region_name.setText("Main subject")
             window._region_name_edited()
             window.region_prompt.setPlainText("a person by the water")
+            window.region_negative_prompt.setPlainText("blurry face")
             window._add_lora_path(lora_path)
             window.lora_scope_list.item(1).setCheckState(Qt.CheckState.Checked)
             project_path = root / "beach.k2lab.json"
@@ -199,6 +203,9 @@ class DesktopSmokeTests(unittest.TestCase):
             self.assertEqual(restored.steps_input.value(), 6)
             self.assertEqual(restored.seed_input.value(), 42)
             self.assertEqual(restored.seed_mode_input.currentData(), "increment")
+            self.assertTrue(restored.regional_prompting_input.isChecked())
+            self.assertEqual(restored.regional_prompt_strength_input.value(), 1.7)
+            self.assertEqual(restored.regional_feather_input.value(), 48)
             self.assertEqual(restored.memory_policy_input.currentData(), "balanced")
             self.assertEqual(restored.reserve_vram_input.value(), 3.5)
             self.assertEqual(restored.minimum_ram_input.value(), 13.0)
@@ -207,6 +214,7 @@ class DesktopSmokeTests(unittest.TestCase):
             self.assertEqual(restored.filename_prefix_input.text(), "beach-study")
             self.assertEqual(restored.regions[0].name, "Main subject")
             self.assertEqual(restored.regions[0].prompt, "a person by the water")
+            self.assertEqual(restored.regions[0].negative_prompt, "blurry face")
             self.assertEqual(restored.lora_list.count(), 1)
             lora_id = restored.lora_list.currentItem().data(Qt.ItemDataRole.UserRole)
             self.assertEqual(
@@ -353,6 +361,10 @@ class DesktopSmokeTests(unittest.TestCase):
             window.seed_input.setValue(1234)
             window._output_directory = root / "renders"
             window.filename_prefix_input.setText("teapot-test")
+            window.canvas.region_created.emit(
+                "teapot-region", 16.0, 16.0, 256.0, 256.0
+            )
+            window.region_prompt.setPlainText("a detailed red teapot")
             window.worker_client.send = Mock()
 
             window._generate_baseline()
@@ -365,6 +377,12 @@ class DesktopSmokeTests(unittest.TestCase):
             self.assertEqual(payload["seed"], 1234)
             self.assertEqual(payload["output_directory"], str(root / "renders"))
             self.assertEqual(payload["filename_prefix"], "teapot-test")
+            self.assertTrue(payload["regional_prompting"])
+            self.assertEqual(payload["regional_feather_pixels"], 32)
+            self.assertEqual(payload["regions"][0]["id"], "teapot-region")
+            self.assertEqual(
+                payload["regions"][0]["prompt"], "a detailed red teapot"
+            )
 
             image_path = root / "baseline.png"
             pixmap = QPixmap(32, 32)
@@ -373,7 +391,7 @@ class DesktopSmokeTests(unittest.TestCase):
             window._worker_event(
                 {
                     "state": "ready",
-                    "message": "Baseline generation complete",
+                    "message": "Generation complete",
                     "payload": {"image_path": str(image_path)},
                 }
             )

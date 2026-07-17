@@ -10,6 +10,7 @@ from typing import Any
 from k2_region_lab.config import ModelDirectories
 from k2_region_lab.debug import configure_debug_logging
 from k2_region_lab.model import discover_model_artifacts
+from k2_region_lab.regional_prompting import region_definitions_from_payload
 from k2_region_lab.worker.protocol import CommandKind, WorkerState
 from k2_region_lab.worker.runtime import (
     ComfyBaselineRuntime,
@@ -127,7 +128,7 @@ def main() -> int:
                     raise RuntimeError("load the Krea 2 baseline before generating")
                 emit(
                     WorkerState.RUNNING,
-                    "Baseline generation started",
+                    "Generation started",
                     command_id=command_id,
                 )
 
@@ -159,12 +160,20 @@ def main() -> int:
                     seed=int(payload.get("seed", 0)),
                     output_directory=Path(payload["output_directory"]),
                     filename_prefix=str(payload.get("filename_prefix", "baseline")),
+                    regions=region_definitions_from_payload(payload.get("regions", [])),
+                    regional_prompting=bool(payload.get("regional_prompting", True)),
+                    regional_prompt_strength=float(
+                        payload.get("regional_prompt_strength", 1.0)
+                    ),
+                    regional_feather_pixels=float(
+                        payload.get("regional_feather_pixels", 32.0)
+                    ),
                     progress=progress,
                     event=runtime_event,
                 )
                 emit(
                     WorkerState.READY,
-                    "Baseline generation complete",
+                    "Generation complete",
                     command_id=command_id,
                     payload=generated,
                 )

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import glob
 import gc
+import json
 import os
 import platform
 import sys
@@ -20,6 +21,11 @@ from k2_region_lab.memory import (
     memory_policy,
 )
 from k2_region_lab.output import validate_filename_prefix
+from k2_region_lab.regional_prompting import (
+    RegionalPromptPlan,
+    compile_regional_prompt_plan,
+)
+from k2_region_lab.regions import RegionDefinition
 
 
 class CriticalGpuMemoryPressure(RuntimeError):
@@ -426,6 +432,10 @@ class ComfyBaselineRuntime:
         seed: int,
         output_directory: Path,
         filename_prefix: str = "baseline",
+        regions: tuple[RegionDefinition, ...] = (),
+        regional_prompting: bool = True,
+        regional_prompt_strength: float = 1.0,
+        regional_feather_pixels: float = 32.0,
         progress: Callable[[int, int, dict[str, Any]], None] | None = None,
         event: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
@@ -436,6 +446,17 @@ class ComfyBaselineRuntime:
         if not 1 <= steps <= 100:
             raise ValueError("steps must be between 1 and 100")
         filename_prefix = validate_filename_prefix(filename_prefix)
+        regional_plan = (
+            compile_regional_prompt_plan(
+                width,
+                height,
+                regions,
+                strength=regional_prompt_strength,
+                feather_pixels=regional_feather_pixels,
+            )
+            if regional_prompting and regions
+            else None
+        )
 
         oom_message: str | None = None
         try:
@@ -447,6 +468,7 @@ class ComfyBaselineRuntime:
                 seed=seed,
                 output_directory=output_directory,
                 filename_prefix=filename_prefix,
+                regional_plan=regional_plan,
                 progress=progress,
                 event=event,
                 oom_recovered=False,
@@ -476,6 +498,7 @@ class ComfyBaselineRuntime:
             seed=seed,
             output_directory=output_directory,
             filename_prefix=filename_prefix,
+            regional_plan=regional_plan,
             progress=progress,
             event=event,
             oom_recovered=True,
@@ -491,6 +514,7 @@ class ComfyBaselineRuntime:
         seed: int,
         output_directory: Path,
         filename_prefix: str,
+        regional_plan: RegionalPromptPlan | None,
         progress: Callable[[int, int, dict[str, Any]], None] | None,
         event: Callable[[str, dict[str, Any]], None] | None,
         oom_recovered: bool,
@@ -505,6 +529,33 @@ class ComfyBaselineRuntime:
 
         positive = self.clip.encode_from_tokens_scheduled(self.clip.tokenize(prompt))
         negative = self.clip.encode_from_tokens_scheduled(self.clip.tokenize(""))
+        if regional_plan is not None and regional_plan.regions:
+            if event is not None:
+                event("Regional prompting prepared", regional_plan.summary())
+            for region in regional_plan.regions:
+                encoded = self.clip.encode_from_tokens_scheduled(
+                    self.clip.tokenize(region.prompt)
+                )
+                positive.extend(
+                    self._regional_conditioning(encoded, regional_plan, region, torch)
+                )
+                if region.negative_prompt:
+                    encoded_negative = self.clip.encode_from_tokens_scheduled(
+                        self.clip.tokenize(region.negative_prompt)
+                    )
+                    negative.extend(
+                        self._regional_conditioning(
+                            encoded_negative, regional_plan, region, torch
+                        )
+                    )
+                if event is not None:
+                    event(
+                        f"Encoded regional prompt: {region.name}",
+                        {
+                            "region_id": region.region_id,
+                            "area_latent": list(region.area),
+                        },
+                    )
         self._ensure_memory("before denoising", event)
         latent = torch.zeros(
             [1, 4, height // 8, width // 8],
@@ -572,6 +623,12 @@ class ComfyBaselineRuntime:
         metadata.add_text("steps", str(steps))
         metadata.add_text("size", f"{width}x{height}")
         metadata.add_text("filename_prefix", filename_prefix)
+        regional_summary = (
+            regional_plan.summary()
+            if regional_plan is not None and regional_plan.regions
+            else {"backend": "disabled", "region_count": 0}
+        )
+        metadata.add_text("regional_prompting", json.dumps(regional_summary))
         metadata.add_text("memory_policy", self.memory_policy_key)
         metadata.add_text("oom_recovered", str(oom_recovered).lower())
         metadata.add_text("cpu_vae", str(self.cpu_vae).lower())
@@ -583,6 +640,7 @@ class ComfyBaselineRuntime:
             "steps": steps,
             "seed": seed,
             "filename_prefix": filename_prefix,
+            "regional_prompting": regional_summary,
             "sampler": "euler",
             "scheduler": "simple",
             "cfg": 1.0,
@@ -601,3 +659,24 @@ class ComfyBaselineRuntime:
         # when the tiled accumulator was created as an inference tensor.
         with torch.inference_mode():
             return self.vae.decode(samples)
+
+    @staticmethod
+    def _regional_conditioning(encoded, plan, region, torch):
+        mask = torch.tensor(region.latent_mask, dtype=torch.float32).reshape(
+            1, plan.latent_height, plan.latent_width
+        )
+        output = []
+        for tensor, metadata in encoded:
+            regional_metadata = dict(metadata)
+            regional_metadata.update(
+                {
+                    "area": region.area,
+                    "mask": mask,
+                    "mask_strength": plan.strength,
+                    "set_area_to_bounds": False,
+                    "k2lab_region_id": region.region_id,
+                    "k2lab_region_name": region.name,
+                }
+            )
+            output.append([tensor, regional_metadata])
+        return output

@@ -183,6 +183,14 @@ class MainWindow(QMainWindow):
         self.region_prompt.setEnabled(False)
         self.region_prompt.textChanged.connect(self._region_form_edited)
         layout.addWidget(self.region_prompt)
+        layout.addWidget(QLabel("Selected region negative prompt"))
+        self.region_negative_prompt = QTextEdit()
+        self.region_negative_prompt.setPlaceholderText(
+            "Optional content to discourage inside this box..."
+        )
+        self.region_negative_prompt.setEnabled(False)
+        self.region_negative_prompt.textChanged.connect(self._region_form_edited)
+        layout.addWidget(self.region_negative_prompt)
         dock.setWidget(body)
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, dock)
 
@@ -267,6 +275,26 @@ class MainWindow(QMainWindow):
         self.seed_mode_input.addItem("Random", "random")
         self.seed_mode_input.addItem("Increment", "increment")
         layout.addRow("Seed behavior", self.seed_mode_input)
+        self.regional_prompting_input = QCheckBox("Use enabled regional prompts")
+        self.regional_prompting_input.setChecked(True)
+        layout.addRow(self.regional_prompting_input)
+        self.regional_prompt_strength_input = QDoubleSpinBox()
+        self.regional_prompt_strength_input.setRange(0.1, 10.0)
+        self.regional_prompt_strength_input.setSingleStep(0.1)
+        self.regional_prompt_strength_input.setValue(1.0)
+        self.regional_prompt_strength_input.setToolTip(
+            "Blend weight for each region's denoiser prediction against the global prompt"
+        )
+        layout.addRow("Regional strength", self.regional_prompt_strength_input)
+        self.regional_feather_input = QSpinBox()
+        self.regional_feather_input.setRange(0, 1024)
+        self.regional_feather_input.setSingleStep(8)
+        self.regional_feather_input.setSuffix(" px")
+        self.regional_feather_input.setValue(32)
+        self.regional_feather_input.setToolTip(
+            "Smoothly reduce regional influence to zero at the inside edge of each box"
+        )
+        layout.addRow("Region feather", self.regional_feather_input)
         output_row = QWidget()
         output_layout = QHBoxLayout(output_row)
         output_layout.setContentsMargins(0, 0, 0, 0)
@@ -284,7 +312,7 @@ class MainWindow(QMainWindow):
         generation_buttons = QWidget()
         generation_layout = QHBoxLayout(generation_buttons)
         generation_layout.setContentsMargins(0, 0, 0, 0)
-        self.generate_button = QPushButton("Generate baseline")
+        self.generate_button = QPushButton("Generate image")
         self.generate_button.setEnabled(False)
         self.generate_button.clicked.connect(self._generate_baseline)
         self.stop_generation_button = QPushButton("Stop generation")
@@ -482,16 +510,19 @@ class MainWindow(QMainWindow):
         selected = 0 <= row < len(self.regions)
         self.region_name.setEnabled(selected)
         self.region_prompt.setEnabled(selected)
+        self.region_negative_prompt.setEnabled(selected)
         self._loading_region_form = True
         try:
             if selected:
                 region = self.regions[row]
                 self.region_name.setText(region.name)
                 self.region_prompt.setPlainText(region.prompt)
+                self.region_negative_prompt.setPlainText(region.negative_prompt)
                 self.canvas.select_region(region.region_id)
             else:
                 self.region_name.clear()
                 self.region_prompt.clear()
+                self.region_negative_prompt.clear()
         finally:
             self._loading_region_form = False
 
@@ -529,7 +560,9 @@ class MainWindow(QMainWindow):
         if not 0 <= row < len(self.regions):
             return
         self.regions[row] = replace(
-            self.regions[row], prompt=self.region_prompt.toPlainText()
+            self.regions[row],
+            prompt=self.region_prompt.toPlainText(),
+            negative_prompt=self.region_negative_prompt.toPlainText(),
         )
 
     def _canvas_dimensions_changed(self) -> None:
@@ -697,6 +730,9 @@ class MainWindow(QMainWindow):
             steps=self.steps_input.value(),
             seed=self.seed_input.value(),
             seed_mode=str(self.seed_mode_input.currentData()),
+            regional_prompting=self.regional_prompting_input.isChecked(),
+            regional_prompt_strength=self.regional_prompt_strength_input.value(),
+            regional_feather_pixels=self.regional_feather_input.value(),
             regions=tuple(self.regions),
             loras=saved_loras,
             runtime=runtime,
@@ -816,6 +852,9 @@ class MainWindow(QMainWindow):
         self.seed_input.setValue(state.seed)
         seed_mode_index = self.seed_mode_input.findData(state.seed_mode)
         self.seed_mode_input.setCurrentIndex(max(0, seed_mode_index))
+        self.regional_prompting_input.setChecked(state.regional_prompting)
+        self.regional_prompt_strength_input.setValue(state.regional_prompt_strength)
+        self.regional_feather_input.setValue(state.regional_feather_pixels)
         policy_index = self.memory_policy_input.findData(self.settings.memory_policy)
         self.memory_policy_input.setCurrentIndex(max(0, policy_index))
         self.reserve_vram_input.setValue(self.settings.reserve_vram_gb)
@@ -1016,6 +1055,26 @@ class MainWindow(QMainWindow):
                 "filename_prefix": validate_filename_prefix(
                     self.filename_prefix_input.text()
                 ),
+                "regional_prompting": self.regional_prompting_input.isChecked(),
+                "regional_prompt_strength": self.regional_prompt_strength_input.value(),
+                "regional_feather_pixels": self.regional_feather_input.value(),
+                "regions": [
+                    {
+                        "id": region.region_id,
+                        "name": region.name,
+                        "box": {
+                            "x0": region.box.x0,
+                            "y0": region.box.y0,
+                            "x1": region.box.x1,
+                            "y1": region.box.y1,
+                        },
+                        "prompt": region.prompt,
+                        "negative_prompt": region.negative_prompt,
+                        "enabled": region.enabled,
+                        "priority": region.priority,
+                    }
+                    for region in self.regions
+                ],
             }
         )
         self._set_generation_active(True)
@@ -1122,12 +1181,12 @@ class MainWindow(QMainWindow):
                 self.reserve_vram_input.setValue(float(payload["reserve_vram_gb"]))
             self._set_memory_controls_enabled(False)
             self.generate_button.setEnabled(True)
-        elif message == "Baseline generation complete":
+        elif message in {"Generation complete", "Baseline generation complete"}:
             self._set_generation_active(False)
             image_path = payload.get("image_path")
             if image_path and self.canvas.set_image(image_path):
                 self._background_image_path = Path(image_path)
-                self.statusBar().showMessage(f"Baseline saved to {image_path}")
+                self.statusBar().showMessage(f"Image saved to {image_path}")
             if payload.get("oom_recovered"):
                 self.events.addItem(
                     "Generation recovered from GPU OOM with CPU VAE and a larger VRAM floor"

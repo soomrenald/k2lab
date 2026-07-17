@@ -27,6 +27,9 @@ class ProjectState:
     steps: int = 8
     seed: int = 0
     seed_mode: str = "fixed"
+    regional_prompting: bool = True
+    regional_prompt_strength: float = 1.0
+    regional_feather_pixels: int = 32
     regions: tuple[RegionDefinition, ...] = ()
     loras: tuple[SavedLora, ...] = ()
     runtime: dict[str, Any] | None = None
@@ -41,6 +44,10 @@ class ProjectState:
             raise ValueError("seed must not be negative")
         if self.seed_mode not in {"fixed", "random", "increment"}:
             raise ValueError(f"unsupported seed mode: {self.seed_mode!r}")
+        if not 0.0 < self.regional_prompt_strength <= 10.0:
+            raise ValueError("regional prompt strength must be in (0, 10]")
+        if not 0 <= self.regional_feather_pixels <= 1024:
+            raise ValueError("regional feather must be between 0 and 1024 pixels")
         region_ids = [region.region_id for region in self.regions]
         if len(region_ids) != len(set(region_ids)):
             raise ValueError("project region IDs must be unique")
@@ -78,6 +85,9 @@ def project_document(state: ProjectState) -> dict[str, Any]:
             "steps": state.steps,
             "seed": state.seed,
             "seed_mode": state.seed_mode,
+            "regional_prompting": state.regional_prompting,
+            "regional_prompt_strength": state.regional_prompt_strength,
+            "regional_feather_pixels": state.regional_feather_pixels,
         },
         "regions": [
             {
@@ -149,6 +159,11 @@ def project_state(document: dict[str, Any]) -> ProjectState:
         steps=int(generation.get("steps", 8)),
         seed=int(generation.get("seed", 0)),
         seed_mode=str(generation.get("seed_mode", "fixed")),
+        regional_prompting=bool(generation.get("regional_prompting", True)),
+        regional_prompt_strength=float(
+            generation.get("regional_prompt_strength", 1.0)
+        ),
+        regional_feather_pixels=int(generation.get("regional_feather_pixels", 32)),
         regions=regions,
         loras=loras,
         runtime=dict(document.get("runtime", {})),
