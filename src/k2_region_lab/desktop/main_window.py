@@ -15,6 +15,8 @@ from PySide6.QtWidgets import (
     QDockWidget,
     QCheckBox,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
@@ -30,6 +32,7 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSplitter,
     QSpinBox,
+    QTabWidget,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -89,6 +92,7 @@ class MainWindow(QMainWindow):
         self._pending_generation_payload: dict[str, object] | None = None
         self._worker_bootstrap_stage: str | None = None
         self._generation_completed = False
+        self._prompt_preview_dialog: QDialog | None = None
         self._output_directory = settings.output_directory or default_output_directory(
             settings.data_directory
         )
@@ -241,13 +245,18 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, dock)
 
     def _build_model_dock(self) -> None:
-        dock = QDockWidget("Local model components", self)
+        dock = QDockWidget("Model and generation settings", self)
         dock.setAllowedAreas(Qt.DockWidgetArea.RightDockWidgetArea)
         body = QWidget(dock)
-        columns = QHBoxLayout(body)
-        runtime_group = QGroupBox("Model and memory")
-        layout = QFormLayout(runtime_group)
-        columns.addWidget(runtime_group, 1)
+        body_layout = QVBoxLayout(body)
+        self.settings_tabs = QTabWidget()
+        self.settings_tabs.setDocumentMode(True)
+        body_layout.addWidget(self.settings_tabs)
+        runtime_page = QWidget()
+        layout = QFormLayout(runtime_page)
+        self.settings_tabs.addTab(
+            self._scrollable(runtime_page), "Model & memory"
+        )
         self.transformer_status = QLabel("Not discovered")
         self.text_status = QLabel("Not discovered")
         self.vae_status = QLabel("Not discovered")
@@ -311,9 +320,11 @@ class MainWindow(QMainWindow):
         self.memory_status = QLabel("Not measured")
         self.memory_status.setWordWrap(True)
         layout.addRow("Memory", self.memory_status)
-        generation_group = QGroupBox("Generation and spatial guidance")
-        layout = QFormLayout(generation_group)
-        columns.addWidget(generation_group, 1)
+        generation_page = QWidget()
+        layout = QFormLayout(generation_page)
+        self.settings_tabs.addTab(
+            self._scrollable(generation_page), "Generation & spatial"
+        )
         self.steps_input = QSpinBox()
         self.steps_input.setRange(1, 100)
         self.steps_input.setValue(8)
@@ -442,7 +453,7 @@ class MainWindow(QMainWindow):
         generation_button_layout.addWidget(self.generate_button)
         generation_button_layout.addWidget(self.stop_generation_button)
         layout.addRow(generation_buttons)
-        dock.setWidget(self._scrollable(body))
+        dock.setWidget(body)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
         self.model_dock = dock
 
@@ -1477,16 +1488,30 @@ class MainWindow(QMainWindow):
                 0.35 if self.regional_relaxation_input.isChecked() else 1.0
             ),
         )
-        preview = QMessageBox(self)
+        preview = QDialog(self)
         preview.setWindowTitle("Unified spatial prompt")
-        preview.setIcon(QMessageBox.Icon.Information)
-        preview.setText(
+        preview.setMinimumSize(520, 360)
+        preview.resize(900, 650)
+        preview.setSizeGripEnabled(True)
+        preview_layout = QVBoxLayout(preview)
+        summary = QLabel(
             f"{len(plan.regions)} regional clauses will be encoded in one prompt."
         )
-        preview.setInformativeText(
+        summary.setWordWrap(True)
+        preview_layout.addWidget(summary)
+        explanation = QLabel(
             "Pixel boxes are applied separately as a hidden soft attention grid."
         )
-        preview.setDetailedText(plan.prompt)
+        explanation.setWordWrap(True)
+        preview_layout.addWidget(explanation)
+        prompt_text = QTextEdit()
+        prompt_text.setReadOnly(True)
+        prompt_text.setPlainText(plan.prompt)
+        preview_layout.addWidget(prompt_text, 1)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(preview.reject)
+        preview_layout.addWidget(buttons)
+        self._prompt_preview_dialog = preview
         preview.exec()
 
     def _set_generation_active(self, active: bool) -> None:

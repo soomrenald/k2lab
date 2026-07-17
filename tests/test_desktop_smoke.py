@@ -16,7 +16,7 @@ if PYSIDE_AVAILABLE:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     from PySide6.QtCore import QRectF, Qt
     from PySide6.QtGui import QColor, QPixmap
-    from PySide6.QtWidgets import QApplication, QMessageBox
+    from PySide6.QtWidgets import QApplication, QDialog, QMessageBox, QTextEdit
 
     from k2_region_lab.config import AppSettings, ModelDirectories
     from k2_region_lab.desktop.main_window import GLOBAL_SCOPE_ID, MainWindow
@@ -79,6 +79,41 @@ class DesktopSmokeTests(unittest.TestCase):
             self.application.processEvents()
             self.assertEqual(window.regions, [])
             self.assertEqual(window.region_list.count(), 0)
+            window.close()
+
+    def test_model_and_generation_settings_share_one_tabbed_pane(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            window = self.make_window(Path(directory))
+
+            self.assertEqual(window.settings_tabs.count(), 2)
+            self.assertEqual(window.settings_tabs.tabText(0), "Model & memory")
+            self.assertEqual(window.settings_tabs.tabText(1), "Generation & spatial")
+            runtime_page = window.settings_tabs.widget(0)
+            generation_page = window.settings_tabs.widget(1)
+            self.assertFalse(runtime_page.isHidden())
+            self.assertTrue(generation_page.isHidden())
+
+            window.settings_tabs.setCurrentIndex(1)
+            self.assertTrue(runtime_page.isHidden())
+            self.assertFalse(generation_page.isHidden())
+            window.close()
+
+    def test_unified_prompt_preview_is_resizable_and_contains_prompt(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            window = self.make_window(Path(directory))
+            window.global_prompt.setPlainText("a detailed landscape")
+
+            with patch.object(QDialog, "exec", return_value=0):
+                window._preview_unified_prompt()
+
+            preview = window._prompt_preview_dialog
+            self.assertIsNotNone(preview)
+            self.assertTrue(preview.isSizeGripEnabled())
+            self.assertGreaterEqual(preview.minimumWidth(), 520)
+            self.assertGreaterEqual(preview.minimumHeight(), 360)
+            prompt_views = preview.findChildren(QTextEdit)
+            self.assertEqual(len(prompt_views), 1)
+            self.assertIn("a detailed landscape", prompt_views[0].toPlainText())
             window.close()
 
     def test_lora_browser_model_defaults_global_and_allows_multiple_regions(self) -> None:
