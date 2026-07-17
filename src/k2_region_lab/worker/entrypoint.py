@@ -205,6 +205,12 @@ def main() -> int:
                     regional_late_step_scale=float(
                         payload.get("regional_late_step_scale", 0.35)
                     ),
+                    regional_lora_delta_adaptation=bool(
+                        payload.get("regional_lora_delta_adaptation", False)
+                    ),
+                    regional_lora_delta_adaptation_gain=float(
+                        payload.get("regional_lora_delta_adaptation_gain", 0.35)
+                    ),
                     projector_enabled=bool(payload.get("projector_enabled", False)),
                     projector_preset=str(
                         payload.get("projector_preset", "filter_bypass2")

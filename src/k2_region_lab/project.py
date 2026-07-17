@@ -15,8 +15,8 @@ from k2_region_lab.regions import PixelBox, RegionDefinition
 
 
 PROJECT_SCHEMA = "k2-region-lab-project"
-PROJECT_VERSION = 9
-SUPPORTED_PROJECT_VERSIONS = {1, 2, 3, 4, 5, 6, 7, 8, PROJECT_VERSION}
+PROJECT_VERSION = 10
+SUPPORTED_PROJECT_VERSIONS = {1, 2, 3, 4, 5, 6, 7, 8, 9, PROJECT_VERSION}
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,6 +47,8 @@ class ProjectState:
     regional_subject_fill: bool = True
     regional_relaxation: bool = True
     regional_late_step_scale: float = 0.35
+    regional_lora_delta_adaptation: bool = False
+    regional_lora_delta_adaptation_gain: float = 0.35
     projector_enabled: bool = False
     projector_preset: str = DEFAULT_PROJECTOR_PRESET
     projector_values: tuple[float, ...] = PROJECTOR_PRESETS[DEFAULT_PROJECTOR_PRESET]
@@ -77,6 +79,8 @@ class ProjectState:
             raise ValueError("spatial falloff must be between 0 and 2048 pixels")
         if not 0.0 <= self.regional_late_step_scale <= 1.0:
             raise ValueError("late-step spatial scale must be between 0 and 1")
+        if not 0.0 <= self.regional_lora_delta_adaptation_gain <= 1.0:
+            raise ValueError("LoRA delta adaptation gain must be between zero and one")
         if self.projector_preset not in {
             *PROJECTOR_PRESETS,
             CUSTOM_PROJECTOR_PRESET,
@@ -136,6 +140,10 @@ def project_document(state: ProjectState) -> dict[str, Any]:
             "regional_subject_fill": state.regional_subject_fill,
             "regional_relaxation": state.regional_relaxation,
             "regional_late_step_scale": state.regional_late_step_scale,
+            "regional_lora_delta_adaptation": state.regional_lora_delta_adaptation,
+            "regional_lora_delta_adaptation_gain": (
+                state.regional_lora_delta_adaptation_gain
+            ),
             "projector_enabled": state.projector_enabled,
             "projector_preset": state.projector_preset,
             "projector_values": list(state.projector_values),
@@ -236,6 +244,12 @@ def project_state(document: dict[str, Any]) -> ProjectState:
         regional_relaxation=bool(generation.get("regional_relaxation", True)),
         regional_late_step_scale=float(
             generation.get("regional_late_step_scale", 0.35)
+        ),
+        regional_lora_delta_adaptation=bool(
+            generation.get("regional_lora_delta_adaptation", False)
+        ),
+        regional_lora_delta_adaptation_gain=float(
+            generation.get("regional_lora_delta_adaptation_gain", 0.35)
         ),
         projector_enabled=bool(generation.get("projector_enabled", False)),
         projector_preset=str(

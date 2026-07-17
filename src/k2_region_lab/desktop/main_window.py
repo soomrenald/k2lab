@@ -428,6 +428,32 @@ class MainWindow(QMainWindow):
             self._set_late_step_scale_enabled
         )
         self._set_late_step_scale_enabled(self.regional_relaxation_input.isChecked())
+        self.regional_lora_delta_adaptation_input = QCheckBox(
+            "Adapt spatial guidance from regional LoRA delta"
+        )
+        self.regional_lora_delta_adaptation_input.setChecked(False)
+        self.regional_lora_delta_adaptation_input.setToolTip(
+            "After each denoising step, compare each regional LoRA's routed delta "
+            "to its first-step magnitude and gently tune that region's next-step "
+            "spatial attention. The LoRA gate itself remains unchanged."
+        )
+        layout.addRow(self.regional_lora_delta_adaptation_input)
+        self.regional_lora_delta_adaptation_gain_input = QDoubleSpinBox()
+        self.regional_lora_delta_adaptation_gain_input.setRange(0.0, 1.0)
+        self.regional_lora_delta_adaptation_gain_input.setDecimals(2)
+        self.regional_lora_delta_adaptation_gain_input.setSingleStep(0.05)
+        self.regional_lora_delta_adaptation_gain_input.setValue(0.35)
+        self.regional_lora_delta_adaptation_gain_input.setToolTip(
+            "How strongly measured LoRA delta changes can adjust spatial attention. "
+            "The resulting per-region multiplier is always limited to 0.50–1.50."
+        )
+        layout.addRow(
+            "LoRA delta response", self.regional_lora_delta_adaptation_gain_input
+        )
+        self.regional_lora_delta_adaptation_input.toggled.connect(
+            self._set_lora_delta_adaptation_controls_enabled
+        )
+        self._set_lora_delta_adaptation_controls_enabled(False)
         self.post_upscale_input = QCheckBox("Post-upscale after releasing Krea VRAM")
         self.post_upscale_input.setToolTip(
             "Decode first, unload Krea/LoRAs/VAE from the GPU, then upscale the final image"
@@ -621,6 +647,9 @@ class MainWindow(QMainWindow):
 
     def _set_late_step_scale_enabled(self, enabled: bool) -> None:
         self.regional_late_step_scale_input.setEnabled(enabled)
+
+    def _set_lora_delta_adaptation_controls_enabled(self, enabled: bool) -> None:
+        self.regional_lora_delta_adaptation_gain_input.setEnabled(enabled)
 
     def _memory_policy_changed(self) -> None:
         key = self.memory_policy_input.currentData()
@@ -1211,6 +1240,12 @@ class MainWindow(QMainWindow):
             regional_subject_fill=self.regional_subject_fill_input.isChecked(),
             regional_relaxation=self.regional_relaxation_input.isChecked(),
             regional_late_step_scale=self.regional_late_step_scale_input.value(),
+            regional_lora_delta_adaptation=(
+                self.regional_lora_delta_adaptation_input.isChecked()
+            ),
+            regional_lora_delta_adaptation_gain=(
+                self.regional_lora_delta_adaptation_gain_input.value()
+            ),
             projector_enabled=self.projector_enabled_input.isChecked(),
             projector_preset=str(self.projector_preset_input.currentData()),
             projector_values=self._projector_values(),
@@ -1359,6 +1394,12 @@ class MainWindow(QMainWindow):
         self.regional_subject_fill_input.setChecked(state.regional_subject_fill)
         self.regional_relaxation_input.setChecked(state.regional_relaxation)
         self.regional_late_step_scale_input.setValue(state.regional_late_step_scale)
+        self.regional_lora_delta_adaptation_input.setChecked(
+            state.regional_lora_delta_adaptation
+        )
+        self.regional_lora_delta_adaptation_gain_input.setValue(
+            state.regional_lora_delta_adaptation_gain
+        )
         self._set_projector_controls(
             enabled=state.projector_enabled,
             preset=state.projector_preset,
@@ -1652,6 +1693,12 @@ class MainWindow(QMainWindow):
                     self.regional_late_step_scale_input.value()
                     if self.regional_relaxation_input.isChecked()
                     else 1.0
+                ),
+                "regional_lora_delta_adaptation": (
+                    self.regional_lora_delta_adaptation_input.isChecked()
+                ),
+                "regional_lora_delta_adaptation_gain": (
+                    self.regional_lora_delta_adaptation_gain_input.value()
                 ),
                 "projector_enabled": self.projector_enabled_input.isChecked(),
                 "projector_preset": str(self.projector_preset_input.currentData()),

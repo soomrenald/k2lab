@@ -39,17 +39,24 @@ class KreaSpatialAttentionOverride:
         *,
         outside_penalty_ratio: float = 0.25,
         query_chunk_size: int = 256,
+        lora_delta_adaptation: bool = False,
+        lora_delta_adaptation_gain: float = 0.35,
     ) -> None:
         self.plan = plan
         self.outside_penalty_ratio = outside_penalty_ratio
         if query_chunk_size <= 0:
             raise ValueError("attention query chunk size must be positive")
+        if not 0.0 <= lora_delta_adaptation_gain <= 1.0:
+            raise ValueError("LoRA delta adaptation gain must be between zero and one")
         self.query_chunk_size = query_chunk_size
+        self.lora_delta_adaptation = lora_delta_adaptation
+        self.lora_delta_adaptation_gain = lora_delta_adaptation_gain
         self.expected_sequence_length = (
             plan.text_token_count + plan.image_token_count
         )
         self.matched_calls = 0
         self.step_scale = 1.0
+        self.region_scales: dict[str, float] = {}
         self._cache: dict[tuple[str, int | None, str], Any] = {}
 
     def __call__(self, original, *args, **kwargs):
@@ -133,7 +140,10 @@ class KreaSpatialAttentionOverride:
             if text_start < text_end:
                 scores[
                     :, :, text_start - start : text_end - start, text_count:
-                ].add_(pair.reshape(1, 1, 1, -1), alpha=self.step_scale)
+                ].add_(
+                    pair.reshape(1, 1, 1, -1),
+                    alpha=self.step_scale * self.region_scales.get(span.region_id, 1.0),
+                )
 
             image_start = max(start, text_count)
             image_end = end
@@ -143,7 +153,21 @@ class KreaSpatialAttentionOverride:
                 ]
                 scores[
                     :, :, image_start - start : image_end - start, span.start : span.end
-                ].add_(image_pair.reshape(1, 1, -1, 1), alpha=self.step_scale)
+                ].add_(
+                    image_pair.reshape(1, 1, -1, 1),
+                    alpha=self.step_scale * self.region_scales.get(span.region_id, 1.0),
+                )
+
+    def set_lora_delta_scales(self, scales: dict[str, float]) -> None:
+        """Set bounded, per-region multipliers for the next attention calls."""
+        if not self.lora_delta_adaptation:
+            return
+        known_regions = {span.region_id for span in self.plan.spans}
+        self.region_scales = {
+            region_id: min(1.5, max(0.5, float(scale)))
+            for region_id, scale in scales.items()
+            if region_id in known_regions
+        }
 
     def set_denoising_progress(self, completed_steps: int, total_steps: int) -> None:
         """Keep placement strong early, then relax it for late detail refinement."""
@@ -159,3 +183,10 @@ class KreaSpatialAttentionOverride:
 
     def clear(self) -> None:
         self._cache.clear()
+
+    def summary(self) -> dict[str, object]:
+        return {
+            "lora_delta_adaptation": self.lora_delta_adaptation,
+            "lora_delta_adaptation_gain": self.lora_delta_adaptation_gain,
+            "final_region_scales": dict(self.region_scales),
+        }

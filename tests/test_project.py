@@ -11,13 +11,19 @@ class ProjectStateTests(unittest.TestCase):
             canvas_width=1024,
             canvas_height=1024,
             regional_late_step_scale=0.8,
+            regional_lora_delta_adaptation=True,
+            regional_lora_delta_adaptation_gain=0.6,
         )
 
         document = project_document(state)
 
-        self.assertEqual(document["version"], 9)
+        self.assertEqual(document["version"], 10)
         self.assertEqual(document["generation"]["regional_late_step_scale"], 0.8)
         self.assertEqual(project_state(document).regional_late_step_scale, 0.8)
+        self.assertTrue(project_state(document).regional_lora_delta_adaptation)
+        self.assertEqual(
+            project_state(document).regional_lora_delta_adaptation_gain, 0.6
+        )
 
     def test_legacy_project_uses_existing_relaxation_default(self) -> None:
         document = project_document(ProjectState(canvas_width=1024, canvas_height=1024))

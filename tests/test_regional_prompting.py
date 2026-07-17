@@ -169,6 +169,24 @@ class RegionalPromptingTests(unittest.TestCase):
         override.set_denoising_progress(8, 8)
         self.assertAlmostEqual(override.step_scale, 0.35)
 
+    def test_lora_delta_adaptation_uses_bounded_region_scales(self) -> None:
+        region = RegionDefinition(
+            "subject", "Subject", PixelBox(0, 0, 32, 32), "red vase"
+        )
+        plan = compile_regional_prompt_plan(64, 64, "gallery", (region,))
+        override = KreaSpatialAttentionOverride(
+            plan.bind_tokens(lambda prefix: len(prefix.split())),
+            lora_delta_adaptation=True,
+            lora_delta_adaptation_gain=0.5,
+        )
+
+        override.set_lora_delta_scales({"subject": 3.0, "unknown": 0.0})
+
+        self.assertEqual(override.region_scales, {"subject": 1.5})
+        summary = override.summary()
+        self.assertTrue(summary["lora_delta_adaptation"])
+        self.assertEqual(summary["final_region_scales"], {"subject": 1.5})
+
     def test_subject_field_peaks_at_center_while_background_fills_its_box(self) -> None:
         subject = RegionDefinition(
             "subject",

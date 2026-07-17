@@ -62,6 +62,11 @@ class LoraDeltaStatistics:
                 "text_count": 0,
                 "image_energy": None,
                 "image_count": 0,
+                "step_text_energy": None,
+                "step_text_count": 0,
+                "step_image_energy": None,
+                "step_image_count": 0,
+                "delta_reference": None,
                 "calls": 0,
             }
             for route in routes
@@ -91,12 +96,22 @@ class LoraDeltaStatistics:
             image_norms = token_norms[:, text_count:]
             text_observations = batch * enabled_text
         if enabled_text:
-            state["text_energy"] = self._add(state["text_energy"], text_norms.square().sum())
+            text_energy = text_norms.square().sum()
+            state["text_energy"] = self._add(state["text_energy"], text_energy)
             state["text_count"] += text_observations
+            state["step_text_energy"] = self._add(
+                state["step_text_energy"], text_energy
+            )
+            state["step_text_count"] += text_observations
         enabled_image = sum(value > 0.0 for value in route.image_token_mask)
         if image_norms is not None and enabled_image:
-            state["image_energy"] = self._add(state["image_energy"], image_norms.square().sum())
+            image_energy = image_norms.square().sum()
+            state["image_energy"] = self._add(state["image_energy"], image_energy)
             state["image_count"] += batch * enabled_image
+            state["step_image_energy"] = self._add(
+                state["step_image_energy"], image_energy
+            )
+            state["step_image_count"] += batch * enabled_image
 
     @staticmethod
     def _rms(energy, count: int) -> float:
@@ -112,6 +127,47 @@ class LoraDeltaStatistics:
             "image_delta_rms": self._rms(state["image_energy"], state["image_count"]),
             "outside_gate_delta_rms": 0.0,
         }
+
+    def regional_attention_scales(self, gain: float) -> dict[str, float]:
+        """Return a bounded next-step attention response for each regional route.
+
+        A route's first measured step defines its own reference magnitude. Later
+        steps compare their routed text/image delta RMS to that reference, so
+        heterogeneous LoRA ranks and strengths do not compete on raw scale.
+        """
+        if not 0.0 <= gain <= 1.0:
+            raise ValueError("LoRA delta adaptation gain must be between zero and one")
+        region_values: dict[str, list[float]] = {}
+        for lora_id, route in self.routes.items():
+            if route.global_scope or not route.region_ids:
+                continue
+            state = self.values[lora_id]
+            components = [
+                self._rms(state["step_text_energy"], state["step_text_count"]),
+                self._rms(state["step_image_energy"], state["step_image_count"]),
+            ]
+            components = [value for value in components if value > 0.0]
+            if not components:
+                continue
+            observed = sum(components) / len(components)
+            reference = state["delta_reference"]
+            if reference is None:
+                reference = observed
+            ratio = observed / max(float(reference), 1e-12)
+            scale = min(1.5, max(0.5, 1.0 + gain * (ratio - 1.0)))
+            state["delta_reference"] = 0.85 * float(reference) + 0.15 * observed
+            for region_id in route.region_ids:
+                region_values.setdefault(region_id, []).append(scale)
+        return {
+            region_id: sum(scales) / len(scales)
+            for region_id, scales in region_values.items()
+        }
+
+    def reset_step_measurements(self) -> None:
+        for state in self.values.values():
+            for prefix in ("text", "image"):
+                state[f"step_{prefix}_energy"] = None
+                state[f"step_{prefix}_count"] = 0
 
 
 def probe_runtime(comfyui_root: Path) -> dict[str, Any]:
@@ -983,6 +1039,8 @@ class ComfyBaselineRuntime:
         regional_subject_competition: bool = True,
         regional_subject_fill: bool = True,
         regional_late_step_scale: float = 0.35,
+        regional_lora_delta_adaptation: bool = False,
+        regional_lora_delta_adaptation_gain: float = 0.35,
         projector_enabled: bool = False,
         projector_preset: str = DEFAULT_PROJECTOR_PRESET,
         projector_values: tuple[float, ...] = (),
@@ -1001,6 +1059,8 @@ class ComfyBaselineRuntime:
             raise ValueError("baseline dimensions must be positive multiples of 16")
         if not 1 <= steps <= 100:
             raise ValueError("steps must be between 1 and 100")
+        if not 0.0 <= regional_lora_delta_adaptation_gain <= 1.0:
+            raise ValueError("LoRA delta adaptation gain must be between zero and one")
         if post_upscale and upscale_method == "model":
             if upscale_model_path is None or not upscale_model_path.expanduser().is_file():
                 raise ValueError("select a readable neural upscaler model before generation")
@@ -1033,6 +1093,8 @@ class ComfyBaselineRuntime:
                 output_directory=output_directory,
                 filename_prefix=filename_prefix,
                 regional_plan=regional_plan,
+                regional_lora_delta_adaptation=regional_lora_delta_adaptation,
+                regional_lora_delta_adaptation_gain=regional_lora_delta_adaptation_gain,
                 projector_enabled=projector_enabled,
                 projector_preset=projector_preset,
                 projector_values=projector_values,
@@ -1072,6 +1134,8 @@ class ComfyBaselineRuntime:
             output_directory=output_directory,
             filename_prefix=filename_prefix,
             regional_plan=regional_plan,
+            regional_lora_delta_adaptation=regional_lora_delta_adaptation,
+            regional_lora_delta_adaptation_gain=regional_lora_delta_adaptation_gain,
             projector_enabled=projector_enabled,
             projector_preset=projector_preset,
             projector_values=projector_values,
@@ -1097,6 +1161,8 @@ class ComfyBaselineRuntime:
         output_directory: Path,
         filename_prefix: str,
         regional_plan: RegionalPromptPlan | None,
+        regional_lora_delta_adaptation: bool,
+        regional_lora_delta_adaptation_gain: float,
         projector_enabled: bool,
         projector_preset: str,
         projector_values: tuple[float, ...],
@@ -1175,6 +1241,13 @@ class ComfyBaselineRuntime:
             del denoised, current
             if attention_override is not None:
                 attention_override.set_denoising_progress(step + 1, total)
+                if regional_lora_delta_adaptation:
+                    attention_override.set_lora_delta_scales(
+                        lora_statistics.regional_attention_scales(
+                            regional_lora_delta_adaptation_gain
+                        )
+                    )
+                    lora_statistics.reset_step_measurements()
             snapshot = self.memory_snapshot(f"denoising step {step + 1}/{total}")
             if progress is not None:
                 progress(
@@ -1190,10 +1263,19 @@ class ComfyBaselineRuntime:
                 )
 
         attention_override = (
-            KreaSpatialAttentionOverride(bound_regional_plan)
+            KreaSpatialAttentionOverride(
+                bound_regional_plan,
+                lora_delta_adaptation=regional_lora_delta_adaptation,
+                lora_delta_adaptation_gain=regional_lora_delta_adaptation_gain,
+            )
             if bound_regional_plan is not None
             else None
         )
+        if regional_lora_delta_adaptation and attention_override is not None and event is not None:
+            event(
+                "LoRA delta-adaptive spatial guidance enabled",
+                {"gain": regional_lora_delta_adaptation_gain},
+            )
         transformer_options = generation_model.model_options.setdefault(
             "transformer_options", {}
         )
@@ -1240,6 +1322,11 @@ class ComfyBaselineRuntime:
                     "Unified spatial attention applied",
                     {"attention_calls": attention_override.matched_calls},
                 )
+                if regional_lora_delta_adaptation:
+                    event(
+                        "LoRA delta-adaptive spatial guidance finalized",
+                        attention_override.summary(),
+                    )
         for report in lora_reports:
             if report.get("status") not in {"applied_global", "applied_regional"}:
                 continue
@@ -1361,4 +1448,5 @@ class ComfyBaselineRuntime:
             summary["attention_query_chunk_size"] = (
                 attention_override.query_chunk_size
             )
+            summary["lora_delta_adaptation"] = attention_override.summary()
         return summary
