@@ -2,6 +2,45 @@
 
 K2 Region Lab is a local PySide6 research application for generic pixel-space control of Krea 2. A region is one shared spatial domain for prompt routing, unfused LoRA delta gating, influence measurement, and attention tuning.
 
+## Installation
+
+K2 Region Lab currently targets Linux, Python 3.12, and an AMD ROCm installation. It uses a separate lightweight desktop environment while launching model work through an existing ComfyUI Python environment. Model weights are not included.
+
+Prerequisites:
+
+- a current ComfyUI checkout with Krea 2 support;
+- a Python 3.12 ComfyUI environment with working ROCm PyTorch (the default is `~/ComfyUI/venv_rocm7/bin/python`);
+- the Krea 2 Turbo transformer, Qwen text encoder, and VAE listed below.
+
+Clone the repository and install the desktop application in its own environment:
+
+```bash
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e .
+```
+
+If ComfyUI or its ROCm environment is somewhere else, configure both paths before launching:
+
+```bash
+export K2LAB_COMFYUI_ROOT=/path/to/ComfyUI
+export K2LAB_WORKER_PYTHON=/path/to/ComfyUI/venv/bin/python
+k2lab
+```
+
+With the default paths, simply run:
+
+```bash
+k2lab
+```
+
+Face refinement additionally requires `onnxruntime` in the ComfyUI worker environment and FantasyPortrait's `face_det.onnx` under `custom_nodes/ComfyUI-WanVideoWrapper/fantasyportrait/models/`:
+
+```bash
+~/ComfyUI/venv_rocm7/bin/python -m pip install onnxruntime
+```
+
 The implementation is at the foundation milestone. It currently provides:
 
 - discovery and safetensors-header validation for local Krea 2 components;
