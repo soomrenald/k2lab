@@ -217,9 +217,6 @@ def main() -> int:
                     regional_lora_delta_adaptation_gain=float(
                         payload.get("regional_lora_delta_adaptation_gain", 0.35)
                     ),
-                    strict_regional_lora_isolation=bool(
-                        payload.get("strict_regional_lora_isolation", True)
-                    ),
                     projector_enabled=bool(payload.get("projector_enabled", False)),
                     projector_preset=str(
                         payload.get("projector_preset", "filter_bypass2")

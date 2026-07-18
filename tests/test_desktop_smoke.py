@@ -557,7 +557,6 @@ class DesktopSmokeTests(unittest.TestCase):
             window.regional_late_step_scale_input.setValue(0.8)
             window.regional_lora_delta_adaptation_input.setChecked(True)
             window.regional_lora_delta_adaptation_gain_input.setValue(0.6)
-            window.strict_regional_lora_isolation_input.setChecked(False)
             window.projector_enabled_input.setChecked(True)
             window.projector_preset_input.setCurrentIndex(
                 window.projector_preset_input.findData("filter_bypass3")
@@ -630,9 +629,6 @@ class DesktopSmokeTests(unittest.TestCase):
             self.assertEqual(restored.regional_late_step_scale_input.value(), 0.8)
             self.assertTrue(restored.regional_lora_delta_adaptation_input.isChecked())
             self.assertEqual(restored.regional_lora_delta_adaptation_gain_input.value(), 0.6)
-            self.assertFalse(
-                restored.strict_regional_lora_isolation_input.isChecked()
-            )
             self.assertTrue(restored.projector_enabled_input.isChecked())
             self.assertEqual(restored.projector_preset_input.currentData(), "filter_bypass3")
             self.assertEqual(restored.projector_vector_inputs[10].value(), -0.6094)
@@ -874,7 +870,6 @@ class DesktopSmokeTests(unittest.TestCase):
             self.assertEqual(payload["regional_late_step_scale"], 0.35)
             self.assertFalse(payload["regional_lora_delta_adaptation"])
             self.assertEqual(payload["regional_lora_delta_adaptation_gain"], 0.35)
-            self.assertTrue(payload["strict_regional_lora_isolation"])
             self.assertEqual(payload["prompt_emphases"], [])
             self.assertFalse(payload["projector_enabled"])
             self.assertEqual(payload["projector_preset"], "filter_bypass2")

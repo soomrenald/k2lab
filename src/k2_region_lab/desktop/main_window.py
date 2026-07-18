@@ -757,17 +757,6 @@ class MainWindow(QMainWindow):
             self._set_lora_delta_adaptation_controls_enabled
         )
         self._set_lora_delta_adaptation_controls_enabled(False)
-        self.strict_regional_lora_isolation_input = QCheckBox(
-            "Strict regional LoRA isolation"
-        )
-        self.strict_regional_lora_isolation_input.setChecked(True)
-        self.strict_regional_lora_isolation_input.setToolTip(
-            "When a non-global LoRA is active, run a matched same-seed pass without "
-            "regional LoRAs and restore it outside the assigned boxes. This prevents "
-            "cross-subject LoRA leakage through later transformer layers, but adds "
-            "one sampling pass. Global LoRAs remain active in both passes."
-        )
-        layout.addRow(self.strict_regional_lora_isolation_input)
         self.post_upscale_input = QCheckBox("Post-upscale after releasing Krea VRAM")
         self.post_upscale_input.setToolTip(
             "Decode first, unload Krea/LoRAs/VAE from the GPU, then upscale the final image"
@@ -2006,9 +1995,6 @@ class MainWindow(QMainWindow):
             regional_lora_delta_adaptation_gain=(
                 self.regional_lora_delta_adaptation_gain_input.value()
             ),
-            strict_regional_lora_isolation=(
-                self.strict_regional_lora_isolation_input.isChecked()
-            ),
             prompt_emphases=tuple(self.prompt_emphases),
             projector_enabled=self.projector_enabled_input.isChecked(),
             projector_preset=str(self.projector_preset_input.currentData()),
@@ -2225,9 +2211,6 @@ class MainWindow(QMainWindow):
         )
         self.regional_lora_delta_adaptation_gain_input.setValue(
             state.regional_lora_delta_adaptation_gain
-        )
-        self.strict_regional_lora_isolation_input.setChecked(
-            state.strict_regional_lora_isolation
         )
         self.prompt_emphases = list(state.prompt_emphases)
         self._refresh_prompt_emphases()
@@ -2584,9 +2567,6 @@ class MainWindow(QMainWindow):
                 ),
                 "regional_lora_delta_adaptation_gain": (
                     self.regional_lora_delta_adaptation_gain_input.value()
-                ),
-                "strict_regional_lora_isolation": (
-                    self.strict_regional_lora_isolation_input.isChecked()
                 ),
                 "prompt_emphases": [
                     {

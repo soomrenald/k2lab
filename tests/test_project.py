@@ -27,7 +27,6 @@ class ProjectStateTests(unittest.TestCase):
             regional_late_step_scale=0.8,
             regional_lora_delta_adaptation=True,
             regional_lora_delta_adaptation_gain=0.6,
-            strict_regional_lora_isolation=False,
             face_detail_seed=123,
             face_detail_steps=10,
             face_detail_denoise=0.25,
@@ -52,7 +51,6 @@ class ProjectStateTests(unittest.TestCase):
         self.assertEqual(
             project_state(document).regional_lora_delta_adaptation_gain, 0.6
         )
-        self.assertFalse(project_state(document).strict_regional_lora_isolation)
         self.assertEqual(project_state(document).prompt_emphases[0].phrase, "two distinct people")
         restored = project_state(document)
         self.assertEqual(restored.face_detail_seed, 123)
