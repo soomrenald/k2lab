@@ -1168,8 +1168,9 @@ class MainWindow(QMainWindow):
         )
         self.lora_routing_mode_input.setEnabled(False)
         self.lora_routing_mode_input.setToolTip(
-            "Character identity adds an explicit face-identity anchor and confines "
-            "the LoRA's text-side delta to its trigger tokens."
+            "Standard regional routing is image-token-only and omits text-fusion "
+            "and attention key/value targets that would broadcast the effect. "
+            "Character identity retains its explicit regional face anchor."
         )
         self.lora_routing_mode_input.currentIndexChanged.connect(
             self._lora_routing_mode_changed
@@ -1186,7 +1187,8 @@ class MainWindow(QMainWindow):
         strength_row.addRow("Identity trigger", self.lora_trigger_input)
         layout.addLayout(strength_row)
         self.lora_routing_note = QLabel(
-            "Standard routing applies the LoRA to every token in each assigned region clause."
+            "Standard routing applies token-local LoRA targets only to image tokens "
+            "inside the assigned boxes."
         )
         self.lora_routing_note.setWordWrap(True)
         layout.addWidget(self.lora_routing_note)
@@ -1774,8 +1776,9 @@ class MainWindow(QMainWindow):
             "each assigned region. The LoRA keeps full regional text coverage and "
             "its image delta remains confined to the region box."
             if character_identity
-            else "Standard routing applies the LoRA to every token in each assigned "
-            "region clause."
+            else "Standard routing is image-token-only. Text-fusion and attention "
+            "key/value targets are omitted because they cannot be confined by an "
+            "output-token box mask."
         )
 
     def _lora_routing_mode_changed(self) -> None:

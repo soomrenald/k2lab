@@ -15,7 +15,7 @@ from k2_region_lab.regional_prompting import (
 from k2_region_lab.regions import CanvasGeometry
 
 
-BACKEND = "krea-regional-lora-delta-gating-v1"
+BACKEND = "krea-regional-lora-delta-gating-v2"
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,6 +70,25 @@ class LoraDeltaRoute:
             "routing_mode": self.routing_mode,
             "trigger_phrase": self.trigger_phrase,
         }
+
+
+def route_allows_adapter_target(route: LoraDeltaRoute, target: str) -> bool:
+    """Keep standard regional deltas on token-local transformer paths.
+
+    Text-fusion adapters change scene conditioning, while key/value projection
+    deltas are consumed by every attention query. Neither can be made spatially
+    local by masking the linear output alone. Character-identity routing retains
+    its established anchored behavior; global routes remain unrestricted.
+    """
+
+    if route.global_scope or route.routing_mode == CHARACTER_IDENTITY_LORA_ROUTING:
+        return True
+    lowered = str(target).casefold()
+    if ".txtfusion." in lowered or ".txtmlp." in lowered:
+        return False
+    parts = lowered.split(".")
+    module_name = parts[-2] if parts and parts[-1] == "weight" else parts[-1]
+    return module_name not in {"wk", "wv", "k_proj", "v_proj"}
 
 
 def character_identity_triggers(
@@ -178,12 +197,13 @@ def compile_lora_delta_routes(
             region = active_regions[region_id]
             span = token_spans[region_id]
             names.append(region.name)
-            # Character identity mode adds explicit trigger anchors to the clause,
-            # but its LoRA delta retains normal coverage across the full regional
-            # description. Trigger-only text gating proved too sparse for identity
-            # adapters whose learned signal depends on the surrounding semantics.
-            for index in range(span.start, span.end):
-                text_mask[index] = 1.0
+            if routing_mode == CHARACTER_IDENTITY_LORA_ROUTING:
+                # Character identity has an explicit regional trigger anchor and
+                # retains the established regional-clause text behavior. Standard
+                # LoRAs are image-token-only: a text delta is a conditioning change,
+                # not a spatially bounded image-token delta.
+                for index in range(span.start, span.end):
+                    text_mask[index] = 1.0
             strict_box_mask = geometry.rasterize_box(region.box)
             image_mask = [
                 max(current, candidate)
