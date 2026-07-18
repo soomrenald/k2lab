@@ -33,6 +33,7 @@ from k2_region_lab.memory import (
     effective_minimum_system_ram_gb,
     effective_reserve_vram_gb,
     memory_policy,
+    oom_recovery_reserve_vram_gb,
 )
 from k2_region_lab.output import validate_filename_prefix
 from k2_region_lab.projector import (
@@ -183,6 +184,38 @@ class LoraDeltaStatistics:
                 state[f"step_{prefix}_count"] = 0
 
 
+def accelerator_backend(hip_version: str | None, cuda_version: str | None) -> str:
+    if hip_version:
+        return "rocm"
+    if cuda_version:
+        return "cuda"
+    return "unknown"
+
+
+def native_scaled_fp8_supported(
+    backend: str,
+    runtime_version: str | None,
+    devices: list[dict[str, Any]],
+) -> bool:
+    """Match the native FP8 paths exposed by current ComfyUI releases."""
+    if backend == "rocm":
+        try:
+            version = tuple(int(part) for part in str(runtime_version).split(".")[:2])
+        except ValueError:
+            version = ()
+        return version >= (6, 5)
+    if backend == "cuda":
+        return any(
+            int(device.get("major", 0)) >= 9
+            or (
+                int(device.get("major", 0)) == 8
+                and int(device.get("minor", 0)) >= 9
+            )
+            for device in devices
+        )
+    return False
+
+
 def probe_runtime(comfyui_root: Path) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "python": sys.version,
@@ -212,15 +245,19 @@ def probe_runtime(comfyui_root: Path) -> dict[str, Any]:
     try:
         accelerator_available = torch.cuda.is_available()
         device_count = torch.cuda.device_count() if accelerator_available else 0
+        selected_device_index = torch.cuda.current_device() if device_count else None
     except Exception as error:
+        backend = accelerator_backend(torch.version.hip, torch.version.cuda)
         payload.update(
             {
                 "torch_available": True,
                 "torch_version": torch.__version__,
                 "hip_version": torch.version.hip,
                 "cuda_version": torch.version.cuda,
+                "accelerator_backend": backend,
                 "accelerator_available": False,
                 "device_count": 0,
+                "selected_device_index": None,
                 "devices": [],
                 "error": f"{type(error).__name__}: {error}",
             }
@@ -241,24 +278,28 @@ def probe_runtime(comfyui_root: Path) -> dict[str, Any]:
             )
     except Exception as error:
         payload["device_query_error"] = f"{type(error).__name__}: {error}"
-    hip_parts = ()
-    if torch.version.hip:
-        try:
-            hip_parts = tuple(int(part) for part in torch.version.hip.split(".")[:2])
-        except ValueError:
-            pass
+    backend = accelerator_backend(torch.version.hip, torch.version.cuda)
+    selected_devices = [
+        device for device in devices if device["index"] == selected_device_index
+    ]
     payload.update(
         {
             "torch_available": True,
             "torch_version": torch.__version__,
             "hip_version": torch.version.hip,
             "cuda_version": torch.version.cuda,
+            "accelerator_backend": backend,
             "accelerator_available": bool(device_count and devices),
             "device_count": device_count,
+            "selected_device_index": selected_device_index,
             "devices": devices,
             "bf16_supported": bool(device_count and torch.cuda.is_bf16_supported()),
             "float8_e4m3fn": hasattr(torch, "float8_e4m3fn"),
-            "native_scaled_fp8": hip_parts >= (6, 5),
+            "native_scaled_fp8": native_scaled_fp8_supported(
+                backend,
+                torch.version.hip if backend == "rocm" else torch.version.cuda,
+                selected_devices,
+            ),
         }
     )
     return payload
@@ -268,8 +309,15 @@ def diagnose_accelerator(comfyui_root: Path) -> dict[str, Any]:
     """Return copyable host/process evidence and targeted remediation hints."""
 
     payload = probe_runtime(comfyui_root)
-    device_paths = [Path("/dev/kfd")]
-    device_paths.extend(Path(path) for path in sorted(glob.glob("/dev/dri/renderD*")))
+    backend = str(payload.get("accelerator_backend", "unknown"))
+    if backend == "cuda":
+        device_paths = [Path("/dev/nvidiactl"), Path("/dev/dxg")]
+        device_paths.extend(
+            Path(path) for path in sorted(glob.glob("/dev/nvidia[0-9]*"))
+        )
+    else:
+        device_paths = [Path("/dev/kfd")]
+        device_paths.extend(Path(path) for path in sorted(glob.glob("/dev/dri/renderD*")))
     payload.update(
         {
             "pid": os.getpid(),
@@ -312,31 +360,57 @@ def diagnose_accelerator(comfyui_root: Path) -> dict[str, Any]:
         payload["initialization_error"] = initialization_error
 
     recommendations: list[str] = []
-    kfd = next(item for item in payload["device_paths"] if item["path"] == "/dev/kfd")
     if not payload.get("torch_available"):
-        recommendations.append("Select the ComfyUI ROCm Python interpreter containing torch.")
-    elif not payload.get("hip_version"):
-        recommendations.append("The worker has a non-ROCm PyTorch build; install a ROCm build.")
-    if not kfd["exists"]:
         recommendations.append(
-            "The worker cannot see /dev/kfd; launch outside a sandbox/container "
-            "or expose the AMD devices."
+            "Select a ComfyUI CUDA or ROCm Python interpreter containing PyTorch."
         )
-    elif not kfd["readable"] or not kfd["writable"]:
+    elif backend == "unknown":
         recommendations.append(
-            "The worker lacks /dev/kfd access; verify the user belongs to the "
-            "render and video groups."
+            "The worker has a CPU-only PyTorch build; install a CUDA or ROCm build."
         )
+    elif backend == "rocm" and not payload.get("accelerator_available"):
+        kfd = next(item for item in payload["device_paths"] if item["path"] == "/dev/kfd")
+        if not kfd["exists"]:
+            recommendations.append(
+                "The worker cannot see /dev/kfd; launch outside a sandbox/container "
+                "or expose the AMD devices."
+            )
+        elif not kfd["readable"] or not kfd["writable"]:
+            recommendations.append(
+                "The worker lacks /dev/kfd access; verify the user belongs to the "
+                "render and video groups."
+            )
+    elif backend == "cuda" and not payload.get("accelerator_available"):
+        control_paths = [
+            item
+            for item in payload["device_paths"]
+            if item["path"] in {"/dev/nvidiactl", "/dev/dxg"}
+        ]
+        visible_control = next(
+            (item for item in control_paths if item["exists"]), None
+        )
+        if visible_control is None:
+            recommendations.append(
+                "The worker cannot see NVIDIA or WSL GPU device files; install the "
+                "NVIDIA driver or expose the NVIDIA devices to the container."
+            )
+        elif not visible_control["readable"] or not visible_control["writable"]:
+            recommendations.append(
+                f"The worker lacks access to {visible_control['path']}; verify device "
+                "permissions."
+            )
     if any(
         payload["environment"].get(name)
         for name in ("ROCR_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES")
     ):
         recommendations.append("Check accelerator visibility environment variables shown below.")
     if not recommendations and payload.get("accelerator_available"):
-        recommendations.append("ROCm accelerator probe succeeded; model loading can proceed.")
+        recommendations.append(
+            f"{backend.upper()} accelerator probe succeeded; model loading can proceed."
+        )
     elif not recommendations:
         recommendations.append(
-            "ROCm device files are visible; use the Torch initialization error "
+            "GPU device files are visible; use the Torch initialization error "
             "below to inspect the runtime."
         )
     payload["recommendations"] = recommendations
@@ -385,7 +459,7 @@ class ComfyBaselineRuntime:
             raise RuntimeError("all three model artifacts are required")
         capabilities = probe_runtime(self.comfyui_root)
         if not capabilities.get("accelerator_available"):
-            raise RuntimeError("ROCm accelerator is unavailable to the worker process")
+            raise RuntimeError("GPU accelerator is unavailable to the worker process")
 
         root_text = str(self.comfyui_root)
         if root_text not in sys.path:
@@ -442,6 +516,7 @@ class ComfyBaselineRuntime:
             "cpu_vae": self.cpu_vae,
             "oom_recovery": self.oom_recovery,
             "native_scaled_fp8": capabilities.get("native_scaled_fp8", False),
+            "accelerator_backend": capabilities.get("accelerator_backend", "unknown"),
             "memory": self.memory_snapshot("model loaded"),
         }
 
@@ -1103,11 +1178,15 @@ class ComfyBaselineRuntime:
                 f"the {self.minimum_system_ram_gb:.1f} GiB guard"
             )
         device = comfy.model_management.get_torch_device()
-        target_free = int(max(self.reserve_vram_gb, 5.0) * GIB)
+        total_vram_gb = before["gpu_total_bytes"] / GIB
+        retry_reserve_gb = oom_recovery_reserve_vram_gb(
+            self.reserve_vram_gb, total_vram_gb
+        )
+        target_free = int(retry_reserve_gb * GIB)
         comfy.model_management.free_memory(target_free, device)
         gc.collect()
         comfy.model_management.soft_empty_cache(force=True)
-        self.reserve_vram_gb = max(self.reserve_vram_gb, 5.0)
+        self.reserve_vram_gb = retry_reserve_gb
         self.warning_free_gb = max(self.warning_free_gb, self.reserve_vram_gb)
         args.reserve_vram = self.reserve_vram_gb
         comfy.model_management.EXTRA_RESERVED_VRAM = int(self.reserve_vram_gb * GIB)

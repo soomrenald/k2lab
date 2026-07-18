@@ -611,7 +611,7 @@ class MainWindow(QMainWindow):
         layout.addRow(worker_buttons)
         self.release_worker_button = QPushButton("Release K2 GPU memory…")
         self.release_worker_button.setToolTip(
-            "Stop this user's K2 Region Lab GPU workers; other ROCm apps are untouched"
+            "Stop this user's K2 Region Lab GPU workers; other GPU apps are untouched"
         )
         self.release_worker_button.clicked.connect(self._release_k2_gpu_memory)
         layout.addRow(self.release_worker_button)
@@ -627,13 +627,13 @@ class MainWindow(QMainWindow):
         self.memory_policy_input.currentIndexChanged.connect(self._memory_policy_changed)
         layout.addRow("Memory policy", self.memory_policy_input)
         self.reserve_vram_input = QDoubleSpinBox()
-        self.reserve_vram_input.setRange(0.5, 12.0)
+        self.reserve_vram_input.setRange(0.5, 128.0)
         self.reserve_vram_input.setSingleStep(0.5)
         self.reserve_vram_input.setSuffix(" GiB")
         self.reserve_vram_input.setValue(self.settings.reserve_vram_gb)
         layout.addRow("Keep VRAM free", self.reserve_vram_input)
         self.minimum_ram_input = QDoubleSpinBox()
-        self.minimum_ram_input.setRange(4.0, 48.0)
+        self.minimum_ram_input.setRange(4.0, 256.0)
         self.minimum_ram_input.setSingleStep(1.0)
         self.minimum_ram_input.setSuffix(" GiB")
         self.minimum_ram_input.setValue(self.settings.minimum_system_ram_gb)
@@ -2128,7 +2128,7 @@ class MainWindow(QMainWindow):
         )
         # The worker interpreter is an application/runtime choice, not project
         # content. In particular, opening an older project must not silently
-        # downgrade a launch configured for a newer ROCm environment.
+        # downgrade a launch configured for a different CUDA/ROCm environment.
         worker_python = current.worker_python
         return AppSettings(
             model_directories=ModelDirectories(
@@ -2379,7 +2379,7 @@ class MainWindow(QMainWindow):
                 self,
                 "No K2 GPU worker found",
                 "No K2 Region Lab worker owned by your user is currently running. "
-                "Other ROCm applications were not inspected or stopped.",
+                "Other GPU applications were not inspected or stopped.",
             )
             self.events.addItem("GPU memory release: no K2 workers found")
             return
@@ -2392,7 +2392,7 @@ class MainWindow(QMainWindow):
             "Release K2 GPU memory?",
             "This will stop the following K2 Region Lab GPU worker processes:\n\n"
             f"{process_lines}\n\n"
-            "Unsaved GUI configuration is unaffected. Other ROCm applications, "
+            "Unsaved GUI configuration is unaffected. Other GPU applications, "
             "including ComfyUI, will not be stopped.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
@@ -2742,11 +2742,22 @@ class MainWindow(QMainWindow):
                     and not self._model_loaded
                 )
             )
+            backend = str(payload.get("accelerator_backend", "unknown"))
+            runtime_version = (
+                payload.get("hip_version")
+                if backend == "rocm"
+                else payload.get("cuda_version")
+            )
+            runtime_label = (
+                f"{backend.upper()} {runtime_version}"
+                if backend in {"rocm", "cuda"}
+                else "GPU runtime unavailable"
+            )
             self.events.addItem(
                 "Worker runtime: "
                 f"{payload.get('python_executable', 'unknown')}; "
                 f"Torch {payload.get('torch_version', 'unavailable')}; "
-                f"ROCm {payload.get('hip_version', 'unavailable')}"
+                f"{runtime_label}"
             )
             if not self._accelerator_available:
                 error = payload.get("initialization_error") or payload.get("error")
@@ -2803,10 +2814,11 @@ class MainWindow(QMainWindow):
                 if self._accelerator_available
                 else QMessageBox.Icon.Warning
             )
+            backend = str(payload.get("accelerator_backend", "GPU")).upper()
             report.setText(
-                "ROCm accelerator detected. Model loading is available."
+                f"{backend} accelerator detected. Model loading is available."
                 if self._accelerator_available
-                else "The worker still cannot initialize a ROCm accelerator."
+                else "The worker still cannot initialize a GPU accelerator."
             )
             report.setInformativeText("\n".join(recommendations))
             report.setDetailedText(json.dumps(payload, indent=2, sort_keys=True))
@@ -2860,12 +2872,15 @@ class MainWindow(QMainWindow):
                 self.statusBar().showMessage(f"Image saved to {image_path}")
             if payload.get("oom_recovered"):
                 self.reserve_vram_input.setValue(
-                    max(5.0, self.reserve_vram_input.value())
+                    max(
+                        float(payload.get("reserve_vram_gb", 0.5)),
+                        self.reserve_vram_input.value(),
+                    )
                 )
                 self.cpu_vae_input.setChecked(True)
                 self.events.addItem(
                     "Generation recovered from GPU OOM; future fresh workers will start "
-                    "with CPU VAE and at least 5 GiB reserved"
+                    f"with CPU VAE and {self.reserve_vram_input.value():.1f} GiB reserved"
                 )
             # The worker exits immediately after this event. Keep Generate disabled
             # until QProcess confirms that all GPU/system allocations are gone.
@@ -2908,12 +2923,12 @@ class MainWindow(QMainWindow):
                 for marker in ("out of memory", "gpu memory pressure", "gpu oom")
             ):
                 self.events.addItem(
-                    "16 GB guidance: use Release K2 GPU memory, restart the worker, "
-                    "close RAM-heavy applications, or reduce the canvas when using "
-                    "multiple LoRAs"
+                    "GPU memory guidance: choose a lower-VRAM or Custom policy, use "
+                    "Release K2 GPU memory, close RAM-heavy applications, or reduce "
+                    "the canvas when using multiple LoRAs"
                 )
                 self.statusBar().showMessage(
-                    "Generation exceeded the 16 GB limit — release the K2 worker before retrying",
+                    "Generation exceeded available GPU memory — tune the memory policy before retrying",
                     15000,
                 )
 

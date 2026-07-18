@@ -4,12 +4,12 @@ K2 Region Lab is a local PySide6 research application for generic pixel-space co
 
 ## Installation
 
-K2 Region Lab currently targets Linux, Python 3.12, and an AMD ROCm installation. It uses a separate lightweight desktop environment while launching model work through an existing ComfyUI Python environment. Model weights are not included.
+K2 Region Lab targets Linux, Python 3.12, and either NVIDIA CUDA or AMD ROCm. It uses a separate lightweight desktop environment while launching model work through an existing GPU-enabled ComfyUI Python environment. Model weights are not included. The existing AMD setup remains the default, so current ROCm launches do not need to change.
 
 Prerequisites:
 
 - a current ComfyUI checkout with Krea 2 support;
-- a Python 3.12 ComfyUI environment with working ROCm PyTorch (the default is `~/ComfyUI/venv_rocm7/bin/python`);
+- a Python 3.12 ComfyUI environment with a working CUDA or ROCm PyTorch build (`torch.cuda.is_available()` must return `True`); the unchanged default is `~/ComfyUI/venv_rocm7/bin/python`;
 - the Krea 2 Turbo transformer, Qwen text encoder, and VAE listed below.
 
 Clone the repository and install the desktop application in its own environment:
@@ -21,7 +21,7 @@ python -m pip install --upgrade pip
 python -m pip install -e .
 ```
 
-If ComfyUI or its ROCm environment is somewhere else, configure both paths before launching:
+If ComfyUI or its GPU environment is somewhere else, configure both paths before launching:
 
 ```bash
 export K2LAB_COMFYUI_ROOT=/path/to/ComfyUI
@@ -35,10 +35,20 @@ With the default paths, simply run:
 k2lab
 ```
 
+For an NVIDIA installation, point K2 Lab at the Python interpreter from a CUDA-enabled ComfyUI environment. Nothing needs to be installed into the lightweight desktop environment beyond the normal K2 Lab dependencies:
+
+```bash
+export K2LAB_COMFYUI_ROOT=/path/to/ComfyUI
+export K2LAB_WORKER_PYTHON=/path/to/ComfyUI/.venv/bin/python
+K2LAB_MEMORY_POLICY=large_24gb k2lab
+```
+
+Use the environment created by ComfyUI's platform-appropriate installation instructions; do not install a second Torch build into K2 Lab's desktop `.venv`. The accelerator diagnostic reports whether the selected worker is using CUDA, ROCm, or a CPU-only Torch build.
+
 Face refinement additionally requires `onnxruntime` in the ComfyUI worker environment and FantasyPortrait's `face_det.onnx` under `custom_nodes/ComfyUI-WanVideoWrapper/fantasyportrait/models/`:
 
 ```bash
-~/ComfyUI/venv_rocm7/bin/python -m pip install onnxruntime
+"${K2LAB_WORKER_PYTHON:-$HOME/ComfyUI/venv_rocm7/bin/python}" -m pip install onnxruntime
 ```
 
 The implementation is at the foundation milestone. It currently provides:
@@ -54,14 +64,14 @@ The implementation is at the foundation milestone. It currently provides:
 - per-LoRA strength, Krea key diagnostics, and global or strict regional application;
 - JSON project save/load for prompts, generation settings, boxes, names, LoRAs, and runtime paths;
 - a typed worker protocol with isolated baseline GPU execution;
-- a configurable external ROCm worker using the existing ComfyUI interpreter;
+- a configurable external CUDA or ROCm worker using the existing ComfyUI interpreter;
 - full transformer, Qwen, and VAE tensor manifests with Krea-specific shape validation;
 - fixed-seed Krea 2 Turbo baseline generation with progress events and PNG metadata;
 - optional automatic face-crop refinement with per-region character LoRAs;
 - optional 2×/4× post-upscaling after the Krea GPU state has been released;
-- selectable 16 GB memory policies, live VRAM/RAM telemetry, boundary offload, and OOM retry;
-- confirmed cleanup of current-user K2 workers without terminating unrelated ROCm applications;
-- in-app ROCm diagnostics with device permissions, runtime identity, and remediation hints;
+- GPU-size memory profiles plus fully custom VRAM/RAM guards, live VRAM/RAM telemetry, boundary offload, and proportional OOM retry;
+- confirmed cleanup of current-user K2 workers without terminating unrelated GPU applications;
+- in-app CUDA/ROCm diagnostics with device permissions, runtime identity, and remediation hints;
 - dependency-light unit tests for the geometry and artifact-discovery contracts.
 
 The configured default model locations are:
@@ -92,7 +102,7 @@ After installing the desktop dependencies, launch the application with:
 k2lab
 ```
 
-Do not resolve or replace the ComfyUI worker interpreter symlink: its venv path is required so Python finds the ROCm environment's `pyvenv.cfg`. The application preserves this path automatically.
+Do not resolve or replace the ComfyUI worker interpreter symlink: its venv path is required so Python finds that CUDA or ROCm environment's `pyvenv.cfg`. The application preserves this path automatically.
 
 The desktop starts its GPU worker with `~/ComfyUI/venv_rocm7/bin/python` by default. Override the runtime without changing GUI dependencies using:
 
@@ -107,15 +117,33 @@ K2LAB_CPU_VAE
 K2LAB_OOM_RECOVERY
 K2LAB_OUTPUT_DIRECTORY
 K2LAB_FILENAME_PREFIX
+K2_TURBO_DIR
+K2_TEXT_ENCODER_DIR
+K2_VAE_DIR
 ```
+
+Memory settings can be selected in **Model & memory** or set before launch. A policy is a safety floor: its reserve and system-RAM values may be raised in the UI, but not lowered. **Custom / any GPU** removes the hardware-size assumptions and permits a 0.5–128 GiB VRAM reserve and a 4–256 GiB available-RAM guard.
+
+| Policy | Suggested hardware | VRAM kept free | Minimum available RAM | CPU VAE |
+| --- | --- | ---: | ---: | --- |
+| `low_8gb` | 8 GB GPU | 1 GiB | 24 GiB | Yes |
+| `safe_12gb` | 12 GB GPU | 2 GiB | 18 GiB | Yes |
+| `safe_16gb` | 16 GB GPU; unchanged default | 4 GiB | 14 GiB | No |
+| `balanced` | General manual starting point | 3 GiB | 12 GiB | No |
+| `performance` | More model residency | 2 GiB | 12 GiB | No |
+| `large_24gb` | 24 GB or larger GPU | 3 GiB | 12 GiB | No |
+| `custom` | Any unlisted GPU/RAM combination | User-set | User-set | User-set |
+| `emergency` | Maximum offload on the original setup | 5.5 GiB | 16 GiB | Yes |
+
+These controls make allocation behavior tunable; they cannot make an unsupported Torch/ComfyUI build or an arbitrarily large render fit a particular card. On smaller GPUs, start with `low_8gb` or `safe_12gb`, keep OOM recovery enabled, and reduce the canvas from 1024×1024 if necessary. Smaller-VRAM profiles require more system RAM because ComfyUI offloads more weights to the CPU. The custom policy is also useful for cards between the named sizes.
 
 The right-side settings pane has separate **Model & memory** and **Generation & spatial** tabs so only one control group is visible at a time. Use **Validate tensors** before **Load Krea 2 baseline**. Validation reads only safetensors headers and writes complete manifests under the configured K2 Lab data directory. After loading, **Generate image** runs an eight-step Euler/simple Turbo pass by default and displays the saved image behind the editable region boxes. Project Open/Save dialogs start in the checkout's `prompts/` folder, and new generations default to the sibling `outputs/` folder. The generation tab provides an output-folder browser and editable filename prefix; both are saved in project JSON. The unified-prompt preview is a resizable, selectable-text dialog. The event viewer follows new messages only while its scrollbar is already at the latest event. Every dock pane can be resized, floated, closed, and restored from the checkable **View** menu; **View → Restore default pane layout** docks and shows all panes again.
 
 The **Projector** tab controls Krea's 12-column `txtfusion.projector` delta. It provides the `FilterBypass2`, `FilterBypass3`, `skc3vo`, and `z0jglf` reference presets, twelve editable vector fields, and one multiplier that scales the entire vector. The control is off by default and is saved in project JSON and PNG metadata. Each subject region also has a separate **Face identity prompt** for the character trigger and stable face/hair description. **Face identity protection** scales the projector delta only on that field's exact Qwen token span: `0` applies the complete preset, while `1` retains the baseline projector mixture for those identity tokens. Body, pose, action, and scene tokens continue receiving the complete preset, and there is no image-space exclusion mask. K2 Lab installs this token-selective projector delta before regional LoRA hooks, preserving regional LoRA routing unchanged.
 
-The compact monitor beside Events reads Linux DRM/sysfs and `/proc/meminfo` directly once per second, showing current GPU VRAM, system RAM, GPU activity, and a two-minute VRAM/RAM history without trying to embed `nvtop`. Seed behavior can be **Fixed**, **Random**, or **Increment** and is stored in the project. Every generation uses a disposable worker: after the final image is saved, that process exits so ROCm allocations, model weights, LoRA tensors, and Python heap memory are returned to the OS. The next **Generate image** click automatically starts, probes, validates, and loads a fresh worker before dispatching the request. **Stop generation** terminates the same isolated worker early while leaving the desktop and unsaved configuration open.
+The compact monitor beside Events reads AMD VRAM counters from Linux DRM/sysfs, NVIDIA counters from `nvidia-smi`, and system memory from `/proc/meminfo` once per second. It shows current GPU VRAM, system RAM, GPU activity, and a two-minute VRAM/RAM history without embedding another monitor. Seed behavior can be **Fixed**, **Random**, or **Increment** and is stored in the project. Every generation uses a disposable worker: after the final image is saved, that process exits so GPU allocations, model weights, LoRA tensors, and Python heap memory are returned to the OS. The next **Generate image** click automatically starts, probes, validates, and loads a fresh worker before dispatching the request. **Stop generation** terminates the same isolated worker early while leaving the desktop and unsaved configuration open.
 
-The **Use unified spatial prompting** backend compiles the global prompt and every enabled regional prompt into one scene-wide Qwen caption. The region list is a draggable front-to-back stack: the top row's clause comes first, and when two subject boxes overlap the caption explicitly keeps both in the shared area while placing the higher row in front and naturally occluding the lower row behind it. Broad background bands are excluded from this object-occlusion rule. The compiler also adds natural normalized positions, sizes, and relationships, records the text-token span belonging to every regional clause, and maps each half-open pixel box onto Krea's 16-pixel image-token grid. During each of Krea's single-stream transformer blocks, a bidirectional soft attention bias links regional text spans to nearby image tokens while leaving global text, text-to-text, and image-to-image attention unchanged. Because masked ROCm SDPA falls back to a memory-heavy math kernel on the target GPU, the override computes the exact biased softmax in bounded query chunks without materializing a complete per-head score matrix.
+The **Use unified spatial prompting** backend compiles the global prompt and every enabled regional prompt into one scene-wide Qwen caption. The region list is a draggable front-to-back stack: the top row's clause comes first, and when two subject boxes overlap the caption explicitly keeps both in the shared area while placing the higher row in front and naturally occluding the lower row behind it. Broad background bands are excluded from this object-occlusion rule. The compiler also adds natural normalized positions, sizes, and relationships, records the text-token span belonging to every regional clause, and maps each half-open pixel box onto Krea's 16-pixel image-token grid. During each of Krea's single-stream transformer blocks, a bidirectional soft attention bias links regional text spans to nearby image tokens while leaving global text, text-to-text, and image-to-image attention unchanged. Because masked SDPA can fall back to a memory-heavy math kernel on supported backends, the override computes the exact biased softmax in bounded query chunks without materializing a complete per-head score matrix.
 
 Every box has an **Auto**, **Subject target**, or **Background band** selector. Auto treats boxes spanning at least 70% of the canvas width as background and narrower boxes as subjects, which migrates existing projects without manual edits. Background bands keep full strength throughout the box and use a softer outside penalty. With **Make subjects fill their boxes** enabled, the box means the desired visible extent rather than only a center location: the unified caption includes explicit boundary coordinates, an image-relative size/framing description, and a minimal-empty-margin instruction, while attention remains strong through the box edges. Disable it to recover the older position-only center-weighted behavior. Overlapping subjects can still compete for soft ownership of image tokens so two subjects are less likely to collapse into the same location. Placement and size guidance remain strongest through the first half of denoising and can relax during late detail refinement.
 
@@ -135,13 +163,13 @@ The separate **Face refinement** workspace never runs as part of baseline genera
 
 Before VAE decode, the worker explicitly offloads the denoising transformer and releases routed adapter hooks outside PyTorch inference mode. This both frees the additional VRAM held by multiple LoRAs and prevents ComfyUI's quantized FP8 parameter reconstruction from receiving inference tensors during the VAE memory handoff.
 
-**Post-upscale after releasing Krea VRAM** is a scene-wide output stage, not another denoising pass. The worker decodes the original image, copies it to CPU memory, unloads Krea, its routed LoRAs, and the VAE from the accelerator, and empties the ROCm cache before upscaling. The built-in **CPU Lanczos** option works without additional weights and produces an exact 2× or 4× output, but it cannot invent detail absent from the 1024×1024 render. For learned detail recovery, choose **Neural model (tiled GPU)** and browse to an ESRGAN/Real-ESRGAN-compatible `.pth`, `.pt`, or `.safetensors` file. Neural inference uses overlapping tiles with automatic OOM tile reduction and keeps its assembled output in system RAM. The selected method, model, base size, and final size are stored in project JSON and PNG metadata.
+**Post-upscale after releasing Krea VRAM** is a scene-wide output stage, not another denoising pass. The worker decodes the original image, copies it to CPU memory, unloads Krea, its routed LoRAs, and the VAE from the accelerator, and empties the GPU cache before upscaling. The built-in **CPU Lanczos** option works without additional weights and produces an exact 2× or 4× output, but it cannot invent detail absent from the 1024×1024 render. For learned detail recovery, choose **Neural model (tiled GPU)** and browse to an ESRGAN/Real-ESRGAN-compatible `.pth`, `.pt`, or `.safetensors` file. Neural inference uses overlapping tiles with automatic OOM tile reduction and keeps its assembled output in system RAM. The selected method, model, base size, and final size are stored in project JSON and PNG metadata.
 
-If the accelerator probe fails, **Diagnose accelerator…** appears below the status. It restarts the worker with a clean environment and reports the interpreter, Torch/ROCm versions, device-file access, visibility variables, initialization errors, and suggested fixes without closing the application.
+If the accelerator probe fails, **Diagnose accelerator…** appears below the status. It restarts the worker with a clean environment and reports the interpreter, Torch/CUDA/ROCm versions, backend-specific device-file access, visibility variables, initialization errors, and suggested fixes without closing the application.
 
-Use **Release K2 GPU memory…** if a failed run leaves a K2 worker holding VRAM. The confirmation dialog lists every matching current-user K2 worker PID, then stops only those processes. It deliberately does not terminate ComfyUI or other ROCm applications.
+Use **Release K2 GPU memory…** if a failed run leaves a K2 worker holding VRAM. The confirmation dialog lists every matching current-user K2 worker PID, then stops only those processes. It deliberately does not terminate ComfyUI or other GPU applications.
 
 Launch with `DEBUG=1 k2lab` to write bounded rotating logs under `~/.local/share/k2-region-lab/logs/` (or the configured `K2LAB_DATA_DIR`). The desktop and GPU worker use separate `desktop-debug.log` and `worker-debug.log` files.
 
-The original local stack uses PyTorch 2.9.1 with ROCm 6.4. Because scaled FP8 execution is native only on ROCm 6.5 or newer, the worker automatically uses ComfyUI's low-VRAM fallback on ROCm 6.4. **Safe 16 GB** is the default policy: neither its 4 GiB VRAM floor nor its 14 GiB available-system-RAM floor can be reduced by an older saved project, and it reports memory at each generation boundary and denoising step. If free VRAM crosses the critical floor between denoising steps, the worker stops before the next allocation and makes its single deterministic retry with a 5 GiB reserve and CPU VAE decode. Memory controls are locked while a model is loaded so the active worker configuration remains explicit. The worker also enables PyTorch expandable allocator segments and ROCm's experimental AOTriton attention backend when the environment does not explicitly configure them. A 1024×1024 eight-step run does not fit reliably on the tested 16 GB GPU under ROCm 6.4's BF16 dequantization fallback. The same baseline completed on PyTorch 2.10.0 with ROCm 7.1 and native scaled FP8/AOTriton, keeping about 2.8 GiB free during denoising. GPU VAE decode may exhaust its regular allocation and use ComfyUI's tiled fallback; K2 Lab keeps that fallback inside PyTorch inference mode for PyTorch 2.10 compatibility. ROCm 7.1 is therefore the default worker. Set `K2LAB_WORKER_PYTHON` at launch only when a different compatible ComfyUI environment is required; the application-owned worker choice takes precedence over paths stored by older projects.
+The original local stack uses PyTorch 2.9.1 with ROCm 6.4. Because scaled FP8 execution is native only on ROCm 6.5 or newer, the worker automatically uses ComfyUI's low-VRAM fallback on ROCm 6.4. CUDA workers enable the same native FP8 model option on NVIDIA compute capability 8.9 or 9.x-and-newer devices; older CUDA devices retain ComfyUI's compatible fallback. **Safe 16 GB** remains the default policy: neither its 4 GiB VRAM floor nor its 14 GiB available-system-RAM floor can be reduced by an older saved project, and it reports memory at each generation boundary and denoising step. If free VRAM crosses the critical floor between denoising steps, the worker stops before the next allocation and makes one deterministic retry with CPU VAE decode and a reserve increase proportional to the detected GPU capacity; the original 16 GiB setup still moves from 4 GiB to 5 GiB. Memory controls are locked while a model is loaded so the active worker configuration remains explicit. The worker also enables PyTorch expandable allocator segments and ROCm's experimental AOTriton attention backend when the environment does not explicitly configure them. A 1024×1024 eight-step run does not fit reliably on the tested 16 GB GPU under ROCm 6.4's BF16 dequantization fallback. The same baseline completed on PyTorch 2.10.0 with ROCm 7.1 and native scaled FP8/AOTriton, keeping about 2.8 GiB free during denoising. GPU VAE decode may exhaust its regular allocation and use ComfyUI's tiled fallback; K2 Lab keeps that fallback inside PyTorch inference mode for PyTorch 2.10 compatibility. ROCm 7.1 therefore remains the default worker for the original installation. Set `K2LAB_WORKER_PYTHON` at launch only when a different compatible CUDA or ROCm ComfyUI environment is required; the application-owned worker choice takes precedence over paths stored by older projects.
 

@@ -28,9 +28,9 @@ def spatial_pair_bias(
 class KreaSpatialAttentionOverride:
     """Inject a chunked text/image score bias into Krea's main stream only.
 
-    ROCm cannot use its efficient SDPA kernels with a dense additive mask on the
-    target GPU. Query chunking computes the exact biased softmax without ever
-    materializing the complete per-head score matrix.
+    Some CUDA/ROCm SDPA kernels cannot use a dense additive mask efficiently.
+    Query chunking computes the exact biased softmax without ever materializing
+    the complete per-head score matrix.
     """
 
     def __init__(

@@ -694,6 +694,30 @@ class DesktopSmokeTests(unittest.TestCase):
             self.assertIn("run diagnostic", window.accelerator_status.text())
             window.close()
 
+    def test_cuda_accelerator_is_identified_in_worker_events(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            window = self.make_window(Path(directory))
+            window._worker_event(
+                {
+                    "state": "unloaded",
+                    "message": "Worker runtime probe complete",
+                    "payload": {
+                        "accelerator_available": True,
+                        "accelerator_backend": "cuda",
+                        "python_executable": "/cuda/python",
+                        "torch_version": "2.9.0",
+                        "cuda_version": "12.8",
+                        "devices": [{"name": "NVIDIA GPU"}],
+                    },
+                }
+            )
+            messages = [
+                window.events.item(row).text() for row in range(window.events.count())
+            ]
+            self.assertTrue(any("CUDA 12.8" in message for message in messages))
+            self.assertEqual(window.accelerator_status.text(), "NVIDIA GPU")
+            window.close()
+
     def test_worker_memory_event_updates_live_status(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             window = self.make_window(Path(directory))
@@ -715,7 +739,7 @@ class DesktopSmokeTests(unittest.TestCase):
             self.assertIn("offloaded_to_ram", window.memory_status.text())
             window.close()
 
-    def test_oom_event_surfaces_in_app_16gb_guidance(self) -> None:
+    def test_oom_event_surfaces_gpu_size_independent_guidance(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             window = self.make_window(Path(directory))
             window._worker_event(
@@ -726,8 +750,8 @@ class DesktopSmokeTests(unittest.TestCase):
                 }
             )
             messages = [window.events.item(row).text() for row in range(window.events.count())]
-            self.assertTrue(any("16 GB guidance" in message for message in messages))
-            self.assertIn("exceeded the 16 GB limit", window.statusBar().currentMessage())
+            self.assertTrue(any("GPU memory guidance" in message for message in messages))
+            self.assertIn("exceeded available GPU memory", window.statusBar().currentMessage())
             window.close()
 
     def test_safe_worker_payload_enforces_memory_floors(self) -> None:

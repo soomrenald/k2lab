@@ -11,6 +11,7 @@ from k2_region_lab.memory import (
     effective_minimum_system_ram_gb,
     effective_reserve_vram_gb,
     memory_policy,
+    oom_recovery_reserve_vram_gb,
 )
 from k2_region_lab.worker.runtime import CriticalGpuMemoryPressure, ComfyBaselineRuntime
 
@@ -33,6 +34,16 @@ class MemoryPolicyTests(unittest.TestCase):
         self.assertEqual(effective_minimum_system_ram_gb("safe_16gb", 12.0), 14.0)
         self.assertEqual(effective_minimum_system_ram_gb("emergency", 14.0), 16.0)
         self.assertEqual(effective_minimum_system_ram_gb("balanced", 13.0), 13.0)
+
+    def test_custom_policy_allows_tuning_for_unlisted_gpu_sizes(self) -> None:
+        self.assertEqual(effective_reserve_vram_gb("custom", 0.75), 0.75)
+        self.assertEqual(effective_minimum_system_ram_gb("custom", 6.0), 6.0)
+
+    def test_oom_recovery_reserve_scales_with_gpu_capacity(self) -> None:
+        self.assertEqual(oom_recovery_reserve_vram_gb(1.0, 8.0), 1.5)
+        self.assertEqual(oom_recovery_reserve_vram_gb(4.0, 16.0), 5.0)
+        self.assertEqual(oom_recovery_reserve_vram_gb(3.0, 24.0), 4.5)
+        self.assertEqual(oom_recovery_reserve_vram_gb(5.0, 8.0), 5.0)
 
     def test_critical_pressure_uses_the_single_oom_recovery_path(self) -> None:
         self.assertTrue(

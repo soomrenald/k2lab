@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import shutil
+import subprocess
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
@@ -47,20 +49,59 @@ def discover_gpu_device(drm_root: Path = Path("/sys/class/drm")) -> Path | None:
 def read_resource_sample(
     gpu_device: Path | None,
     meminfo_path: Path = Path("/proc/meminfo"),
+    nvidia_smi: str | None = None,
 ) -> ResourceSample:
-    gpu_total = _read_integer(gpu_device / "mem_info_vram_total") if gpu_device else 0
-    gpu_used = _read_integer(gpu_device / "mem_info_vram_used") if gpu_device else 0
-    gpu_busy = _read_integer(gpu_device / "gpu_busy_percent") if gpu_device else None
+    if gpu_device:
+        gpu_total = _read_integer(gpu_device / "mem_info_vram_total") or 0
+        gpu_used = _read_integer(gpu_device / "mem_info_vram_used") or 0
+        gpu_busy = _read_integer(gpu_device / "gpu_busy_percent")
+    else:
+        gpu_used, gpu_total, gpu_busy = _read_nvidia_gpu(nvidia_smi)
     memory = _read_meminfo(meminfo_path)
     ram_total = memory.get("MemTotal", 0) * 1024
     ram_available = memory.get("MemAvailable", memory.get("MemFree", 0)) * 1024
     return ResourceSample(
-        gpu_used_bytes=gpu_used or 0,
-        gpu_total_bytes=gpu_total or 0,
+        gpu_used_bytes=gpu_used,
+        gpu_total_bytes=gpu_total,
         ram_used_bytes=max(0, ram_total - ram_available),
         ram_total_bytes=ram_total,
         gpu_busy_percent=float(gpu_busy) if gpu_busy is not None else None,
     )
+
+
+def _read_nvidia_gpu(executable: str | None) -> tuple[int, int, float | None]:
+    if not executable:
+        return 0, 0, None
+    try:
+        completed = subprocess.run(
+            [
+                executable,
+                "--query-gpu=memory.used,memory.total,utilization.gpu",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return 0, 0, None
+    if completed.returncode != 0:
+        return 0, 0, None
+    candidates: list[tuple[int, int, float]] = []
+    for line in completed.stdout.splitlines():
+        try:
+            used_mib, total_mib, busy = (
+                float(value.strip()) for value in line.split(",", maxsplit=2)
+            )
+        except ValueError:
+            continue
+        candidates.append(
+            (int(used_mib * 1024**2), int(total_mib * 1024**2), busy)
+        )
+    if not candidates:
+        return 0, 0, None
+    return max(candidates, key=lambda item: item[1])
 
 
 def _read_integer(path: Path) -> int | None:
@@ -138,6 +179,7 @@ class ResourceMonitorWidget(QWidget):
         self.setMinimumWidth(275)
         self.setMaximumWidth(380)
         self._gpu_device = discover_gpu_device()
+        self._nvidia_smi = None if self._gpu_device else shutil.which("nvidia-smi")
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 6, 8, 6)
         layout.setSpacing(4)
@@ -161,7 +203,10 @@ class ResourceMonitorWidget(QWidget):
         self.refresh()
 
     def refresh(self) -> ResourceSample:
-        sample = read_resource_sample(self._gpu_device)
+        sample = read_resource_sample(
+            self._gpu_device,
+            nvidia_smi=self._nvidia_smi,
+        )
         if sample.gpu_total_bytes:
             self.gpu_label.setText(
                 "GPU VRAM: "
