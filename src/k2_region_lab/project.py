@@ -25,7 +25,7 @@ from k2_region_lab.regions import PixelBox, RegionDefinition
 
 
 PROJECT_SCHEMA = "k2-region-lab-project"
-PROJECT_VERSION = 14
+PROJECT_VERSION = 15
 SUPPORTED_PROJECT_VERSIONS = {
     1,
     2,
@@ -39,6 +39,7 @@ SUPPORTED_PROJECT_VERSIONS = {
     10,
     11,
     12,
+    14,
     PROJECT_VERSION,
 }
 
@@ -81,6 +82,7 @@ class ProjectState:
     regional_late_step_scale: float = 0.35
     regional_lora_delta_adaptation: bool = False
     regional_lora_delta_adaptation_gain: float = 0.35
+    strict_regional_lora_isolation: bool = True
     prompt_emphases: tuple[PromptEmphasis, ...] = ()
     projector_enabled: bool = False
     projector_preset: str = DEFAULT_PROJECTOR_PRESET
@@ -210,6 +212,7 @@ def project_document(state: ProjectState) -> dict[str, Any]:
             "regional_lora_delta_adaptation_gain": (
                 state.regional_lora_delta_adaptation_gain
             ),
+            "strict_regional_lora_isolation": state.strict_regional_lora_isolation,
             "prompt_emphases": [
                 {
                     "scope_id": emphasis.scope_id,
@@ -341,6 +344,9 @@ def project_state(document: dict[str, Any]) -> ProjectState:
         ),
         regional_lora_delta_adaptation_gain=float(
             generation.get("regional_lora_delta_adaptation_gain", 0.35)
+        ),
+        strict_regional_lora_isolation=bool(
+            generation.get("strict_regional_lora_isolation", True)
         ),
         prompt_emphases=prompt_emphases_from_payload(
             generation.get("prompt_emphases", [])

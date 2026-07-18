@@ -8,6 +8,7 @@ import platform
 import sys
 import traceback
 from datetime import UTC, datetime
+from math import ceil
 from pathlib import Path
 from typing import Any, Callable
 
@@ -63,6 +64,76 @@ from k2_region_lab.spatial_attention import KreaSpatialAttentionOverride
 
 class CriticalGpuMemoryPressure(RuntimeError):
     """Raised only between denoising steps so recovery starts before a hard OOM."""
+
+
+def regional_lora_region_ids(
+    specifications: list[dict[str, Any]],
+) -> frozenset[str]:
+    """Return regions targeted by active, non-global LoRAs."""
+
+    return frozenset(
+        str(region_id)
+        for specification in specifications
+        if float(specification.get("strength", 1.0)) != 0.0
+        and not bool(specification.get("global", True))
+        for region_id in specification.get("region_ids", [])
+    )
+
+
+def regional_lora_latent_mask(
+    reference,
+    *,
+    specifications: list[dict[str, Any]],
+    regions: tuple[RegionDefinition, ...],
+    width: int,
+    height: int,
+):
+    """Build the assigned regional-LoRA box union at latent resolution."""
+
+    import torch
+    import torch.nn.functional as functional
+
+    region_ids = regional_lora_region_ids(specifications)
+    pixel_mask = torch.zeros((1, 1, height, width), dtype=torch.float32)
+    for region in regions:
+        if not region.enabled or region.region_id not in region_ids:
+            continue
+        box = region.box.clipped(width, height)
+        x0 = max(0, min(width, int(box.x0)))
+        y0 = max(0, min(height, int(box.y0)))
+        x1 = max(0, min(width, int(ceil(box.x1))))
+        y1 = max(0, min(height, int(ceil(box.y1))))
+        pixel_mask[:, :, y0:y1, x0:x1] = 1.0
+    latent_mask = functional.interpolate(
+        pixel_mask,
+        size=(int(reference.shape[-2]), int(reference.shape[-1])),
+        mode="area",
+    ).to(device=reference.device, dtype=reference.dtype)
+    if int(reference.shape[0]) > 1:
+        latent_mask = latent_mask.repeat(int(reference.shape[0]), 1, 1, 1)
+    return latent_mask.clamp(0.0, 1.0)
+
+
+def pin_regional_lora_latent_to_baseline(
+    regional,
+    baseline,
+    *,
+    specifications: list[dict[str, Any]],
+    regions: tuple[RegionDefinition, ...],
+    width: int,
+    height: int,
+):
+    """Restore a matched baseline outside region-assigned LoRA boxes."""
+
+    mask = regional_lora_latent_mask(
+        regional,
+        specifications=specifications,
+        regions=regions,
+        width=width,
+        height=height,
+    )
+    baseline = baseline.to(device=regional.device, dtype=regional.dtype)
+    return mask * regional + (1.0 - mask) * baseline, mask
 
 
 class LoraDeltaStatistics:
@@ -934,6 +1005,7 @@ class ComfyBaselineRuntime:
         self,
         generation_model,
         event: Callable[[str, dict[str, Any]], None] | None,
+        *additional_models,
     ) -> None:
         """Offload denoising state before VAE decode enters inference mode.
 
@@ -942,7 +1014,7 @@ class ComfyBaselineRuntime:
         when that unload happens under inference mode.
         """
 
-        self._release_generation_model(generation_model)
+        self._release_generation_model(generation_model, *additional_models)
         if event is not None:
             event(
                 "Transformer offloaded before VAE decode",
@@ -950,12 +1022,13 @@ class ComfyBaselineRuntime:
             )
 
     @staticmethod
-    def _release_generation_model(generation_model) -> None:
+    def _release_generation_model(generation_model, *additional_models) -> None:
         import comfy.model_management
 
         comfy.model_management.unload_all_models()
-        generation_model.remove_injections("k2_routed_loras")
-        generation_model.remove_injections("k2_projector_delta")
+        for model in (generation_model, *additional_models):
+            model.remove_injections("k2_routed_loras")
+            model.remove_injections("k2_projector_delta")
         gc.collect()
         comfy.model_management.soft_empty_cache(force=True)
 
@@ -1222,6 +1295,7 @@ class ComfyBaselineRuntime:
         regional_late_step_scale: float = 0.35,
         regional_lora_delta_adaptation: bool = False,
         regional_lora_delta_adaptation_gain: float = 0.35,
+        strict_regional_lora_isolation: bool = True,
         projector_enabled: bool = False,
         projector_preset: str = DEFAULT_PROJECTOR_PRESET,
         projector_values: tuple[float, ...] = (),
@@ -1281,9 +1355,11 @@ class ComfyBaselineRuntime:
                 seed=seed,
                 output_directory=output_directory,
                 filename_prefix=filename_prefix,
+                regions=regions,
                 regional_plan=regional_plan,
                 regional_lora_delta_adaptation=regional_lora_delta_adaptation,
                 regional_lora_delta_adaptation_gain=regional_lora_delta_adaptation_gain,
+                strict_regional_lora_isolation=strict_regional_lora_isolation,
                 projector_enabled=projector_enabled,
                 projector_preset=projector_preset,
                 projector_values=projector_values,
@@ -1323,9 +1399,11 @@ class ComfyBaselineRuntime:
             seed=seed,
             output_directory=output_directory,
             filename_prefix=filename_prefix,
+            regions=regions,
             regional_plan=regional_plan,
             regional_lora_delta_adaptation=regional_lora_delta_adaptation,
             regional_lora_delta_adaptation_gain=regional_lora_delta_adaptation_gain,
+            strict_regional_lora_isolation=strict_regional_lora_isolation,
             projector_enabled=projector_enabled,
             projector_preset=projector_preset,
             projector_values=projector_values,
@@ -1351,9 +1429,11 @@ class ComfyBaselineRuntime:
         seed: int,
         output_directory: Path,
         filename_prefix: str,
+        regions: tuple[RegionDefinition, ...],
         regional_plan: RegionalPromptPlan | None,
         regional_lora_delta_adaptation: bool,
         regional_lora_delta_adaptation_gain: float,
+        strict_regional_lora_isolation: bool,
         projector_enabled: bool,
         projector_preset: str,
         projector_values: tuple[float, ...],
@@ -1414,7 +1494,7 @@ class ComfyBaselineRuntime:
         noise = comfy.sample.prepare_noise(latent, seed)
         if loras:
             self._ensure_memory("before LoRA loading", event)
-        generation_model, projector_summary = self._apply_global_projector_vector(
+        projected_model, projector_summary = self._apply_global_projector_vector(
             enabled=projector_enabled,
             preset=projector_preset,
             values=projector_values,
@@ -1425,7 +1505,7 @@ class ComfyBaselineRuntime:
         )
         generation_model, lora_reports, lora_statistics = self._apply_routed_loras(
             loras,
-            base_model=generation_model,
+            base_model=projected_model,
             width=width,
             height=height,
             text_token_count=conditioning_text_token_count,
@@ -1433,6 +1513,39 @@ class ComfyBaselineRuntime:
             bound_plan=bound_regional_plan,
             event=event,
         )
+        strict_region_ids = regional_lora_region_ids(loras)
+        strict_isolation_active = bool(strict_regional_lora_isolation and strict_region_ids)
+        baseline_model = None
+        baseline_attention_override = None
+        if strict_isolation_active:
+            global_loras = [
+                specification
+                for specification in loras
+                if bool(specification.get("global", True))
+            ]
+            baseline_model, _baseline_reports, _baseline_statistics = (
+                self._apply_routed_loras(
+                    global_loras,
+                    base_model=projected_model,
+                    width=width,
+                    height=height,
+                    text_token_count=conditioning_text_token_count,
+                    regional_plan=regional_plan,
+                    bound_plan=bound_regional_plan,
+                    event=None,
+                )
+            )
+            if baseline_model is projected_model:
+                baseline_model = projected_model.clone()
+            if event is not None:
+                event(
+                    "Strict regional LoRA isolation enabled",
+                    {
+                        "strategy": "matched_baseline_final_latent_pin",
+                        "region_ids": sorted(strict_region_ids),
+                        "extra_sampling_passes": 1,
+                    },
+                )
 
         def callback(step: int, denoised, current, total: int) -> None:
             del denoised, current
@@ -1448,13 +1561,29 @@ class ComfyBaselineRuntime:
             snapshot = self.memory_snapshot(f"denoising step {step + 1}/{total}")
             if progress is not None:
                 progress(
-                    step + 1,
-                    total,
+                    step + 1 + (steps if strict_isolation_active else 0),
+                    steps * (2 if strict_isolation_active else 1),
                     snapshot,
                 )
             if snapshot["gpu_free_bytes"] < snapshot["critical_free_bytes"]:
                 raise CriticalGpuMemoryPressure(
                     "critical GPU memory pressure after denoising step "
+                    f"{step + 1}/{total}: "
+                    f"{snapshot['gpu_free_bytes'] / GIB:.2f} GiB free"
+                )
+
+        def baseline_callback(step: int, denoised, current, total: int) -> None:
+            del denoised, current
+            if baseline_attention_override is not None:
+                baseline_attention_override.set_denoising_progress(step + 1, total)
+            snapshot = self.memory_snapshot(
+                f"strict-isolation baseline step {step + 1}/{total}"
+            )
+            if progress is not None:
+                progress(step + 1, steps * 2, snapshot)
+            if snapshot["gpu_free_bytes"] < snapshot["critical_free_bytes"]:
+                raise CriticalGpuMemoryPressure(
+                    "critical GPU memory pressure during strict-isolation baseline step "
                     f"{step + 1}/{total}: "
                     f"{snapshot['gpu_free_bytes'] / GIB:.2f} GiB free"
                 )
@@ -1466,6 +1595,13 @@ class ComfyBaselineRuntime:
                 lora_delta_adaptation_gain=regional_lora_delta_adaptation_gain,
             )
             if bound_regional_plan is not None
+            and (bound_regional_plan.spans or bound_regional_plan.emphases)
+            else None
+        )
+        baseline_attention_override = (
+            KreaSpatialAttentionOverride(bound_regional_plan)
+            if strict_isolation_active
+            and bound_regional_plan is not None
             and (bound_regional_plan.spans or bound_regional_plan.emphases)
             else None
         )
@@ -1487,22 +1623,74 @@ class ComfyBaselineRuntime:
                     "another optimized-attention override is already installed"
                 )
             transformer_options["optimized_attention_override"] = attention_override
+        baseline_transformer_options = None
+        previous_baseline_override = missing
+        if baseline_model is not None:
+            baseline_transformer_options = baseline_model.model_options.setdefault(
+                "transformer_options", {}
+            )
+            previous_baseline_override = baseline_transformer_options.get(
+                "optimized_attention_override", missing
+            )
+            if baseline_attention_override is not None:
+                if previous_baseline_override is not missing:
+                    raise RuntimeError(
+                        "another optimized-attention override is already installed "
+                        "on the strict-isolation baseline"
+                    )
+                baseline_transformer_options["optimized_attention_override"] = (
+                    baseline_attention_override
+                )
+        baseline_samples = None
+        baseline_model_released = False
         try:
+            if baseline_model is not None:
+                baseline_samples = comfy.sample.sample(
+                    baseline_model,
+                    noise.clone(),
+                    steps,
+                    1.0,
+                    "euler",
+                    "simple",
+                    positive,
+                    negative,
+                    latent.clone(),
+                    denoise=1.0,
+                    callback=baseline_callback,
+                    disable_pbar=True,
+                    seed=seed,
+                )
+                self._release_generation_model(baseline_model)
+                baseline_model_released = True
+                if event is not None:
+                    event(
+                        "Strict-isolation baseline model released",
+                        {"memory": self.memory_snapshot("baseline pass released")},
+                    )
             samples = comfy.sample.sample(
                 generation_model,
-                noise,
+                noise.clone() if baseline_samples is not None else noise,
                 steps,
                 1.0,
                 "euler",
                 "simple",
                 positive,
                 negative,
-                latent,
+                latent.clone() if baseline_samples is not None else latent,
                 denoise=1.0,
                 callback=callback,
                 disable_pbar=True,
                 seed=seed,
             )
+            if baseline_samples is not None:
+                samples, isolation_mask = pin_regional_lora_latent_to_baseline(
+                    samples,
+                    baseline_samples,
+                    specifications=loras,
+                    regions=regions,
+                    width=width,
+                    height=height,
+                )
         finally:
             if attention_override is not None:
                 attention_override.clear()
@@ -1510,6 +1698,46 @@ class ComfyBaselineRuntime:
                     transformer_options.pop("optimized_attention_override", None)
                 else:
                     transformer_options["optimized_attention_override"] = previous_override
+            if baseline_attention_override is not None:
+                baseline_attention_override.clear()
+                if previous_baseline_override is missing:
+                    baseline_transformer_options.pop(
+                        "optimized_attention_override", None
+                    )
+                else:
+                    baseline_transformer_options["optimized_attention_override"] = (
+                        previous_baseline_override
+                    )
+        isolation_summary = {
+            "enabled": strict_isolation_active,
+            "configured": bool(strict_regional_lora_isolation),
+            "strategy": (
+                "matched_baseline_final_latent_pin"
+                if strict_isolation_active
+                else "disabled"
+            ),
+            "region_ids": sorted(strict_region_ids),
+            "extra_sampling_passes": 1 if strict_isolation_active else 0,
+        }
+        if baseline_samples is not None:
+            outside = isolation_mask <= 0
+            outside_difference = (samples - baseline_samples).abs()[
+                outside.expand_as(samples)
+            ]
+            isolation_summary.update(
+                {
+                    "latent_mask_coverage": float(
+                        isolation_mask.float().mean().item()
+                    ),
+                    "outside_latent_difference_max": (
+                        float(outside_difference.max().item())
+                        if outside_difference.numel()
+                        else 0.0
+                    ),
+                }
+            )
+            if event is not None:
+                event("Strict regional LoRA isolation applied", isolation_summary)
         if attention_override is not None:
             if attention_override.matched_calls == 0:
                 raise RuntimeError(
@@ -1536,7 +1764,15 @@ class ComfyBaselineRuntime:
                     {"lora_id": report["id"], **delta_summary},
                 )
         self._ensure_memory("before VAE decode", event)
-        self._prepare_vae_handoff(generation_model, event)
+        self._prepare_vae_handoff(
+            generation_model,
+            event,
+            *(
+                (baseline_model,)
+                if baseline_model is not None and not baseline_model_released
+                else ()
+            ),
+        )
         images = self._decode_vae(samples)
         image_tensor = images[0]
         while image_tensor.ndim > 3 and image_tensor.shape[0] == 1:
@@ -1592,6 +1828,7 @@ class ComfyBaselineRuntime:
         metadata.add_text("projector", json.dumps(projector_summary))
         metadata.add_text("post_upscale", json.dumps(upscale_summary))
         metadata.add_text("loras", json.dumps(lora_reports))
+        metadata.add_text("strict_regional_lora_isolation", json.dumps(isolation_summary))
         metadata.add_text("memory_policy", self.memory_policy_key)
         metadata.add_text("oom_recovered", str(oom_recovered).lower())
         metadata.add_text("cpu_vae", str(self.cpu_vae).lower())
@@ -1609,6 +1846,7 @@ class ComfyBaselineRuntime:
             "projector": projector_summary,
             "post_upscale": upscale_summary,
             "loras": lora_reports,
+            "strict_regional_lora_isolation": isolation_summary,
             "sampler": "euler",
             "scheduler": "simple",
             "cfg": 1.0,
