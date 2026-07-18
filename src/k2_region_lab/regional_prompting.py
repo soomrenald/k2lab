@@ -42,6 +42,20 @@ class ResolvedPromptEmphasis:
 
 
 @dataclass(frozen=True, slots=True)
+class ResolvedCharacterIdentity:
+    region_id: str
+    trigger_phrase: str
+    character_spans: tuple[tuple[int, int], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedFaceIdentityPrompt:
+    region_id: str
+    prompt: str
+    character_span: tuple[int, int]
+
+
+@dataclass(frozen=True, slots=True)
 class TextTokenEmphasis:
     scope_id: str
     phrase: str
@@ -52,10 +66,26 @@ class TextTokenEmphasis:
 
 
 @dataclass(frozen=True, slots=True)
+class CharacterIdentityTokenSpans:
+    region_id: str
+    trigger_phrase: str
+    token_spans: tuple[tuple[int, int], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class FaceIdentityTokenSpan:
+    region_id: str
+    prompt: str
+    start: int
+    end: int
+
+
+@dataclass(frozen=True, slots=True)
 class UnifiedPromptRegion:
     region_id: str
     name: str
     prompt: str
+    face_identity_prompt: str
     negative_prompt: str
     box: PixelBox
     clause: str
@@ -79,6 +109,8 @@ class RegionalPromptPlan:
     late_step_scale: float
     regions: tuple[UnifiedPromptRegion, ...]
     emphases: tuple[ResolvedPromptEmphasis, ...] = ()
+    character_identities: tuple[ResolvedCharacterIdentity, ...] = ()
+    face_identities: tuple[ResolvedFaceIdentityPrompt, ...] = ()
     backend: str = BACKEND
 
     @property
@@ -134,6 +166,53 @@ class RegionalPromptPlan:
             raise ValueError("each emphasized phrase must own at least one text token")
         if emphases and max(emphasis.end for emphasis in emphases) > text_token_count:
             raise ValueError("emphasized text span exceeds the conditioning sequence")
+        character_identities = tuple(
+            CharacterIdentityTokenSpans(
+                region_id=identity.region_id,
+                trigger_phrase=identity.trigger_phrase,
+                token_spans=tuple(
+                    (
+                        prompt_prefix_token_count(self.prompt[:start]),
+                        prompt_prefix_token_count(self.prompt[:end]),
+                    )
+                    for start, end in identity.character_spans
+                ),
+            )
+            for identity in self.character_identities
+        )
+        if any(
+            end <= start
+            for identity in character_identities
+            for start, end in identity.token_spans
+        ):
+            raise ValueError("each character identity trigger must own at least one text token")
+        if (
+            character_identities
+            and max(
+                end
+                for identity in character_identities
+                for _start, end in identity.token_spans
+            )
+            > text_token_count
+        ):
+            raise ValueError("character identity trigger exceeds the conditioning sequence")
+        face_identities = tuple(
+            FaceIdentityTokenSpan(
+                region_id=identity.region_id,
+                prompt=identity.prompt,
+                start=prompt_prefix_token_count(
+                    self.prompt[: identity.character_span[0]]
+                ),
+                end=prompt_prefix_token_count(
+                    self.prompt[: identity.character_span[1]]
+                ),
+            )
+            for identity in self.face_identities
+        )
+        if any(identity.end <= identity.start for identity in face_identities):
+            raise ValueError("each face identity prompt must own at least one text token")
+        if face_identities and max(identity.end for identity in face_identities) > text_token_count:
+            raise ValueError("face identity prompt exceeds the conditioning sequence")
         return BoundRegionalPromptPlan(
             prompt=self.prompt,
             text_token_count=text_token_count,
@@ -144,6 +223,8 @@ class RegionalPromptPlan:
             late_step_scale=self.late_step_scale,
             spans=spans,
             emphases=emphases,
+            character_identities=character_identities,
+            face_identities=face_identities,
             backend=self.backend,
         )
 
@@ -167,6 +248,22 @@ class RegionalPromptPlan:
                     "character_span": list(emphasis.character_span),
                 }
                 for emphasis in self.emphases
+            ],
+            "character_identities": [
+                {
+                    "region_id": identity.region_id,
+                    "trigger_phrase": identity.trigger_phrase,
+                    "character_spans": [list(span) for span in identity.character_spans],
+                }
+                for identity in self.character_identities
+            ],
+            "face_identities": [
+                {
+                    "region_id": identity.region_id,
+                    "prompt": identity.prompt,
+                    "character_span": list(identity.character_span),
+                }
+                for identity in self.face_identities
             ],
             "regions": [
                 {
@@ -208,6 +305,8 @@ class BoundRegionalPromptPlan:
     late_step_scale: float
     spans: tuple[RegionalTokenSpan, ...]
     emphases: tuple[TextTokenEmphasis, ...] = ()
+    character_identities: tuple[CharacterIdentityTokenSpans, ...] = ()
+    face_identities: tuple[FaceIdentityTokenSpan, ...] = ()
     backend: str = BACKEND
 
     def summary(self) -> dict[str, object]:
@@ -229,6 +328,22 @@ class BoundRegionalPromptPlan:
                     "text_token_span": [emphasis.start, emphasis.end],
                 }
                 for emphasis in self.emphases
+            ],
+            "character_identities": [
+                {
+                    "region_id": identity.region_id,
+                    "trigger_phrase": identity.trigger_phrase,
+                    "text_token_spans": [list(span) for span in identity.token_spans],
+                }
+                for identity in self.character_identities
+            ],
+            "face_identities": [
+                {
+                    "region_id": identity.region_id,
+                    "prompt": identity.prompt,
+                    "text_token_span": [identity.start, identity.end],
+                }
+                for identity in self.face_identities
             ],
             "regions": [
                 {
@@ -255,6 +370,7 @@ def compile_regional_prompt_plan(
     subject_fill: bool = True,
     late_step_scale: float = 0.35,
     emphases: tuple[PromptEmphasis, ...] = (),
+    character_identity_triggers: dict[str, tuple[str, ...]] | None = None,
 ) -> RegionalPromptPlan:
     if not 0.0 < strength <= 10.0:
         raise ValueError("spatial guidance strength must be in (0, 10]")
@@ -268,7 +384,7 @@ def compile_regional_prompt_plan(
     geometry = CanvasGeometry.resolve(width, height)
     active = []
     for region in regions:
-        if not region.enabled or not region.prompt.strip():
+        if not region.enabled or not _regional_description(region):
             continue
         active.append((region, region.box.clipped(width, height)))
     # The project/list order is front-to-back. Priority keeps that ordering intact
@@ -295,6 +411,9 @@ def compile_regional_prompt_plan(
 
     prompt = _sentence(global_prompt.strip())
     compiled: list[UnifiedPromptRegion] = []
+    resolved_identities: list[ResolvedCharacterIdentity] = []
+    resolved_face_identities: list[ResolvedFaceIdentityPrompt] = []
+    identity_triggers = character_identity_triggers or {}
     for (region, box), role, image_token_field in zip(
         active, roles, fields, strict=True
     ):
@@ -309,6 +428,43 @@ def compile_regional_prompt_plan(
         if prompt:
             prompt += "\n"
         start = len(prompt)
+        identity_description = _clean_description(region.face_identity_prompt)
+        if identity_description:
+            identity_start = clause.find(identity_description)
+            if identity_start < 0:
+                raise ValueError(
+                    f"could not locate face identity prompt for region {region.name!r}"
+                )
+            resolved_face_identities.append(
+                ResolvedFaceIdentityPrompt(
+                    region_id=region.region_id,
+                    prompt=region.face_identity_prompt.strip(),
+                    character_span=(
+                        start + identity_start,
+                        start + identity_start + len(identity_description),
+                    ),
+                )
+            )
+        for trigger_phrase in dict.fromkeys(identity_triggers.get(region.region_id, ())):
+            trigger_phrase = trigger_phrase.strip()
+            if not trigger_phrase:
+                raise ValueError("character identity trigger must not be empty")
+            instruction = _character_identity_instruction(trigger_phrase)
+            instruction_start = len(clause) + 1
+            clause += f" {instruction}"
+            resolved_identities.append(
+                ResolvedCharacterIdentity(
+                    region_id=region.region_id,
+                    trigger_phrase=trigger_phrase,
+                    character_spans=tuple(
+                        (
+                            start + instruction_start + offset,
+                            start + instruction_start + offset + len(trigger_phrase),
+                        )
+                        for offset in _all_occurrences(instruction, trigger_phrase)
+                    ),
+                )
+            )
         prompt += clause
         end = len(prompt)
         compiled.append(
@@ -316,6 +472,7 @@ def compile_regional_prompt_plan(
                 region_id=region.region_id,
                 name=region.name,
                 prompt=region.prompt.strip(),
+                face_identity_prompt=region.face_identity_prompt.strip(),
                 negative_prompt=region.negative_prompt.strip(),
                 box=box,
                 clause=clause,
@@ -349,6 +506,8 @@ def compile_regional_prompt_plan(
         late_step_scale=float(late_step_scale),
         regions=tuple(compiled),
         emphases=resolved_emphases,
+        character_identities=tuple(resolved_identities),
+        face_identities=tuple(resolved_face_identities),
     )
 
 
@@ -434,6 +593,35 @@ def _nth_occurrence(text: str, phrase: str, occurrence: int) -> int:
     return start
 
 
+def _all_occurrences(text: str, phrase: str) -> tuple[int, ...]:
+    offsets = []
+    start = 0
+    while (offset := text.find(phrase, start)) >= 0:
+        offsets.append(offset)
+        start = offset + len(phrase)
+    return tuple(offsets)
+
+
+def _character_identity_instruction(trigger_phrase: str) -> str:
+    return (
+        f"{trigger_phrase} identifies the person in this region. Generate this "
+        f"person's face and facial identity from {trigger_phrase}, preserving one "
+        "coherent person."
+    )
+
+
+def character_identity_prompt(prompt: str, triggers: tuple[str, ...]) -> str:
+    """Append the same explicit identity anchors used by unified regional prompts."""
+    result = _sentence(prompt.strip())
+    for trigger_phrase in dict.fromkeys(triggers):
+        trigger_phrase = trigger_phrase.strip()
+        if not trigger_phrase:
+            raise ValueError("character identity trigger must not be empty")
+        instruction = _character_identity_instruction(trigger_phrase)
+        result = f"{result} {instruction}" if result else instruction
+    return result
+
+
 def _sentence(text: str) -> str:
     if not text:
         return ""
@@ -455,7 +643,7 @@ def _regional_clause(
     height_percent = 100.0 * box.height / height
     horizontal = _horizontal_position(center_x)
     vertical = _vertical_position(center_y)
-    description = region.prompt.strip().rstrip(".!? ")
+    description = _regional_description(region)
 
     if role == "background":
         location = (
@@ -487,6 +675,16 @@ def _regional_clause(
         "bottommost visible point near the bottom boundary. Keep the complete subject "
         "inside those boundaries with minimal empty margin."
     )
+
+
+def _clean_description(prompt: str) -> str:
+    return prompt.strip().rstrip(".!? ")
+
+
+def _regional_description(region: RegionDefinition) -> str:
+    identity = _clean_description(region.face_identity_prompt)
+    scene = _clean_description(region.prompt)
+    return ". ".join(part for part in (identity, scene) if part)
 
 
 def _subject_framing(height_percent: float) -> str:
@@ -729,6 +927,7 @@ def region_definitions_from_payload(items: list[dict]) -> tuple[RegionDefinition
             ),
             prompt=str(item.get("prompt", "")),
             negative_prompt=str(item.get("negative_prompt", "")),
+            face_identity_prompt=str(item.get("face_identity_prompt", "")),
             enabled=bool(item.get("enabled", True)),
             priority=int(item.get("priority", 0)),
             spatial_role=str(item.get("spatial_role", "auto")),

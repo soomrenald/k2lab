@@ -19,6 +19,7 @@ if PYSIDE_AVAILABLE:
     from PySide6.QtWidgets import (
         QApplication,
         QDialog,
+        QDockWidget,
         QFileDialog,
         QMessageBox,
         QTextEdit,
@@ -26,6 +27,7 @@ if PYSIDE_AVAILABLE:
 
     from k2_region_lab.config import AppSettings, ModelDirectories
     from k2_region_lab.desktop.main_window import GLOBAL_SCOPE_ID, MainWindow
+    from k2_region_lab.lora import CHARACTER_IDENTITY_LORA_ROUTING
     from k2_region_lab.processes import WorkerProcess
     from k2_region_lab.project import ProjectState
     from k2_region_lab.regional_prompting import PromptEmphasis
@@ -68,8 +70,9 @@ class DesktopSmokeTests(unittest.TestCase):
     def test_region_prompt_move_resize_and_delete_stay_synchronized(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             window = self.make_window(Path(directory))
-            window.canvas.region_created.emit(
-                "region-one", 16.0, 32.0, 256.0, 512.0
+            window.canvas.region_created.emit("region-one", 16.0, 32.0, 256.0, 512.0)
+            window.region_face_identity_prompt.setPlainText(
+                "sculptureface, a specific blue glass face"
             )
             window.region_prompt.setPlainText("a translucent blue sculpture")
             item = window.canvas.region_item("region-one")
@@ -78,6 +81,10 @@ class DesktopSmokeTests(unittest.TestCase):
 
             self.assertEqual(len(window.regions), 1)
             self.assertEqual(window.regions[0].prompt, "a translucent blue sculpture")
+            self.assertEqual(
+                window.regions[0].face_identity_prompt,
+                "sculptureface, a specific blue glass face",
+            )
             self.assertEqual(window.regions[0].box.x0, 48.0)
             self.assertEqual(window.regions[0].box.y1, 464.0)
 
@@ -105,6 +112,128 @@ class DesktopSmokeTests(unittest.TestCase):
             window.settings_tabs.setCurrentIndex(1)
             self.assertTrue(runtime_page.isHidden())
             self.assertFalse(generation_page.isHidden())
+
+    def test_view_menu_can_hide_show_float_and_restore_every_dock(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            window = self.make_window(Path(directory))
+            window.show()
+            self.application.processEvents()
+
+            self.assertEqual(window.file_menu.title(), "&File")
+            self.assertEqual(window.view_menu.title(), "&View")
+            self.assertLess(
+                window.menuBar().actions().index(window.file_menu.menuAction()),
+                window.menuBar().actions().index(window.view_menu.menuAction()),
+            )
+            expected = {
+                "prompt_regions_dock": "Prompt and regions",
+                "model_settings_dock": "Model and generation settings",
+                "lora_library_dock": "LoRA library and scope",
+                "events_dock": "Events",
+            }
+            required_features = (
+                QDockWidget.DockWidgetFeature.DockWidgetClosable
+                | QDockWidget.DockWidgetFeature.DockWidgetMovable
+                | QDockWidget.DockWidgetFeature.DockWidgetFloatable
+            )
+            for dock in window._dock_widgets:
+                action = window._dock_toggle_actions[dock.objectName()]
+                self.assertEqual(action.text(), expected[dock.objectName()])
+                self.assertTrue(action.isCheckable())
+                self.assertEqual(dock.features() & required_features, required_features)
+
+            events_action = window._dock_toggle_actions["events_dock"]
+            events_action.trigger()
+            self.application.processEvents()
+            self.assertTrue(window.event_dock.isHidden())
+            events_action.trigger()
+            self.application.processEvents()
+            self.assertFalse(window.event_dock.isHidden())
+
+            window.event_dock.setFloating(True)
+            window.prompt_dock.hide()
+            window._restore_default_dock_layout()
+            self.application.processEvents()
+            self.assertFalse(window.event_dock.isFloating())
+            self.assertFalse(window.prompt_dock.isHidden())
+            self.assertEqual(
+                window.dockWidgetArea(window.event_dock),
+                Qt.DockWidgetArea.BottomDockWidgetArea,
+            )
+            window.close()
+
+    def test_clear_canvas_image_keeps_regions_and_prompts(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            image_path = root / "loaded.png"
+            pixmap = QPixmap(256, 256)
+            pixmap.fill(QColor("#334455"))
+            self.assertTrue(pixmap.save(str(image_path)))
+            window = self.make_window(root)
+            self.assertTrue(window.canvas.set_image(str(image_path)))
+            window._background_image_path = image_path
+            window.global_prompt.setPlainText("keep this prompt")
+            window.canvas.region_created.emit("subject", 16.0, 16.0, 128.0, 128.0)
+
+            window.clear_canvas_button.click()
+
+            self.assertIsNone(window.canvas._image_item)
+            self.assertIsNone(window._background_image_path)
+            self.assertEqual(window.global_prompt.toPlainText(), "keep this prompt")
+            self.assertEqual(len(window.regions), 1)
+            window.close()
+
+    def test_new_project_restores_defaults_and_clears_project_state(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            image_path = root / "loaded.png"
+            pixmap = QPixmap(256, 256)
+            pixmap.fill(QColor("#556677"))
+            self.assertTrue(pixmap.save(str(image_path)))
+            lora_path = root / "character.safetensors"
+            write_lora(lora_path)
+            window = self.make_window(root)
+            window.global_prompt.setPlainText("old project prompt")
+            window.steps_input.setValue(17)
+            window.seed_input.setValue(999)
+            window.projector_enabled_input.setChecked(True)
+            window.face_detail_denoise_input.setValue(0.4)
+            window.post_upscale_input.setChecked(True)
+            window.canvas.region_created.emit("subject", 16.0, 16.0, 128.0, 128.0)
+            window._add_lora_path(lora_path)
+            self.assertTrue(window.canvas.set_image(str(image_path)))
+            window._background_image_path = image_path
+            self.assertTrue(window._set_face_refinement_source(image_path))
+            window._face_result_path = image_path
+            window.face_result_input.setText(str(image_path))
+            window.face_result_preview.set_image(image_path)
+            window._current_project_path = root / "old.k2lab.json"
+
+            with patch.object(
+                QMessageBox,
+                "question",
+                return_value=QMessageBox.StandardButton.Yes,
+            ):
+                window._new_project()
+
+            self.assertEqual(window.windowTitle(), "K2 Region Lab")
+            self.assertIsNone(window._current_project_path)
+            self.assertEqual(window.global_prompt.toPlainText(), "")
+            self.assertEqual(window.steps_input.value(), 8)
+            self.assertEqual(window.seed_input.value(), 0)
+            self.assertFalse(window.projector_enabled_input.isChecked())
+            self.assertEqual(window.face_detail_denoise_input.value(), 0.15)
+            self.assertFalse(window.post_upscale_input.isChecked())
+            self.assertEqual(window.regions, [])
+            self.assertEqual(window.region_list.count(), 0)
+            self.assertEqual(window.lora_list.count(), 0)
+            self.assertIsNone(window.canvas._image_item)
+            self.assertIsNone(window._background_image_path)
+            self.assertIsNone(window._face_source_path)
+            self.assertIsNone(window._face_result_path)
+            self.assertTrue(window.face_source_preview._original_pixmap.isNull())
+            self.assertTrue(window.face_result_preview._original_pixmap.isNull())
+            window.close()
 
     def test_highlighted_prompt_text_creates_editable_emphasis(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -139,9 +268,7 @@ class DesktopSmokeTests(unittest.TestCase):
             self.assertEqual(window.projector_vector_inputs[11].value(), 0.0)
 
             window.projector_vector_inputs[0].setValue(1.25)
-            self.assertEqual(
-                window.projector_preset_input.currentData(), "custom"
-            )
+            self.assertEqual(window.projector_preset_input.currentData(), "custom")
             window.close()
 
     def test_unified_prompt_preview_is_resizable_and_contains_prompt(self) -> None:
@@ -169,9 +296,7 @@ class DesktopSmokeTests(unittest.TestCase):
             window.canvas.region_created.emit("middle", 40.0, 40.0, 220.0, 260.0)
             window.canvas.region_created.emit("front", 60.0, 60.0, 240.0, 280.0)
 
-            moved = window.region_list.model().moveRow(
-                QModelIndex(), 2, QModelIndex(), 0
-            )
+            moved = window.region_list.model().moveRow(QModelIndex(), 2, QModelIndex(), 0)
             self.application.processEvents()
 
             self.assertTrue(moved)
@@ -193,17 +318,11 @@ class DesktopSmokeTests(unittest.TestCase):
     def test_project_dialogs_start_in_repository_prompt_folder(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             window = self.make_window(Path(directory))
-            with patch.object(
-                QFileDialog, "getOpenFileName", return_value=("", "")
-            ) as open_dialog:
+            with patch.object(QFileDialog, "getOpenFileName", return_value=("", "")) as open_dialog:
                 window._open_project()
-            self.assertEqual(
-                Path(open_dialog.call_args.args[2]), window._project_directory
-            )
+            self.assertEqual(Path(open_dialog.call_args.args[2]), window._project_directory)
 
-            with patch.object(
-                QFileDialog, "getSaveFileName", return_value=("", "")
-            ) as save_dialog:
+            with patch.object(QFileDialog, "getSaveFileName", return_value=("", "")) as save_dialog:
                 window._save_project_as()
             self.assertEqual(
                 Path(save_dialog.call_args.args[2]).parent,
@@ -237,9 +356,7 @@ class DesktopSmokeTests(unittest.TestCase):
             write_lora(lora_path)
             window = self.make_window(root)
             window.canvas.region_created.emit("region-one", 0.0, 0.0, 128.0, 128.0)
-            window.canvas.region_created.emit(
-                "region-two", 256.0, 256.0, 512.0, 512.0
-            )
+            window.canvas.region_created.emit("region-two", 256.0, 256.0, 512.0, 512.0)
 
             self.assertTrue(window._add_lora_path(lora_path))
             lora_id = window.lora_list.currentItem().data(Qt.ItemDataRole.UserRole)
@@ -259,8 +376,117 @@ class DesktopSmokeTests(unittest.TestCase):
             self.assertEqual(binding.region_ids, ("region-one", "region-two"))
 
             self.assertTrue(window._add_lora_path(lora_path))
-            self.assertEqual(window.lora_list.count(), 1)
+            second_lora_id = window.lora_list.currentItem().data(Qt.ItemDataRole.UserRole)
+            self.assertEqual(window.lora_list.count(), 2)
+            self.assertNotEqual(second_lora_id, lora_id)
+            self.assertEqual(
+                window.lora_library.get(second_lora_id).display_name,
+                "character_or_style #2",
+            )
+            second_binding = window.lora_library.binding_for(second_lora_id)
+            self.assertTrue(second_binding.global_scope)
+            self.assertEqual(second_binding.strength, 1.0)
+
+            window.lora_strength_input.setValue(1.5)
+            window.lora_scope_list.item(2).setCheckState(Qt.CheckState.Checked)
+            self.application.processEvents()
+            self.assertEqual(
+                window.lora_library.binding_for(lora_id).region_ids,
+                ("region-one", "region-two"),
+            )
+            self.assertEqual(window.lora_library.binding_for(lora_id).strength, 0.75)
+            second_binding = window.lora_library.binding_for(second_lora_id)
+            self.assertEqual(second_binding.region_ids, ("region-two",))
+            self.assertEqual(second_binding.strength, 1.5)
+
+            payload = window._lora_payload()
+            self.assertEqual([item["path"] for item in payload], [str(lora_path)] * 2)
+            self.assertNotEqual(payload[0]["id"], payload[1]["id"])
+            self.assertEqual(payload[0]["region_ids"], ["region-one", "region-two"])
+            self.assertEqual(payload[1]["region_ids"], ["region-two"])
             window.close()
+
+    def test_duplicate_lora_instances_survive_project_round_trip(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            lora_path = root / "identity.safetensors"
+            write_lora(lora_path)
+            window = self.make_window(root)
+            window.canvas.region_created.emit("left", 0.0, 0.0, 128.0, 128.0)
+            window.canvas.region_created.emit("right", 256.0, 0.0, 384.0, 128.0)
+
+            window._add_lora_path(lora_path)
+            window.lora_strength_input.setValue(0.5)
+            window.lora_scope_list.item(1).setCheckState(Qt.CheckState.Checked)
+            window._add_lora_path(lora_path)
+            window.lora_strength_input.setValue(1.5)
+            window.lora_scope_list.item(2).setCheckState(Qt.CheckState.Checked)
+            project_path = root / "duplicate-lora.k2lab.json"
+            self.assertTrue(window._save_project_to(project_path))
+            window.close()
+
+            restored = self.make_window(root)
+            self.assertTrue(restored._load_project_from(project_path))
+            payload = restored._lora_payload()
+            self.assertEqual(restored.lora_list.count(), 2)
+            self.assertEqual([item["path"] for item in payload], [str(lora_path)] * 2)
+            self.assertEqual(
+                [(item["strength"], item["region_ids"]) for item in payload],
+                [(0.5, ["left"]), (1.5, ["right"])],
+            )
+            self.assertEqual(
+                [restored.lora_list.item(index).text().split("  ")[0] for index in range(2)],
+                ["identity", "identity #2"],
+            )
+            restored.close()
+
+    def test_character_identity_routing_controls_payload_and_project(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            lora_path = root / "identity_model.safetensors"
+            write_lora(lora_path)
+            window = self.make_window(root)
+            window.canvas.region_created.emit("person", 0.0, 0.0, 256.0, 512.0)
+            window.region_face_identity_prompt.setPlainText(
+                "lface, a specific adult woman with an oval face"
+            )
+            window.region_prompt.setPlainText("lface, an adult woman")
+            window._add_lora_path(lora_path)
+
+            window.lora_trigger_input.setText("lface")
+            window._lora_trigger_edited()
+            window.lora_scope_list.item(1).setCheckState(Qt.CheckState.Checked)
+            window.lora_routing_mode_input.setCurrentIndex(
+                window.lora_routing_mode_input.findData(
+                    CHARACTER_IDENTITY_LORA_ROUTING
+                )
+            )
+
+            payload = window._lora_payload()[0]
+            self.assertEqual(
+                payload["routing_mode"], CHARACTER_IDENTITY_LORA_ROUTING
+            )
+            self.assertEqual(payload["trigger_phrase"], "lface")
+            self.assertEqual(payload["region_ids"], ["person"])
+            self.assertIn("[identity: lface]", window.lora_list.item(0).text())
+            project_path = root / "identity-routing.k2lab.json"
+            self.assertTrue(window._save_project_to(project_path))
+            window.close()
+
+            restored = self.make_window(root)
+            self.assertTrue(restored._load_project_from(project_path))
+            restored_payload = restored._lora_payload()[0]
+            self.assertEqual(
+                restored_payload["routing_mode"],
+                CHARACTER_IDENTITY_LORA_ROUTING,
+            )
+            self.assertEqual(restored_payload["trigger_phrase"], "lface")
+            self.assertEqual(
+                restored.lora_routing_mode_input.currentData(),
+                CHARACTER_IDENTITY_LORA_ROUTING,
+            )
+            self.assertEqual(restored.lora_trigger_input.text(), "lface")
+            restored.close()
 
     def test_deleting_last_assigned_box_returns_lora_to_global(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -320,9 +546,7 @@ class DesktopSmokeTests(unittest.TestCase):
             window.canvas.set_canvas_size(768, 512)
             window.steps_input.setValue(6)
             window.seed_input.setValue(42)
-            window.seed_mode_input.setCurrentIndex(
-                window.seed_mode_input.findData("increment")
-            )
+            window.seed_mode_input.setCurrentIndex(window.seed_mode_input.findData("increment"))
             window.regional_prompting_input.setChecked(True)
             window.regional_prompt_strength_input.setValue(1.7)
             window.regional_outside_penalty_input.setValue(1.2)
@@ -338,12 +562,22 @@ class DesktopSmokeTests(unittest.TestCase):
                 window.projector_preset_input.findData("filter_bypass3")
             )
             window.projector_multiplier_input.setValue(3.5)
+            window.projector_identity_protection_input.setValue(0.7)
+            window.face_detail_seed_input.setValue(123)
+            window.face_detail_steps_input.setValue(10)
+            window.face_detail_denoise_input.setValue(0.25)
+            window.face_detail_crop_size_input.setCurrentIndex(
+                window.face_detail_crop_size_input.findData(768)
+            )
+            window.face_detail_padding_input.setValue(1.8)
+            window.face_detail_feather_input.setValue(0.16)
+            window.face_detail_blend_input.setValue(0.4)
+            window.face_detail_lora_scale_input.setValue(1.2)
+            window.face_detail_detector_threshold_input.setValue(0.35)
             upscale_path = root / "4x-upscaler.pth"
             upscale_path.write_bytes(b"test upscaler placeholder")
             window.post_upscale_input.setChecked(True)
-            window.upscale_scale_input.setCurrentIndex(
-                window.upscale_scale_input.findData(4)
-            )
+            window.upscale_scale_input.setCurrentIndex(window.upscale_scale_input.findData(4))
             window.upscale_method_input.setCurrentIndex(
                 window.upscale_method_input.findData("model")
             )
@@ -362,14 +596,13 @@ class DesktopSmokeTests(unittest.TestCase):
             window.canvas.region_created.emit("subject", 32.0, 48.0, 320.0, 480.0)
             window.region_name.setText("Main subject")
             window._region_name_edited()
-            window.region_role.setCurrentIndex(
-                window.region_role.findData("subject")
+            window.region_role.setCurrentIndex(window.region_role.findData("subject"))
+            window.region_face_identity_prompt.setPlainText(
+                "personface, a specific person with an oval face"
             )
             window.region_prompt.setPlainText("a person by the water")
             window.region_negative_prompt.setPlainText("blurry face")
-            window.prompt_emphases = [
-                PromptEmphasis("subject", "person", strength=0.4)
-            ]
+            window.prompt_emphases = [PromptEmphasis("subject", "person", strength=0.4)]
             window._refresh_prompt_emphases()
             window._add_lora_path(lora_path)
             window.lora_strength_input.setValue(0.6)
@@ -390,22 +623,28 @@ class DesktopSmokeTests(unittest.TestCase):
             self.assertEqual(restored.regional_prompt_strength_input.value(), 1.7)
             self.assertEqual(restored.regional_outside_penalty_input.value(), 1.2)
             self.assertEqual(restored.regional_feather_input.value(), 48)
-            self.assertFalse(
-                restored.regional_subject_competition_input.isChecked()
-            )
+            self.assertFalse(restored.regional_subject_competition_input.isChecked())
             self.assertFalse(restored.regional_subject_fill_input.isChecked())
             self.assertFalse(restored.regional_relaxation_input.isChecked())
             self.assertEqual(restored.regional_late_step_scale_input.value(), 0.8)
             self.assertTrue(restored.regional_lora_delta_adaptation_input.isChecked())
-            self.assertEqual(
-                restored.regional_lora_delta_adaptation_gain_input.value(), 0.6
-            )
+            self.assertEqual(restored.regional_lora_delta_adaptation_gain_input.value(), 0.6)
             self.assertTrue(restored.projector_enabled_input.isChecked())
-            self.assertEqual(
-                restored.projector_preset_input.currentData(), "filter_bypass3"
-            )
+            self.assertEqual(restored.projector_preset_input.currentData(), "filter_bypass3")
             self.assertEqual(restored.projector_vector_inputs[10].value(), -0.6094)
             self.assertEqual(restored.projector_multiplier_input.value(), 3.5)
+            self.assertEqual(
+                restored.projector_identity_protection_input.value(), 0.7
+            )
+            self.assertEqual(restored.face_detail_seed_input.value(), 123)
+            self.assertEqual(restored.face_detail_steps_input.value(), 10)
+            self.assertEqual(restored.face_detail_denoise_input.value(), 0.25)
+            self.assertEqual(restored.face_detail_crop_size_input.currentData(), 768)
+            self.assertEqual(restored.face_detail_padding_input.value(), 1.8)
+            self.assertEqual(restored.face_detail_feather_input.value(), 0.16)
+            self.assertEqual(restored.face_detail_blend_input.value(), 0.4)
+            self.assertEqual(restored.face_detail_lora_scale_input.value(), 1.2)
+            self.assertEqual(restored.face_detail_detector_threshold_input.value(), 0.35)
             self.assertTrue(restored.post_upscale_input.isChecked())
             self.assertEqual(restored.upscale_scale_input.currentData(), 4)
             self.assertEqual(restored.upscale_method_input.currentData(), "model")
@@ -419,6 +658,10 @@ class DesktopSmokeTests(unittest.TestCase):
             self.assertEqual(restored.regions[0].name, "Main subject")
             self.assertEqual(restored.regions[0].spatial_role, "subject")
             self.assertEqual(restored.regions[0].prompt, "a person by the water")
+            self.assertEqual(
+                restored.regions[0].face_identity_prompt,
+                "personface, a specific person with an oval face",
+            )
             self.assertEqual(restored.regions[0].negative_prompt, "blurry face")
             self.assertEqual(restored.prompt_emphases[0].phrase, "person")
             self.assertEqual(restored.prompt_emphases[0].strength, 0.4)
@@ -428,9 +671,7 @@ class DesktopSmokeTests(unittest.TestCase):
                 restored.lora_library.binding_for(lora_id).region_ids,
                 ("subject",),
             )
-            self.assertEqual(
-                restored.lora_library.binding_for(lora_id).strength, 0.6
-            )
+            self.assertEqual(restored.lora_library.binding_for(lora_id).strength, 0.6)
             restored.close()
 
     def test_unavailable_accelerator_exposes_diagnostic_action(self) -> None:
@@ -504,7 +745,7 @@ class DesktopSmokeTests(unittest.TestCase):
             self.assertEqual(payload["minimum_system_ram_gb"], 14.0)
             window.close()
 
-    def test_explicit_worker_python_overrides_saved_project_runtime(self) -> None:
+    def test_application_worker_python_overrides_saved_project_runtime(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             selected = root / "rocm7" / "bin" / "python"
@@ -521,9 +762,7 @@ class DesktopSmokeTests(unittest.TestCase):
                 runtime={"worker_python": str(root / "rocm6" / "bin" / "python")},
             )
 
-            with patch.dict(
-                os.environ, {"K2LAB_WORKER_PYTHON": str(selected)}, clear=False
-            ):
+            with patch.dict(os.environ, {}, clear=True):
                 restored = window._settings_from_project(state)
 
             self.assertEqual(restored.worker_python, selected)
@@ -576,9 +815,7 @@ class DesktopSmokeTests(unittest.TestCase):
             write_lora(lora_path)
             window._add_lora_path(lora_path)
             window.lora_strength_input.setValue(0.8)
-            window.canvas.region_created.emit(
-                "teapot-region", 16.0, 16.0, 256.0, 256.0
-            )
+            window.canvas.region_created.emit("teapot-region", 16.0, 16.0, 256.0, 256.0)
             window.region_prompt.setPlainText("a detailed red teapot")
             window.worker_client.send = Mock()
             window._accelerator_available = True
@@ -614,6 +851,8 @@ class DesktopSmokeTests(unittest.TestCase):
             self.assertEqual(payload["projector_preset"], "filter_bypass2")
             self.assertEqual(len(payload["projector_values"]), 12)
             self.assertEqual(payload["projector_multiplier"], 1.0)
+            self.assertEqual(payload["projector_identity_protection"], 1.0)
+            self.assertFalse(any(key.startswith("face_detail_") for key in payload))
             self.assertFalse(payload["post_upscale"])
             self.assertEqual(payload["upscale_scale"], 2)
             self.assertEqual(payload["upscale_method"], "lanczos")
@@ -624,9 +863,8 @@ class DesktopSmokeTests(unittest.TestCase):
             self.assertTrue(payload["loras"][0]["global"])
             self.assertEqual(payload["loras"][0]["strength"], 0.8)
             self.assertEqual(payload["loras"][0]["path"], str(lora_path.resolve()))
-            self.assertEqual(
-                payload["regions"][0]["prompt"], "a detailed red teapot"
-            )
+            self.assertEqual(payload["regions"][0]["prompt"], "a detailed red teapot")
+            self.assertEqual(payload["regions"][0]["face_identity_prompt"], "")
 
             image_path = root / "baseline.png"
             pixmap = QPixmap(32, 32)
@@ -645,6 +883,64 @@ class DesktopSmokeTests(unittest.TestCase):
             self.assertTrue(window.generate_button.isEnabled())
             window.close()
 
+    def test_face_refinement_is_a_separate_png_worker_request_with_two_previews(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "first-pass.png"
+            source_pixmap = QPixmap(512, 512)
+            source_pixmap.fill(QColor("#334455"))
+            self.assertTrue(source_pixmap.save(str(source)))
+            lora_path = root / "character.safetensors"
+            write_lora(lora_path)
+            window = self.make_window(root)
+            window.artifacts = Mock(complete=True)
+            window.canvas.region_created.emit("subject", 32.0, 64.0, 320.0, 448.0)
+            window.region_prompt.setPlainText("a named person")
+            window._add_lora_path(lora_path)
+            window.lora_scope_list.item(1).setCheckState(Qt.CheckState.Checked)
+            self.assertTrue(window._set_face_refinement_source(source))
+            window.face_detail_seed_input.setValue(77)
+            window.face_detail_blend_input.setValue(0.35)
+            window.worker_client.send = Mock()
+            window._accelerator_available = True
+            window._models_compatible = True
+            window._model_loaded = True
+
+            with patch.object(
+                type(window.worker_client),
+                "running",
+                new_callable=PropertyMock,
+                return_value=True,
+            ):
+                window._run_face_refinement()
+
+            command, payload = window.worker_client.send.call_args.args
+            self.assertEqual(command, CommandKind.REFINE_FACES)
+            self.assertEqual(payload["image_path"], str(source.resolve()))
+            self.assertEqual(payload["output_directory"], str(root.resolve()))
+            self.assertEqual(payload["seed"], 77)
+            self.assertEqual(payload["blend"], 0.35)
+            self.assertEqual(payload["crop_size"], 512)
+            self.assertEqual(payload["regions"][0]["box"]["x0"], 16.0)
+            self.assertFalse(payload["loras"][0]["global"])
+
+            result = root / "first-pass_face_refined_test.png"
+            result_pixmap = QPixmap(512, 512)
+            result_pixmap.fill(QColor("#556677"))
+            self.assertTrue(result_pixmap.save(str(result)))
+            window._worker_event(
+                {
+                    "state": "ready",
+                    "message": "Face refinement complete",
+                    "payload": {"image_path": str(result)},
+                }
+            )
+            self.assertEqual(window._face_source_path, source.resolve())
+            self.assertEqual(window._face_result_path, result)
+            self.assertFalse(window.face_source_preview.pixmap().isNull())
+            self.assertFalse(window.face_result_preview.pixmap().isNull())
+            window.close()
+
     def test_generate_bootstraps_fresh_worker_and_release_restores_button(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             window = self.make_window(Path(directory))
@@ -658,9 +954,7 @@ class DesktopSmokeTests(unittest.TestCase):
                 return_value=True,
             ):
                 window._generate_baseline()
-                self.assertEqual(
-                    window.worker_client.send.call_args.args[0], CommandKind.PROBE
-                )
+                self.assertEqual(window.worker_client.send.call_args.args[0], CommandKind.PROBE)
 
                 window._worker_event(
                     {
@@ -707,9 +1001,7 @@ class DesktopSmokeTests(unittest.TestCase):
 
             self.assertFalse(window._model_loaded)
             self.assertIsNone(window._pending_generation_payload)
-            self.assertEqual(
-                window.memory_status.text(), "GPU and generation RAM released"
-            )
+            self.assertEqual(window.memory_status.text(), "GPU and worker RAM released")
             self.assertTrue(window.generate_button.isEnabled())
             window.close()
 
@@ -720,9 +1012,7 @@ class DesktopSmokeTests(unittest.TestCase):
             window._accelerator_available = True
             window._models_compatible = True
             window._model_loaded = True
-            window.seed_mode_input.setCurrentIndex(
-                window.seed_mode_input.findData("random")
-            )
+            window.seed_mode_input.setCurrentIndex(window.seed_mode_input.findData("random"))
             with patch.object(
                 type(window.worker_client),
                 "running",
@@ -740,9 +1030,7 @@ class DesktopSmokeTests(unittest.TestCase):
                 self.assertEqual(window.seed_input.value(), 9876)
 
                 window.worker_client.send.reset_mock()
-                window.seed_mode_input.setCurrentIndex(
-                    window.seed_mode_input.findData("increment")
-                )
+                window.seed_mode_input.setCurrentIndex(window.seed_mode_input.findData("increment"))
                 window.seed_input.setValue(41)
                 window._generate_baseline()
                 increment_payload = window.worker_client.send.call_args.args[1]
@@ -764,10 +1052,7 @@ class DesktopSmokeTests(unittest.TestCase):
             self.assertFalse(window.generate_button.isEnabled())
             self.assertFalse(window.stop_generation_button.isEnabled())
             self.assertTrue(window.memory_policy_input.isEnabled())
-            messages = [
-                window.events.item(index).text()
-                for index in range(window.events.count())
-            ]
+            messages = [window.events.item(index).text() for index in range(window.events.count())]
             self.assertTrue(any("worker PID 4321" in message for message in messages))
             window.close()
 

@@ -10,6 +10,15 @@ from k2_region_lab.config import AppSettings
 
 
 class ConfigTests(unittest.TestCase):
+    def test_rocm7_worker_is_the_default(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            settings = AppSettings.from_environment()
+
+        self.assertEqual(
+            settings.worker_python,
+            Path("~/ComfyUI/venv_rocm7/bin/python").expanduser().absolute(),
+        )
+
     def test_emergency_memory_policy_supplies_safe_defaults(self) -> None:
         with patch.dict(
             os.environ,

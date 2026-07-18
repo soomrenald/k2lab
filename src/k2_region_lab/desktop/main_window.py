@@ -9,7 +9,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from PySide6.QtCore import QRectF, Qt
-from PySide6.QtGui import QAction, QKeySequence
+from PySide6.QtGui import QAction, QKeySequence, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -44,7 +44,11 @@ from k2_region_lab.config import AppSettings, ModelDirectories
 from k2_region_lab.desktop.region_canvas import RegionCanvas
 from k2_region_lab.desktop.resource_monitor import ResourceMonitorWidget
 from k2_region_lab.desktop.worker_client import ExternalWorkerClient
-from k2_region_lab.lora import LoraLibrary
+from k2_region_lab.lora import (
+    CHARACTER_IDENTITY_LORA_ROUTING,
+    STANDARD_LORA_ROUTING,
+    LoraLibrary,
+)
 from k2_region_lab.memory import (
     MEMORY_POLICIES,
     effective_minimum_system_ram_gb,
@@ -70,6 +74,7 @@ from k2_region_lab.regional_prompting import (
     PromptEmphasis,
     compile_regional_prompt_plan,
 )
+from k2_region_lab.regional_lora import character_identity_triggers
 from k2_region_lab.regions import CanvasGeometry, PixelBox, RegionDefinition
 from k2_region_lab.worker.protocol import CommandKind
 
@@ -88,9 +93,52 @@ class EventListWidget(QListWidget):
             self.scrollToBottom()
 
 
+class ScaledImagePreview(QLabel):
+    """A simple aspect-fit PNG preview that keeps the original pixmap in memory."""
+
+    def __init__(self, placeholder: str) -> None:
+        super().__init__(placeholder)
+        self._original_pixmap = QPixmap()
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setMinimumSize(320, 320)
+        self.setWordWrap(True)
+        self.setStyleSheet(
+            "QLabel { background: #191919; border: 1px solid #555; color: #aaa; }"
+        )
+
+    def set_image(self, path: Path) -> bool:
+        pixmap = QPixmap(str(path))
+        if pixmap.isNull():
+            return False
+        self._original_pixmap = pixmap
+        self._fit_pixmap()
+        return True
+
+    def clear_image(self, placeholder: str) -> None:
+        self._original_pixmap = QPixmap()
+        self.clear()
+        self.setText(placeholder)
+
+    def _fit_pixmap(self) -> None:
+        if self._original_pixmap.isNull():
+            return
+        self.setPixmap(
+            self._original_pixmap.scaled(
+                self.contentsRect().size(),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+        )
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._fit_pixmap()
+
+
 class MainWindow(QMainWindow):
     def __init__(self, settings: AppSettings) -> None:
         super().__init__()
+        self._default_settings = settings
         self.settings = settings
         self.artifacts: ArtifactSet | None = None
         self.regions: list[RegionDefinition] = []
@@ -100,15 +148,20 @@ class MainWindow(QMainWindow):
         self._loading_region_form = False
         self._syncing_lora_scope = False
         self._syncing_lora_strength = False
+        self._syncing_lora_routing = False
         self._syncing_projector_fields = False
         self._syncing_prompt_emphases = False
         self._models_compatible = False
         self._model_loaded = False
         self._current_project_path: Path | None = None
         self._background_image_path: Path | None = None
+        self._face_source_path: Path | None = None
+        self._face_result_path: Path | None = None
         self._upscale_model_path: Path | None = None
         self._generation_active = False
         self._pending_generation_payload: dict[str, object] | None = None
+        self._pending_face_refinement_payload: dict[str, object] | None = None
+        self._active_task: str | None = None
         self._worker_bootstrap_stage: str | None = None
         self._generation_completed = False
         self._prompt_preview_dialog: QDialog | None = None
@@ -120,7 +173,24 @@ class MainWindow(QMainWindow):
         self._build_file_menu()
 
         self.canvas = RegionCanvas(settings.default_width, settings.default_height)
-        self.setCentralWidget(self.canvas)
+        self.workspace_tabs = QTabWidget()
+        self.workspace_tabs.setDocumentMode(True)
+        generation_page = QWidget()
+        generation_layout = QVBoxLayout(generation_page)
+        generation_layout.setContentsMargins(0, 0, 0, 0)
+        canvas_actions = QHBoxLayout()
+        canvas_actions.addStretch(1)
+        self.clear_canvas_button = QPushButton("Clear canvas image")
+        self.clear_canvas_button.setToolTip(
+            "Remove the loaded/generated image without changing regions or prompts"
+        )
+        self.clear_canvas_button.clicked.connect(self._clear_generation_canvas)
+        canvas_actions.addWidget(self.clear_canvas_button)
+        generation_layout.addLayout(canvas_actions)
+        generation_layout.addWidget(self.canvas, 1)
+        self.workspace_tabs.addTab(generation_page, "Generation canvas")
+        self._build_face_refinement_tab()
+        self.setCentralWidget(self.workspace_tabs)
         self.canvas.region_created.connect(self._region_created)
         self.canvas.region_changed.connect(self._region_changed)
         self.canvas.region_deleted.connect(self._region_deleted)
@@ -133,11 +203,13 @@ class MainWindow(QMainWindow):
             self.model_dock, self.lora_dock, Qt.Orientation.Horizontal
         )
         self._build_event_dock()
+        self._build_view_menu()
         self._fit_initial_window_to_screen()
         self.worker_client = ExternalWorkerClient(settings, self)
         self.worker_client.event_received.connect(self._worker_event)
         self.worker_client.stderr_received.connect(self._worker_stderr)
         self.worker_client.process_status.connect(self._worker_process_status)
+        self._use_latest_face_source(show_message=False)
         self._accelerator_available = False
         self.statusBar().showMessage("Ready — model not loaded")
         if os.environ.get("DEBUG", "").strip() == "1":
@@ -165,7 +237,11 @@ class MainWindow(QMainWindow):
         self.resize(width, height)
 
     def _build_file_menu(self) -> None:
-        menu = self.menuBar().addMenu("&File")
+        self.file_menu = self.menuBar().addMenu("&File")
+        menu = self.file_menu
+        new_action = QAction("&New project", self)
+        new_action.setShortcut(QKeySequence.StandardKey.New)
+        new_action.triggered.connect(self._new_project)
         open_action = QAction("&Open project…", self)
         open_action.setShortcut(QKeySequence.StandardKey.Open)
         open_action.triggered.connect(self._open_project)
@@ -178,6 +254,7 @@ class MainWindow(QMainWindow):
         exit_action = QAction("E&xit", self)
         exit_action.setShortcut(QKeySequence.StandardKey.Quit)
         exit_action.triggered.connect(self.close)
+        menu.addAction(new_action)
         menu.addAction(open_action)
         menu.addSeparator()
         menu.addAction(save_action)
@@ -185,9 +262,69 @@ class MainWindow(QMainWindow):
         menu.addSeparator()
         menu.addAction(exit_action)
 
+    @staticmethod
+    def _configure_dock(dock: QDockWidget, object_name: str) -> None:
+        dock.setObjectName(object_name)
+        dock.setAllowedAreas(Qt.DockWidgetArea.AllDockWidgetAreas)
+        dock.setFeatures(
+            QDockWidget.DockWidgetFeature.DockWidgetClosable
+            | QDockWidget.DockWidgetFeature.DockWidgetMovable
+            | QDockWidget.DockWidgetFeature.DockWidgetFloatable
+        )
+
+    def _build_view_menu(self) -> None:
+        self.view_menu = self.menuBar().addMenu("&View")
+        self._dock_widgets = (
+            self.prompt_dock,
+            self.model_dock,
+            self.lora_dock,
+            self.event_dock,
+        )
+        self._dock_toggle_actions: dict[str, QAction] = {}
+        for dock in self._dock_widgets:
+            action = dock.toggleViewAction()
+            action.setText(dock.windowTitle())
+            self.view_menu.addAction(action)
+            self._dock_toggle_actions[dock.objectName()] = action
+        self.view_menu.addSeparator()
+        restore_action = QAction("Restore default pane layout", self)
+        restore_action.triggered.connect(self._restore_default_dock_layout)
+        self.view_menu.addAction(restore_action)
+
+    def _restore_default_dock_layout(self) -> None:
+        for dock in self._dock_widgets:
+            dock.setFloating(False)
+        self.addDockWidget(
+            Qt.DockWidgetArea.LeftDockWidgetArea, self.prompt_dock
+        )
+        self.addDockWidget(
+            Qt.DockWidgetArea.RightDockWidgetArea, self.model_dock
+        )
+        self.addDockWidget(
+            Qt.DockWidgetArea.RightDockWidgetArea, self.lora_dock
+        )
+        self.splitDockWidget(
+            self.model_dock, self.lora_dock, Qt.Orientation.Horizontal
+        )
+        self.addDockWidget(
+            Qt.DockWidgetArea.BottomDockWidgetArea, self.event_dock
+        )
+        for dock in self._dock_widgets:
+            dock.show()
+        self.resizeDocks(
+            [self.prompt_dock, self.model_dock, self.lora_dock],
+            [360, 420, 420],
+            Qt.Orientation.Horizontal,
+        )
+        self.resizeDocks(
+            [self.event_dock], [240], Qt.Orientation.Vertical
+        )
+        self.events.addItem("Restored default pane layout")
+        self.statusBar().showMessage("Default pane layout restored", 5000)
+
     def _build_prompt_dock(self) -> None:
         dock = QDockWidget("Prompt and regions", self)
-        dock.setAllowedAreas(Qt.DockWidgetArea.LeftDockWidgetArea)
+        self._configure_dock(dock, "prompt_regions_dock")
         body = QWidget(dock)
         layout = QVBoxLayout(body)
         layout.addWidget(QLabel("Global prompt"))
@@ -255,6 +392,19 @@ class MainWindow(QMainWindow):
         )
         self.region_role.currentIndexChanged.connect(self._region_role_changed)
         layout.addWidget(self.region_role)
+        layout.addWidget(QLabel("Selected region face identity prompt"))
+        self.region_face_identity_prompt = QTextEdit()
+        self.region_face_identity_prompt.setMinimumHeight(75)
+        self.region_face_identity_prompt.setPlaceholderText(
+            "Stable facial identity only: trigger, person class, face, and hair…"
+        )
+        self.region_face_identity_prompt.setToolTip(
+            "These tokens can retain the baseline projector mixture and are reused "
+            "as the face-refinement identity prompt"
+        )
+        self.region_face_identity_prompt.setEnabled(False)
+        self.region_face_identity_prompt.textChanged.connect(self._region_form_edited)
+        layout.addWidget(self.region_face_identity_prompt)
         layout.addWidget(QLabel("Selected region prompt"))
         self.region_prompt = QTextEdit()
         self.region_prompt.setMinimumHeight(90)
@@ -273,10 +423,157 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.region_negative_prompt)
         dock.setWidget(self._scrollable(body))
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, dock)
+        self.prompt_dock = dock
+
+    def _build_face_refinement_tab(self) -> None:
+        page = QWidget()
+        page_layout = QVBoxLayout(page)
+        explanation = QLabel(
+            "Load a completed first-pass PNG, then refine detected faces using only "
+            "the LoRAs assigned to their current subject regions. Global LoRAs are "
+            "excluded. Crop size is the square Krea working resolution; it does not "
+            "change the detected area, which is controlled by crop padding."
+        )
+        explanation.setWordWrap(True)
+        page_layout.addWidget(explanation)
+
+        source_row = QHBoxLayout()
+        self.face_source_input = QLineEdit()
+        self.face_source_input.setReadOnly(True)
+        self.face_source_input.setPlaceholderText("Select a first-pass PNG…")
+        browse = QPushButton("Load PNG…")
+        browse.clicked.connect(self._browse_face_source)
+        latest = QPushButton("Use latest first pass")
+        latest.clicked.connect(self._use_latest_face_source)
+        source_row.addWidget(QLabel("Source"))
+        source_row.addWidget(self.face_source_input, 1)
+        source_row.addWidget(browse)
+        source_row.addWidget(latest)
+        page_layout.addLayout(source_row)
+
+        controls = QGridLayout()
+        self.face_detail_seed_input = QSpinBox()
+        self.face_detail_seed_input.setRange(0, 2_147_483_647)
+        self.face_detail_seed_input.setValue(0)
+        self.face_detail_steps_input = QSpinBox()
+        self.face_detail_steps_input.setRange(1, 100)
+        self.face_detail_steps_input.setValue(8)
+        self.face_detail_denoise_input = QDoubleSpinBox()
+        self.face_detail_denoise_input.setRange(0.05, 1.0)
+        self.face_detail_denoise_input.setDecimals(2)
+        self.face_detail_denoise_input.setSingleStep(0.05)
+        self.face_detail_denoise_input.setValue(0.15)
+        self.face_detail_denoise_input.setToolTip(
+            "How much Krea may redraw the crop. Lower this first when faces deform."
+        )
+        self.face_detail_crop_size_input = QComboBox()
+        for crop_size in (256, 512, 768, 1024):
+            self.face_detail_crop_size_input.addItem(f"{crop_size} px", crop_size)
+        self.face_detail_crop_size_input.setCurrentIndex(
+            self.face_detail_crop_size_input.findData(512)
+        )
+        self.face_detail_crop_size_input.setToolTip(
+            "Square working resolution sent through Krea. 512 is the safe default; "
+            "256 often loses facial structure, while 768/1024 use more memory."
+        )
+        self.face_detail_padding_input = QDoubleSpinBox()
+        self.face_detail_padding_input.setRange(1.0, 4.0)
+        self.face_detail_padding_input.setDecimals(2)
+        self.face_detail_padding_input.setSingleStep(0.1)
+        self.face_detail_padding_input.setValue(2.0)
+        self.face_detail_padding_input.setSuffix("× face")
+        self.face_detail_padding_input.setToolTip(
+            "Physical crop area relative to the detected face. Around 1.6–2.0 keeps "
+            "hair and head context without redrawing too much background."
+        )
+        self.face_detail_feather_input = QDoubleSpinBox()
+        self.face_detail_feather_input.setRange(0.0, 0.5)
+        self.face_detail_feather_input.setDecimals(2)
+        self.face_detail_feather_input.setSingleStep(0.02)
+        self.face_detail_feather_input.setValue(0.12)
+        self.face_detail_blend_input = QDoubleSpinBox()
+        self.face_detail_blend_input.setRange(0.0, 1.0)
+        self.face_detail_blend_input.setDecimals(2)
+        self.face_detail_blend_input.setSingleStep(0.05)
+        self.face_detail_blend_input.setValue(0.5)
+        self.face_detail_blend_input.setToolTip(
+            "Pixel-delta amount blended over the original face. Lower this when the "
+            "refined crop has seams or invented features."
+        )
+        self.face_detail_lora_scale_input = QDoubleSpinBox()
+        self.face_detail_lora_scale_input.setRange(0.0, 4.0)
+        self.face_detail_lora_scale_input.setDecimals(2)
+        self.face_detail_lora_scale_input.setSingleStep(0.05)
+        self.face_detail_lora_scale_input.setValue(0.5)
+        self.face_detail_lora_scale_input.setSuffix("×")
+        self.face_detail_lora_scale_input.setToolTip(
+            "Multiplier over each regional LoRA's saved strength. If the saved "
+            "strength is 2.0, the default applies 1.0 during face refinement."
+        )
+        self.face_detail_detector_threshold_input = QDoubleSpinBox()
+        self.face_detail_detector_threshold_input.setRange(0.05, 0.95)
+        self.face_detail_detector_threshold_input.setDecimals(2)
+        self.face_detail_detector_threshold_input.setSingleStep(0.05)
+        self.face_detail_detector_threshold_input.setValue(0.4)
+
+        control_items = (
+            ("Seed", self.face_detail_seed_input),
+            ("Steps", self.face_detail_steps_input),
+            ("Denoise", self.face_detail_denoise_input),
+            ("Crop working resolution", self.face_detail_crop_size_input),
+            ("Crop padding", self.face_detail_padding_input),
+            ("Edge feather", self.face_detail_feather_input),
+            ("Refined-pixel blend", self.face_detail_blend_input),
+            ("Regional LoRA scale", self.face_detail_lora_scale_input),
+            ("Detector threshold", self.face_detail_detector_threshold_input),
+        )
+        for index, (label, control) in enumerate(control_items):
+            row = index // 3
+            column = (index % 3) * 2
+            controls.addWidget(QLabel(label), row, column)
+            controls.addWidget(control, row, column + 1)
+        page_layout.addLayout(controls)
+
+        action_row = QHBoxLayout()
+        assignment_note = QLabel(
+            "Uses current project regions and regional LoRA assignments."
+        )
+        assignment_note.setWordWrap(True)
+        self.face_refine_button = QPushButton("Run face refinement")
+        self.face_refine_button.setEnabled(False)
+        self.face_refine_button.clicked.connect(self._run_face_refinement)
+        action_row.addWidget(assignment_note, 1)
+        action_row.addWidget(self.face_refine_button)
+        page_layout.addLayout(action_row)
+
+        previews = QSplitter(Qt.Orientation.Horizontal)
+        source_panel = QWidget()
+        source_layout = QVBoxLayout(source_panel)
+        source_layout.setContentsMargins(0, 0, 0, 0)
+        source_layout.addWidget(QLabel("First pass"))
+        self.face_source_preview = ScaledImagePreview("No source PNG loaded")
+        source_layout.addWidget(self.face_source_preview, 1)
+        result_panel = QWidget()
+        result_layout = QVBoxLayout(result_panel)
+        result_layout.setContentsMargins(0, 0, 0, 0)
+        result_layout.addWidget(QLabel("Face-refined result"))
+        self.face_result_preview = ScaledImagePreview(
+            "Run face refinement to compare the result"
+        )
+        result_layout.addWidget(self.face_result_preview, 1)
+        self.face_result_input = QLineEdit()
+        self.face_result_input.setReadOnly(True)
+        self.face_result_input.setPlaceholderText("Result path")
+        result_layout.addWidget(self.face_result_input)
+        previews.addWidget(source_panel)
+        previews.addWidget(result_panel)
+        previews.setSizes([700, 700])
+        page_layout.addWidget(previews, 1)
+        self.workspace_tabs.addTab(page, "Face refinement")
 
     def _build_model_dock(self) -> None:
         dock = QDockWidget("Model and generation settings", self)
-        dock.setAllowedAreas(Qt.DockWidgetArea.RightDockWidgetArea)
+        self._configure_dock(dock, "model_settings_dock")
         body = QWidget(dock)
         body_layout = QVBoxLayout(body)
         self.settings_tabs = QTabWidget()
@@ -583,15 +880,17 @@ class MainWindow(QMainWindow):
         page = QWidget()
         layout = QVBoxLayout(page)
         explanation = QLabel(
-            "Applies one global txtfusion.projector vector before regional LoRA "
-            "routing. It cannot be safely localized to a pixel box."
+            "Applies a txtfusion.projector vector to prompt tokens before regional "
+            "LoRA routing. Face identity prompt tokens can retain the baseline "
+            "projector mixture without creating an image-space mask."
         )
         explanation.setWordWrap(True)
         layout.addWidget(explanation)
         self.projector_enabled_input = QCheckBox("Apply global projector vector")
         self.projector_enabled_input.setChecked(False)
         self.projector_enabled_input.setToolTip(
-            "Affects all text and image tokens; regional LoRA routing remains unchanged"
+            "Applies to all prompt tokens except the protected portion of each "
+            "Face identity prompt; regional LoRA routing remains unchanged"
         )
         layout.addWidget(self.projector_enabled_input)
         form = QFormLayout()
@@ -631,6 +930,19 @@ class MainWindow(QMainWindow):
             "Multiplies every vector value before it is added to the projector weight"
         )
         form.addRow("Global multiplier", self.projector_multiplier_input)
+        self.projector_identity_protection_input = QDoubleSpinBox()
+        self.projector_identity_protection_input.setRange(0.0, 1.0)
+        self.projector_identity_protection_input.setDecimals(2)
+        self.projector_identity_protection_input.setSingleStep(0.05)
+        self.projector_identity_protection_input.setValue(1.0)
+        self.projector_identity_protection_input.setToolTip(
+            "0 applies the complete projector delta to identity tokens; 1 keeps "
+            "their original projector mixture"
+        )
+        form.addRow(
+            "Face identity protection",
+            self.projector_identity_protection_input,
+        )
         layout.addLayout(form)
         layout.addStretch(1)
         self.projector_preset_input.currentIndexChanged.connect(
@@ -676,6 +988,7 @@ class MainWindow(QMainWindow):
         preset: str,
         values: tuple[float, ...],
         multiplier: float,
+        identity_protection: float,
     ) -> None:
         self._syncing_projector_fields = True
         try:
@@ -689,6 +1002,7 @@ class MainWindow(QMainWindow):
                 )
             self.projector_preset_input.setCurrentIndex(preset_index)
             self.projector_multiplier_input.setValue(multiplier)
+            self.projector_identity_protection_input.setValue(identity_protection)
         finally:
             self._syncing_projector_fields = False
 
@@ -816,9 +1130,7 @@ class MainWindow(QMainWindow):
 
     def _build_lora_dock(self) -> None:
         dock = QDockWidget("LoRA library and scope", self)
-        dock.setAllowedAreas(
-            Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea
-        )
+        self._configure_dock(dock, "lora_library_dock")
         body = QWidget(dock)
         columns = QHBoxLayout(body)
         library_group = QGroupBox("Library")
@@ -849,7 +1161,35 @@ class MainWindow(QMainWindow):
         )
         self.lora_strength_input.valueChanged.connect(self._lora_strength_changed)
         strength_row.addRow("Selected strength", self.lora_strength_input)
+        self.lora_routing_mode_input = QComboBox()
+        self.lora_routing_mode_input.addItem("Standard regional", STANDARD_LORA_ROUTING)
+        self.lora_routing_mode_input.addItem(
+            "Character identity (face)", CHARACTER_IDENTITY_LORA_ROUTING
+        )
+        self.lora_routing_mode_input.setEnabled(False)
+        self.lora_routing_mode_input.setToolTip(
+            "Character identity adds an explicit face-identity anchor and confines "
+            "the LoRA's text-side delta to its trigger tokens."
+        )
+        self.lora_routing_mode_input.currentIndexChanged.connect(
+            self._lora_routing_mode_changed
+        )
+        strength_row.addRow("Routing mode", self.lora_routing_mode_input)
+        self.lora_trigger_input = QLineEdit()
+        self.lora_trigger_input.setEnabled(False)
+        self.lora_trigger_input.setPlaceholderText("Training trigger, for example lface")
+        self.lora_trigger_input.setToolTip(
+            "Exact trigger learned during LoRA training. This is inserted into the "
+            "character identity anchor."
+        )
+        self.lora_trigger_input.editingFinished.connect(self._lora_trigger_edited)
+        strength_row.addRow("Identity trigger", self.lora_trigger_input)
         layout.addLayout(strength_row)
+        self.lora_routing_note = QLabel(
+            "Standard routing applies the LoRA to every token in each assigned region clause."
+        )
+        self.lora_routing_note.setWordWrap(True)
+        layout.addWidget(self.lora_routing_note)
         self.lora_diagnostic_button = QPushButton("Inspect selected LoRA…")
         self.lora_diagnostic_button.setEnabled(False)
         self.lora_diagnostic_button.clicked.connect(self._diagnose_selected_lora)
@@ -870,7 +1210,7 @@ class MainWindow(QMainWindow):
 
     def _build_event_dock(self) -> None:
         dock = QDockWidget("Events", self)
-        dock.setAllowedAreas(Qt.DockWidgetArea.BottomDockWidgetArea)
+        self._configure_dock(dock, "events_dock")
         splitter = QSplitter(Qt.Orientation.Horizontal, dock)
         self.events = EventListWidget(splitter)
         self.resource_monitor = ResourceMonitorWidget(splitter)
@@ -881,6 +1221,7 @@ class MainWindow(QMainWindow):
         splitter.setSizes([1100, 320])
         dock.setWidget(splitter)
         self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, dock)
+        self.event_dock = dock
 
     def _browse_output_directory(self) -> None:
         selected = QFileDialog.getExistingDirectory(
@@ -892,6 +1233,136 @@ class MainWindow(QMainWindow):
             self._output_directory = Path(selected).expanduser().resolve()
             self.output_directory_input.setText(str(self._output_directory))
             self.events.addItem(f"Output folder set to {self._output_directory}")
+
+    def _latest_first_pass_output(self) -> Path | None:
+        if not self._output_directory.is_dir():
+            return None
+        candidates = tuple(
+            path
+            for path in self._output_directory.glob("*.png")
+            if "face_refined" not in path.stem.casefold()
+            and not path.stem.casefold().startswith("face-detail-verify")
+        )
+        return max(candidates, key=lambda path: path.stat().st_mtime, default=None)
+
+    def _set_face_refinement_source(self, path: Path) -> bool:
+        source_path = path.expanduser().resolve()
+        if source_path.suffix.casefold() != ".png" or not source_path.is_file():
+            return False
+        if not self.face_source_preview.set_image(source_path):
+            return False
+        self._face_source_path = source_path
+        self.face_source_input.setText(str(source_path))
+        self._face_result_path = None
+        self.face_result_input.clear()
+        self.face_result_preview.clear_image(
+            "Run face refinement to compare the result"
+        )
+        self.face_refine_button.setEnabled(
+            bool(not self._generation_active and self.artifacts and self.artifacts.complete)
+        )
+        return True
+
+    def _browse_face_source(self) -> None:
+        start = (
+            self._face_source_path.parent
+            if self._face_source_path is not None
+            else self._output_directory
+        )
+        selected, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select first-pass PNG",
+            str(start),
+            "PNG images (*.png)",
+        )
+        if not selected:
+            return
+        if not self._set_face_refinement_source(Path(selected)):
+            QMessageBox.warning(self, "Could not load PNG", selected)
+            return
+        self.events.addItem(f"Face-refinement source set to {selected}")
+
+    def _use_latest_face_source(self, _checked=False, *, show_message: bool = True) -> None:
+        latest = self._latest_first_pass_output()
+        if latest is None or not self._set_face_refinement_source(latest):
+            if show_message:
+                self.statusBar().showMessage("No first-pass PNG found", 5000)
+            return
+        if show_message:
+            self.events.addItem(f"Loaded latest first-pass PNG: {latest.name}")
+
+    def _run_face_refinement(self) -> None:
+        source_path = self._face_source_path
+        if source_path is None or not source_path.is_file():
+            QMessageBox.warning(
+                self, "Source PNG required", "Load a first-pass PNG before refining."
+            )
+            return
+        loras = self._lora_payload()
+        regional_loras = [
+            lora
+            for lora in loras
+            if not lora["global"]
+            and lora["region_ids"]
+            and float(lora["strength"]) != 0.0
+        ]
+        if not regional_loras:
+            message = "Assign at least one enabled LoRA to a subject region first."
+            self.events.addItem(message)
+            QMessageBox.warning(self, "Regional LoRA required", message)
+            return
+        pixmap = QPixmap(str(source_path))
+        if pixmap.isNull():
+            QMessageBox.warning(self, "Could not load PNG", str(source_path))
+            return
+        base_width = max(1, self.width_input.value())
+        base_height = max(1, self.height_input.value())
+        scale_x = pixmap.width() / base_width
+        scale_y = pixmap.height() / base_height
+        regions = [
+            {
+                "id": region.region_id,
+                "name": region.name,
+                "box": {
+                    "x0": region.box.x0 * scale_x,
+                    "y0": region.box.y0 * scale_y,
+                    "x1": region.box.x1 * scale_x,
+                    "y1": region.box.y1 * scale_y,
+                },
+                "prompt": region.prompt,
+                "negative_prompt": region.negative_prompt,
+                "face_identity_prompt": region.face_identity_prompt,
+                "enabled": region.enabled,
+                "priority": region.priority,
+                "spatial_role": region.spatial_role,
+            }
+            for region in self.regions
+        ]
+        payload = self._worker_payload()
+        payload.update(
+            {
+                "image_path": str(source_path),
+                "output_directory": str(source_path.parent),
+                "seed": self.face_detail_seed_input.value(),
+                "steps": self.face_detail_steps_input.value(),
+                "denoise": self.face_detail_denoise_input.value(),
+                "crop_size": int(self.face_detail_crop_size_input.currentData()),
+                "padding": self.face_detail_padding_input.value(),
+                "feather": self.face_detail_feather_input.value(),
+                "blend": self.face_detail_blend_input.value(),
+                "lora_scale": self.face_detail_lora_scale_input.value(),
+                "detector_threshold": (
+                    self.face_detail_detector_threshold_input.value()
+                ),
+                "regions": regions,
+                "loras": loras,
+            }
+        )
+        self._pending_face_refinement_payload = payload
+        self._generation_completed = False
+        self._active_task = "face_refinement"
+        self._set_generation_active(True)
+        self._advance_pending_generation()
 
     def _browse_upscale_model(self) -> None:
         start = (
@@ -954,6 +1425,14 @@ class MainWindow(QMainWindow):
         state = "complete" if self.artifacts.complete else "incomplete"
         self.generate_button.setEnabled(
             bool(self.artifacts.complete and not self._generation_active)
+        )
+        self.face_refine_button.setEnabled(
+            bool(
+                self.artifacts.complete
+                and not self._generation_active
+                and self._face_source_path is not None
+                and self._face_source_path.is_file()
+            )
         )
         self.events.addItem(f"Model discovery {state}")
         self.statusBar().showMessage(f"Local model set: {state}")
@@ -1076,6 +1555,7 @@ class MainWindow(QMainWindow):
         self.region_name.setEnabled(selected)
         self.region_role.setEnabled(selected)
         self.region_prompt.setEnabled(selected)
+        self.region_face_identity_prompt.setEnabled(selected)
         self.region_negative_prompt.setEnabled(selected)
         self._loading_region_form = True
         try:
@@ -1085,12 +1565,16 @@ class MainWindow(QMainWindow):
                 role_index = self.region_role.findData(region.spatial_role)
                 self.region_role.setCurrentIndex(max(0, role_index))
                 self.region_prompt.setPlainText(region.prompt)
+                self.region_face_identity_prompt.setPlainText(
+                    region.face_identity_prompt
+                )
                 self.region_negative_prompt.setPlainText(region.negative_prompt)
                 self.canvas.select_region(region.region_id)
             else:
                 self.region_name.clear()
                 self.region_role.setCurrentIndex(0)
                 self.region_prompt.clear()
+                self.region_face_identity_prompt.clear()
                 self.region_negative_prompt.clear()
         finally:
             self._loading_region_form = False
@@ -1150,6 +1634,7 @@ class MainWindow(QMainWindow):
         self.regions[row] = replace(
             self.regions[row],
             prompt=self.region_prompt.toPlainText(),
+            face_identity_prompt=self.region_face_identity_prompt.toPlainText(),
             negative_prompt=self.region_negative_prompt.toPlainText(),
         )
 
@@ -1196,7 +1681,12 @@ class MainWindow(QMainWindow):
     def _lora_label(self, lora_id: str) -> str:
         entry = self.lora_library.get(lora_id)
         binding = self.lora_library.binding_for(lora_id)
-        return f"{entry.display_name}  ×{binding.strength:.2f}"
+        identity = (
+            f"  [identity: {binding.trigger_phrase}]"
+            if binding.routing_mode == CHARACTER_IDENTITY_LORA_ROUTING
+            else ""
+        )
+        return f"{entry.display_name}  ×{binding.strength:.2f}{identity}"
 
     def _remove_selected_lora(self) -> None:
         item = self.lora_list.currentItem()
@@ -1240,6 +1730,23 @@ class MainWindow(QMainWindow):
                 )
         finally:
             self._syncing_lora_strength = False
+        self._syncing_lora_routing = True
+        try:
+            self.lora_routing_mode_input.setEnabled(lora_id is not None)
+            if lora_id is None:
+                self.lora_routing_mode_input.setCurrentIndex(
+                    self.lora_routing_mode_input.findData(STANDARD_LORA_ROUTING)
+                )
+                self.lora_trigger_input.clear()
+            else:
+                binding = self.lora_library.binding_for(lora_id)
+                self.lora_routing_mode_input.setCurrentIndex(
+                    self.lora_routing_mode_input.findData(binding.routing_mode)
+                )
+                self.lora_trigger_input.setText(binding.trigger_phrase)
+        finally:
+            self._syncing_lora_routing = False
+        self._refresh_lora_routing_controls()
 
     def _lora_strength_changed(self, strength: float) -> None:
         if self._syncing_lora_strength:
@@ -1253,6 +1760,78 @@ class MainWindow(QMainWindow):
             item.setText(self._lora_label(lora_id))
         entry = self.lora_library.get(lora_id)
         self.events.addItem(f"Set {entry.display_name} strength to {strength:.2f}")
+
+    def _refresh_lora_routing_controls(self) -> None:
+        lora_id = self._current_lora_id()
+        character_identity = (
+            lora_id is not None
+            and self.lora_routing_mode_input.currentData()
+            == CHARACTER_IDENTITY_LORA_ROUTING
+        )
+        self.lora_trigger_input.setEnabled(character_identity)
+        self.lora_routing_note.setText(
+            "Character identity routing adds a person/face identity instruction to "
+            "each assigned region. The LoRA keeps full regional text coverage and "
+            "its image delta remains confined to the region box."
+            if character_identity
+            else "Standard routing applies the LoRA to every token in each assigned "
+            "region clause."
+        )
+
+    def _lora_routing_mode_changed(self) -> None:
+        if self._syncing_lora_routing:
+            return
+        lora_id = self._current_lora_id()
+        if lora_id is None:
+            return
+        routing_mode = str(self.lora_routing_mode_input.currentData())
+        binding = self.lora_library.binding_for(lora_id)
+        if (
+            routing_mode == CHARACTER_IDENTITY_LORA_ROUTING
+            and binding.global_scope
+        ):
+            self._syncing_lora_routing = True
+            try:
+                self.lora_routing_mode_input.setCurrentIndex(
+                    self.lora_routing_mode_input.findData(binding.routing_mode)
+                )
+            finally:
+                self._syncing_lora_routing = False
+            self.events.addItem(
+                "Assign the LoRA to one or more regions before enabling Character identity routing"
+            )
+            self._refresh_lora_routing_controls()
+            return
+        self.lora_library.set_routing_mode(lora_id, routing_mode)
+        self._refresh_lora_routing_controls()
+        item = self._lora_list_item(lora_id)
+        if item is not None:
+            item.setText(self._lora_label(lora_id))
+        entry = self.lora_library.get(lora_id)
+        self.events.addItem(
+            f"Set {entry.display_name} routing to "
+            f"{'Character identity' if routing_mode == CHARACTER_IDENTITY_LORA_ROUTING else 'Standard'}"
+        )
+
+    def _lora_trigger_edited(self) -> None:
+        if self._syncing_lora_routing:
+            return
+        lora_id = self._current_lora_id()
+        if lora_id is None:
+            return
+        previous = self.lora_library.binding_for(lora_id).trigger_phrase
+        phrase = self.lora_trigger_input.text().strip()
+        if not phrase:
+            self.lora_trigger_input.setText(previous)
+            self.events.addItem("Character identity trigger cannot be empty")
+            return
+        self.lora_library.set_trigger_phrase(lora_id, phrase)
+        self.lora_trigger_input.setText(phrase)
+        item = self._lora_list_item(lora_id)
+        if item is not None:
+            item.setText(self._lora_label(lora_id))
+        entry = self.lora_library.get(lora_id)
+        self.events.addItem(f"Set {entry.display_name} identity trigger to {phrase!r}")
 
     def _lora_payload(self, lora_ids: set[str] | None = None) -> list[dict[str, object]]:
         payload = []
@@ -1268,6 +1847,8 @@ class MainWindow(QMainWindow):
                     "strength": binding.strength,
                     "global": binding.global_scope,
                     "region_ids": list(binding.region_ids),
+                    "routing_mode": binding.routing_mode,
+                    "trigger_phrase": binding.trigger_phrase,
                 }
             )
         return payload
@@ -1337,7 +1918,18 @@ class MainWindow(QMainWindow):
                 and item.checkState() == Qt.CheckState.Checked
             )
             binding = self.lora_library.assign_regions(lora_id, selected_regions)
+        if (
+            binding.global_scope
+            and binding.routing_mode == CHARACTER_IDENTITY_LORA_ROUTING
+        ):
+            binding = self.lora_library.set_routing_mode(
+                lora_id, STANDARD_LORA_ROUTING
+            )
+            self.events.addItem(
+                "Character identity routing returned to Standard because the LoRA is Global"
+            )
         self._refresh_lora_scope()
+        self._selected_lora_changed(self.lora_list.currentItem(), None)
         entry = self.lora_library.get(lora_id)
         names = {
             region.region_id: region.name
@@ -1375,6 +1967,8 @@ class MainWindow(QMainWindow):
                 global_scope=(binding := self.lora_library.binding_for(entry.lora_id)).global_scope,
                 region_ids=binding.region_ids,
                 strength=binding.strength,
+                routing_mode=binding.routing_mode,
+                trigger_phrase=binding.trigger_phrase,
             )
             for entry in self.lora_library.entries()
         )
@@ -1406,6 +2000,20 @@ class MainWindow(QMainWindow):
             projector_preset=str(self.projector_preset_input.currentData()),
             projector_values=self._projector_values(),
             projector_multiplier=self.projector_multiplier_input.value(),
+            projector_identity_protection=(
+                self.projector_identity_protection_input.value()
+            ),
+            face_detail_seed=self.face_detail_seed_input.value(),
+            face_detail_steps=self.face_detail_steps_input.value(),
+            face_detail_denoise=self.face_detail_denoise_input.value(),
+            face_detail_crop_size=int(self.face_detail_crop_size_input.currentData()),
+            face_detail_padding=self.face_detail_padding_input.value(),
+            face_detail_feather=self.face_detail_feather_input.value(),
+            face_detail_blend=self.face_detail_blend_input.value(),
+            face_detail_lora_scale=self.face_detail_lora_scale_input.value(),
+            face_detail_detector_threshold=(
+                self.face_detail_detector_threshold_input.value()
+            ),
             post_upscale=self.post_upscale_input.isChecked(),
             upscale_scale=int(self.upscale_scale_input.currentData()),
             upscale_method=str(self.upscale_method_input.currentData()),
@@ -1415,6 +2023,39 @@ class MainWindow(QMainWindow):
             runtime=runtime,
             background_image=self._background_image_path,
         )
+
+    def _clear_generation_canvas(self) -> None:
+        self.canvas.clear_image()
+        self._background_image_path = None
+        self.events.addItem("Cleared generation canvas image")
+        self.statusBar().showMessage(
+            "Canvas image cleared; regions and prompts were kept", 5000
+        )
+
+    def _new_project(self) -> None:
+        answer = QMessageBox.question(
+            self,
+            "Start a new project?",
+            "This clears the current prompts, regions, LoRAs, project settings, "
+            "and image previews. Saved project and PNG files are not deleted.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+
+        self.settings = self._default_settings
+        state = ProjectState(
+            canvas_width=self._default_settings.default_width,
+            canvas_height=self._default_settings.default_height,
+        )
+        self._apply_project_state(state, load_latest_face_source=False)
+        self._current_project_path = None
+        self.setWindowTitle("K2 Region Lab")
+        self.events.addItem("Started a new project with default settings")
+        self.statusBar().showMessage("New project ready", 5000)
+        if self.settings.auto_start_worker:
+            self._start_worker()
 
     def _open_project(self) -> None:
         selected, _ = QFileDialog.getOpenFileName(
@@ -1485,13 +2126,10 @@ class MainWindow(QMainWindow):
             or Path(saved_output).expanduser() == legacy_output
             else Path(saved_output).expanduser()
         )
-        # A launch-time interpreter selection is an operator override. This lets
-        # an old project run on a newer ROCm worker without first rewriting it.
-        worker_python = (
-            current.worker_python
-            if "K2LAB_WORKER_PYTHON" in os.environ
-            else Path(runtime.get("worker_python", current.worker_python)).expanduser()
-        )
+        # The worker interpreter is an application/runtime choice, not project
+        # content. In particular, opening an older project must not silently
+        # downgrade a launch configured for a newer ROCm environment.
+        worker_python = current.worker_python
         return AppSettings(
             model_directories=ModelDirectories(
                 Path(
@@ -1529,7 +2167,25 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "Project load failed", str(error))
             return False
 
+        self._apply_project_state(state, load_latest_face_source=True)
+        self._current_project_path = path.expanduser().resolve()
+        self.setWindowTitle(f"K2 Region Lab — {self._current_project_path.name}")
+        self.events.addItem(f"Opened project {self._current_project_path}")
+        self.statusBar().showMessage(f"Opened {self._current_project_path.name}", 5000)
+        if self.settings.auto_start_worker:
+            self._start_worker()
+        return True
+
+    def _apply_project_state(
+        self, state: ProjectState, *, load_latest_face_source: bool
+    ) -> None:
         self.worker_client.stop()
+        self._pending_generation_payload = None
+        self._pending_face_refinement_payload = None
+        self._active_task = None
+        self._worker_bootstrap_stage = None
+        self._generation_completed = False
+        self._set_generation_active(False)
         self.settings = self._settings_from_project(state)
         self.worker_client.settings = self.settings
         self.width_input.setValue(state.canvas_width)
@@ -1563,6 +2219,21 @@ class MainWindow(QMainWindow):
             preset=state.projector_preset,
             values=state.projector_values,
             multiplier=state.projector_multiplier,
+            identity_protection=state.projector_identity_protection,
+        )
+        self.face_detail_seed_input.setValue(state.face_detail_seed)
+        self.face_detail_steps_input.setValue(state.face_detail_steps)
+        self.face_detail_denoise_input.setValue(state.face_detail_denoise)
+        crop_size_index = self.face_detail_crop_size_input.findData(
+            state.face_detail_crop_size
+        )
+        self.face_detail_crop_size_input.setCurrentIndex(max(0, crop_size_index))
+        self.face_detail_padding_input.setValue(state.face_detail_padding)
+        self.face_detail_feather_input.setValue(state.face_detail_feather)
+        self.face_detail_blend_input.setValue(state.face_detail_blend)
+        self.face_detail_lora_scale_input.setValue(state.face_detail_lora_scale)
+        self.face_detail_detector_threshold_input.setValue(
+            state.face_detail_detector_threshold
         )
         self.post_upscale_input.setChecked(state.post_upscale)
         scale_index = self.upscale_scale_input.findData(state.upscale_scale)
@@ -1622,6 +2293,9 @@ class MainWindow(QMainWindow):
             else:
                 self.lora_library.assign_regions(lora_id, saved_lora.region_ids)
             self.lora_library.set_strength(lora_id, saved_lora.strength)
+            if saved_lora.trigger_phrase:
+                self.lora_library.set_trigger_phrase(lora_id, saved_lora.trigger_phrase)
+            self.lora_library.set_routing_mode(lora_id, saved_lora.routing_mode)
             item = self._lora_list_item(lora_id)
             if item is not None:
                 item.setText(self._lora_label(lora_id))
@@ -1629,19 +2303,26 @@ class MainWindow(QMainWindow):
 
         self.canvas.clear_image()
         self._background_image_path = None
+        self._face_source_path = None
+        self._face_result_path = None
+        self.face_source_input.clear()
+        self.face_result_input.clear()
+        self.face_source_preview.clear_image("No source PNG loaded")
+        self.face_result_preview.clear_image(
+            "Run face refinement to compare the result"
+        )
+        self.face_refine_button.setEnabled(False)
         if state.background_image and state.background_image.is_file():
             if self.canvas.set_image(str(state.background_image)):
                 self._background_image_path = state.background_image
+                self._set_face_refinement_source(state.background_image)
+        elif load_latest_face_source:
+            self._use_latest_face_source(show_message=False)
         if self.region_list.count():
             self.region_list.setCurrentRow(0)
-        self._current_project_path = path.expanduser().resolve()
-        self.setWindowTitle(f"K2 Region Lab — {self._current_project_path.name}")
+        else:
+            self._selected_region_changed(-1)
         self.discover_models()
-        self.events.addItem(f"Opened project {self._current_project_path}")
-        self.statusBar().showMessage(f"Opened {self._current_project_path.name}", 5000)
-        if self.settings.auto_start_worker:
-            self._start_worker()
-        return True
 
     def _worker_payload(self) -> dict[str, object]:
         directories = self.settings.model_directories
@@ -1733,6 +2414,14 @@ class MainWindow(QMainWindow):
         self.memory_status.setText("K2 workers stopped; GPU allocations released")
         self.load_model_button.setEnabled(False)
         self.generate_button.setEnabled(bool(self.artifacts and self.artifacts.complete))
+        self.face_refine_button.setEnabled(
+            bool(
+                self.artifacts
+                and self.artifacts.complete
+                and self._face_source_path is not None
+                and self._face_source_path.is_file()
+            )
+        )
         self._set_memory_controls_enabled(True)
         if stopped:
             self.events.addItem(
@@ -1774,10 +2463,20 @@ class MainWindow(QMainWindow):
             self.worker_client.send(CommandKind.LOAD_MODEL, self._worker_payload())
 
     def _advance_pending_generation(self) -> None:
-        if self._pending_generation_payload is None or self._worker_bootstrap_stage:
+        pending_payload = (
+            self._pending_face_refinement_payload
+            if self._pending_face_refinement_payload is not None
+            else self._pending_generation_payload
+        )
+        if pending_payload is None or self._worker_bootstrap_stage:
             return
         if not self.worker_client.running:
-            self.events.addItem("Starting a fresh disposable generation worker")
+            task_name = (
+                "face-refinement"
+                if self._pending_face_refinement_payload is not None
+                else "generation"
+            )
+            self.events.addItem(f"Starting a fresh disposable {task_name} worker")
             self._start_worker()
             return
         if not self._accelerator_available:
@@ -1791,16 +2490,27 @@ class MainWindow(QMainWindow):
         if not self._model_loaded:
             self._load_worker_model()
             return
-        payload = self._pending_generation_payload
+        is_refinement = self._pending_face_refinement_payload is not None
+        command = (
+            CommandKind.REFINE_FACES
+            if is_refinement
+            else CommandKind.GENERATE_BASELINE
+        )
         try:
-            self.worker_client.send(CommandKind.GENERATE_BASELINE, payload)
+            self.worker_client.send(command, pending_payload)
         except RuntimeError as error:
             self._pending_generation_payload = None
+            self._pending_face_refinement_payload = None
+            self._active_task = None
             self._set_generation_active(False)
-            self.events.addItem(f"Could not start generation: {error}")
+            self.events.addItem(f"Could not start worker task: {error}")
             return
-        self._pending_generation_payload = None
-        self.events.addItem("Fresh worker ready; generation dispatched")
+        if is_refinement:
+            self._pending_face_refinement_payload = None
+            self.events.addItem("Fresh worker ready; face refinement dispatched")
+        else:
+            self._pending_generation_payload = None
+            self.events.addItem("Fresh worker ready; generation dispatched")
 
     def _generate_baseline(self) -> None:
         self._filename_prefix_edited()
@@ -1871,6 +2581,9 @@ class MainWindow(QMainWindow):
                 "projector_preset": str(self.projector_preset_input.currentData()),
                 "projector_values": list(self._projector_values()),
                 "projector_multiplier": self.projector_multiplier_input.value(),
+                "projector_identity_protection": (
+                    self.projector_identity_protection_input.value()
+                ),
                 "post_upscale": self.post_upscale_input.isChecked(),
                 "upscale_scale": int(self.upscale_scale_input.currentData()),
                 "upscale_method": str(self.upscale_method_input.currentData()),
@@ -1891,6 +2604,7 @@ class MainWindow(QMainWindow):
                         },
                         "prompt": region.prompt,
                         "negative_prompt": region.negative_prompt,
+                        "face_identity_prompt": region.face_identity_prompt,
                         "enabled": region.enabled,
                         "priority": region.priority,
                         "spatial_role": region.spatial_role,
@@ -1902,6 +2616,7 @@ class MainWindow(QMainWindow):
         )
         self._pending_generation_payload = payload
         self._generation_completed = False
+        self._active_task = "generation"
         self._set_generation_active(True)
         self._advance_pending_generation()
 
@@ -1924,6 +2639,9 @@ class MainWindow(QMainWindow):
                 else 1.0
             ),
             emphases=tuple(self.prompt_emphases),
+            character_identity_triggers=character_identity_triggers(
+                self._lora_payload()
+            ),
         )
         preview = QDialog(self)
         preview.setWindowTitle("Unified spatial prompt")
@@ -1956,6 +2674,15 @@ class MainWindow(QMainWindow):
         self.generate_button.setEnabled(
             bool(not active and self.artifacts is not None and self.artifacts.complete)
         )
+        self.face_refine_button.setEnabled(
+            bool(
+                not active
+                and self.artifacts is not None
+                and self.artifacts.complete
+                and self._face_source_path is not None
+                and self._face_source_path.is_file()
+            )
+        )
         self.stop_generation_button.setEnabled(active and self.worker_client.running)
 
     def _stop_generation(self) -> None:
@@ -1963,20 +2690,23 @@ class MainWindow(QMainWindow):
             return
         pid = self.worker_client.cancel_generation()
         self._pending_generation_payload = None
+        self._pending_face_refinement_payload = None
         self._worker_bootstrap_stage = None
+        task = self._active_task or "worker task"
+        self._active_task = None
         self._set_generation_active(False)
         self._accelerator_available = False
         self._model_loaded = False
         self.worker_status.setText("Stopped")
         self.accelerator_status.setText("Not probed")
-        self.memory_status.setText("Generation stopped; worker memory released")
+        self.memory_status.setText("Worker task stopped; memory released")
         self.load_model_button.setEnabled(False)
         self.generate_button.setEnabled(bool(self.artifacts and self.artifacts.complete))
         self._set_memory_controls_enabled(True)
         detail = f" (worker PID {pid})" if pid is not None else ""
-        self.events.addItem(f"Generation stopped by user{detail}; GPU/RAM released")
+        self.events.addItem(f"{task.replace('_', ' ').title()} stopped{detail}; GPU/RAM released")
         self.statusBar().showMessage(
-            "Generation stopped — make changes, then click Generate when ready", 10000
+            "Worker task stopped — settings and loaded images were preserved", 10000
         )
 
     def _worker_event(self, event: dict) -> None:
@@ -2025,13 +2755,18 @@ class MainWindow(QMainWindow):
             if message == "Worker runtime probe complete":
                 self._worker_bootstrap_stage = None
                 if (
-                    self._pending_generation_payload is not None
+                    (
+                        self._pending_generation_payload is not None
+                        or self._pending_face_refinement_payload is not None
+                    )
                     and not self._accelerator_available
                 ):
                     self._pending_generation_payload = None
+                    self._pending_face_refinement_payload = None
+                    self._active_task = None
                     self._set_generation_active(False)
                     self.events.addItem(
-                        "Automatic generation stopped: accelerator probe failed"
+                        "Automatic worker task stopped: accelerator probe failed"
                     )
         if "manifests" in payload:
             compatible = payload.get("complete") and all(
@@ -2039,11 +2774,16 @@ class MainWindow(QMainWindow):
             )
             self._models_compatible = bool(compatible)
             self._worker_bootstrap_stage = None
-            if self._pending_generation_payload is not None and not compatible:
+            if (
+                self._pending_generation_payload is not None
+                or self._pending_face_refinement_payload is not None
+            ) and not compatible:
                 self._pending_generation_payload = None
+                self._pending_face_refinement_payload = None
+                self._active_task = None
                 self._set_generation_active(False)
                 self.events.addItem(
-                    "Automatic generation stopped: model validation failed"
+                    "Automatic worker task stopped: model validation failed"
                 )
             self.load_model_button.setEnabled(
                 bool(compatible and self._accelerator_available and not self._model_loaded)
@@ -2116,6 +2856,7 @@ class MainWindow(QMainWindow):
             image_path = payload.get("image_path")
             if image_path and self.canvas.set_image(image_path):
                 self._background_image_path = Path(image_path)
+                self._set_face_refinement_source(Path(image_path))
                 self.statusBar().showMessage(f"Image saved to {image_path}")
             if payload.get("oom_recovered"):
                 self.reserve_vram_input.setValue(
@@ -2129,16 +2870,37 @@ class MainWindow(QMainWindow):
             # The worker exits immediately after this event. Keep Generate disabled
             # until QProcess confirms that all GPU/system allocations are gone.
             self.generate_button.setEnabled(False)
-        elif message == "Generation worker releasing GPU and system RAM":
-            self.memory_status.setText("Releasing generation worker memory…")
+            self.face_refine_button.setEnabled(False)
+        elif message == "Face refinement complete":
+            self._generation_completed = True
+            self._set_generation_active(False)
+            image_path = payload.get("image_path")
+            if image_path:
+                result_path = Path(image_path)
+                if self.face_result_preview.set_image(result_path):
+                    self._face_result_path = result_path
+                    self.face_result_input.setText(str(result_path))
+                    self.statusBar().showMessage(
+                        f"Face-refined image saved to {result_path}"
+                    )
+            self.generate_button.setEnabled(False)
+            self.face_refine_button.setEnabled(False)
+        elif message in {
+            "Generation worker releasing GPU and system RAM",
+            "Face refinement worker releasing GPU and system RAM",
+        }:
+            self.memory_status.setText("Releasing disposable worker memory…")
         elif state == "error":
             self._pending_generation_payload = None
+            self._pending_face_refinement_payload = None
             self._worker_bootstrap_stage = None
+            self._active_task = None
             self._set_generation_active(False)
             if message != "LoRA diagnostics complete":
                 self._model_loaded = False
             self.load_model_button.setEnabled(self._accelerator_available)
             self.generate_button.setEnabled(False)
+            self.face_refine_button.setEnabled(False)
             self._set_memory_controls_enabled(True)
             normalized_message = message.casefold()
             if any(
@@ -2155,7 +2917,10 @@ class MainWindow(QMainWindow):
                     15000,
                 )
 
-        if self._pending_generation_payload is not None and state != "error":
+        if (
+            self._pending_generation_payload is not None
+            or self._pending_face_refinement_payload is not None
+        ) and state != "error":
             self._advance_pending_generation()
 
     def _worker_stderr(self, output: str) -> None:
@@ -2171,6 +2936,9 @@ class MainWindow(QMainWindow):
             self._generation_completed = False
             if not completed:
                 self._pending_generation_payload = None
+                self._pending_face_refinement_payload = None
+            completed_task = self._active_task
+            self._active_task = None
             self._model_loaded = False
             self._accelerator_available = False
             self._models_compatible = False
@@ -2181,9 +2949,11 @@ class MainWindow(QMainWindow):
             self.validate_models_button.setEnabled(True)
             self._set_memory_controls_enabled(True)
             if completed:
-                self.memory_status.setText("GPU and generation RAM released")
+                self.memory_status.setText("GPU and worker RAM released")
                 self.events.addItem(
-                    "Disposable generation worker exited; GPU/system RAM released"
+                    "Disposable "
+                    f"{(completed_task or 'task').replace('_', ' ')} worker exited; "
+                    "GPU/system RAM released"
                 )
 
     def closeEvent(self, event) -> None:

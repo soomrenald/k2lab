@@ -8,12 +8,22 @@ from k2_region_lab.model import read_safetensors_header
 
 
 _T = TypeVar("_T")
-_ADAPTER_SUFFIXES = (
-    ".lora_A.weight",
-    ".lora_B.weight",
-    ".lora_down.weight",
-    ".lora_up.weight",
+_LORA_PAIR_SUFFIXES = (
+    (".lora_A.weight", ".lora_B.weight"),
+    (".lora_down.weight", ".lora_up.weight"),
 )
+_LOKR_COMPONENT_SUFFIXES = (
+    ".lokr_w1",
+    ".lokr_w2",
+    ".lokr_w1_a",
+    ".lokr_w1_b",
+    ".lokr_w2_a",
+    ".lokr_w2_b",
+    ".lokr_t2",
+)
+_ADAPTER_SUFFIXES = tuple(
+    suffix for pair in _LORA_PAIR_SUFFIXES for suffix in pair
+) + _LOKR_COMPONENT_SUFFIXES
 _AUXILIARY_SUFFIXES = (".alpha", ".dora_scale")
 _KREA_INTERNAL_PREFIXES = ("blocks.", "txtfusion.")
 
@@ -75,6 +85,36 @@ def adapter_prefixes(keys: Iterable[str]) -> tuple[str, ...]:
     return tuple(sorted(prefixes))
 
 
+def _has_complete_lora_pair(prefix: str, tensors: dict[str, Any]) -> bool:
+    return any(
+        f"{prefix}{down}" in tensors and f"{prefix}{up}" in tensors
+        for down, up in _LORA_PAIR_SUFFIXES
+    )
+
+
+def _has_lokr_component(
+    prefix: str,
+    tensors: dict[str, Any],
+    component: str,
+) -> bool:
+    whole = f"{prefix}.lokr_{component}"
+    return whole in tensors or (
+        f"{whole}_a" in tensors and f"{whole}_b" in tensors
+    )
+
+
+def _has_complete_lokr(prefix: str, tensors: dict[str, Any]) -> bool:
+    return _has_lokr_component(prefix, tensors, "w1") and _has_lokr_component(
+        prefix, tensors, "w2"
+    )
+
+
+def _adapter_type(prefix: str, tensors: dict[str, Any]) -> str:
+    if any(f"{prefix}{suffix}" in tensors for suffix in _LOKR_COMPONENT_SUFFIXES):
+        return "lokr"
+    return "lora"
+
+
 def inspect_lora_header(path: Path) -> dict[str, Any]:
     header = read_safetensors_header(path)
     metadata = header.get("__metadata__", {})
@@ -88,12 +128,27 @@ def inspect_lora_header(path: Path) -> dict[str, Any]:
     prefixes = adapter_prefixes(tensors)
     ranks = Counter()
     complete_pairs = 0
+    adapter_types = Counter()
     for prefix in prefixes:
-        a = tensors.get(f"{prefix}.lora_A.weight")
-        b = tensors.get(f"{prefix}.lora_B.weight")
-        if a is not None and b is not None:
+        adapter_type = _adapter_type(prefix, tensors)
+        adapter_types[adapter_type] += 1
+        complete = (
+            _has_complete_lokr(prefix, tensors)
+            if adapter_type == "lokr"
+            else _has_complete_lora_pair(prefix, tensors)
+        )
+        if complete:
             complete_pairs += 1
-            shape = a.get("shape", [])
+        if adapter_type == "lora":
+            rank_tensor = next(
+                (
+                    tensors[f"{prefix}{down}"]
+                    for down, _up in _LORA_PAIR_SUFFIXES
+                    if f"{prefix}{down}" in tensors
+                ),
+                None,
+            )
+            shape = rank_tensor.get("shape", []) if rank_tensor is not None else []
             if shape:
                 ranks[int(shape[0])] += 1
     namespaces = Counter(
@@ -105,6 +160,7 @@ def inspect_lora_header(path: Path) -> dict[str, Any]:
         "tensor_count": len(tensors),
         "adapter_count": len(prefixes),
         "complete_adapter_pairs": complete_pairs,
+        "adapter_types": dict(sorted(adapter_types.items())),
         "ranks": dict(sorted(ranks.items())),
         "namespaces": dict(sorted(namespaces.items())),
         "base_model": metadata.get("ss_base_model_version"),

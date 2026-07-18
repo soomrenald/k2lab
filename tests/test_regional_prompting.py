@@ -368,6 +368,70 @@ class RegionalPromptingTests(unittest.TestCase):
         self.assertEqual(plan.regions, ())
         self.assertEqual(plan.prompt, "scene.")
 
+    def test_character_identity_anchor_is_added_and_bound_to_trigger_tokens(self) -> None:
+        region = RegionDefinition(
+            "person",
+            "Person",
+            PixelBox(0, 0, 32, 64),
+            "lface, an adult woman",
+            spatial_role="subject",
+        )
+
+        plan = compile_regional_prompt_plan(
+            64,
+            64,
+            "portrait",
+            (region,),
+            character_identity_triggers={"person": ("lface",)},
+        )
+        bound = plan.bind_tokens(len, conditioning_text_token_count=len(plan.prompt))
+
+        self.assertIn("lface identifies the person in this region", plan.prompt)
+        self.assertIn("Generate this person's face and facial identity", plan.prompt)
+        self.assertEqual(len(plan.character_identities), 1)
+        identity = plan.character_identities[0]
+        self.assertEqual(identity.region_id, "person")
+        self.assertEqual(identity.trigger_phrase, "lface")
+        self.assertEqual(
+            [plan.prompt[start:end] for start, end in identity.character_spans],
+            ["lface", "lface"],
+        )
+        self.assertEqual(
+            bound.character_identities[0].token_spans,
+            identity.character_spans,
+        )
+
+    def test_face_identity_prompt_is_compiled_and_bound_separately(self) -> None:
+        region = RegionDefinition(
+            "person",
+            "Person",
+            PixelBox(0, 0, 32, 64),
+            "standing beside a window",
+            face_identity_prompt=(
+                "lface, a specific woman with brown hair and an oval face"
+            ),
+            spatial_role="subject",
+        )
+
+        plan = compile_regional_prompt_plan(64, 64, "portrait", (region,))
+        bound = plan.bind_tokens(len, conditioning_text_token_count=len(plan.prompt))
+
+        self.assertIn(
+            "lface, a specific woman with brown hair and an oval face. "
+            "standing beside a window",
+            plan.prompt,
+        )
+        self.assertEqual(len(plan.face_identities), 1)
+        identity = plan.face_identities[0]
+        self.assertEqual(
+            plan.prompt[slice(*identity.character_span)],
+            "lface, a specific woman with brown hair and an oval face",
+        )
+        self.assertEqual(
+            (bound.face_identities[0].start, bound.face_identities[0].end),
+            identity.character_span,
+        )
+
     def test_worker_payload_conversion_preserves_generic_region_fields(self) -> None:
         regions = region_definitions_from_payload(
             [
@@ -377,6 +441,7 @@ class RegionalPromptingTests(unittest.TestCase):
                     "box": {"x0": 4, "y0": 8, "x1": 40, "y1": 56},
                     "prompt": "a small tree",
                     "negative_prompt": "building",
+                    "face_identity_prompt": "treeface, an old oak",
                     "enabled": True,
                     "priority": 3,
                     "spatial_role": "subject",
@@ -386,6 +451,7 @@ class RegionalPromptingTests(unittest.TestCase):
 
         self.assertEqual(regions[0].name, "Anything")
         self.assertEqual(regions[0].negative_prompt, "building")
+        self.assertEqual(regions[0].face_identity_prompt, "treeface, an old oak")
         self.assertEqual(regions[0].priority, 3)
         self.assertEqual(regions[0].spatial_role, "subject")
 

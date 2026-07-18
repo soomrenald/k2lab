@@ -96,6 +96,32 @@ class MemoryPolicyTests(unittest.TestCase):
         self.assertEqual(result, "latent")
         self.assertFalse(active)
 
+    def test_vae_encode_disables_gradient_tracking(self) -> None:
+        active = False
+
+        class NoGrad:
+            def __enter__(self):
+                nonlocal active
+                active = True
+
+            def __exit__(self, *_):
+                nonlocal active
+                active = False
+
+        def encode(pixels):
+            self.assertTrue(active)
+            return pixels
+
+        runtime = ComfyBaselineRuntime(Path("/unused"))
+        runtime.vae = SimpleNamespace(encode=encode)
+        fake_torch = SimpleNamespace(no_grad=NoGrad)
+
+        with patch.dict("sys.modules", {"torch": fake_torch}):
+            result = runtime._encode_vae("pixels")
+
+        self.assertEqual(result, "pixels")
+        self.assertFalse(active)
+
 
 if __name__ == "__main__":
     unittest.main()

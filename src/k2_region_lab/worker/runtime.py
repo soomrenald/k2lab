@@ -12,6 +12,15 @@ from pathlib import Path
 from typing import Any, Callable
 
 from k2_region_lab.config import ModelDirectories
+from k2_region_lab.face_detail import (
+    BACKEND as FACE_DETAIL_BACKEND,
+    FaceDetailSettings,
+    OnnxNanoFaceDetector,
+    assign_faces_to_regional_loras,
+    composite_face_crop,
+    discover_face_detector,
+    expanded_square_crop,
+)
 from k2_region_lab.lora import (
     adapter_prefixes,
     align_krea_lora_state_dict,
@@ -30,17 +39,20 @@ from k2_region_lab.projector import (
     DEFAULT_PROJECTOR_PRESET,
     PROJECTOR_VECTOR_COUNT,
     effective_projector_values,
+    projector_token_delta_mask,
     projector_preset_values,
     validate_projector_values,
 )
 from k2_region_lab.regional_lora import (
     LoraDeltaRoute,
+    character_identity_triggers,
     compile_lora_delta_routes,
 )
 from k2_region_lab.regional_prompting import (
     BoundRegionalPromptPlan,
     PromptEmphasis,
     RegionalPromptPlan,
+    character_identity_prompt,
     compile_regional_prompt_plan,
     krea_prompt_token_count,
 )
@@ -470,6 +482,8 @@ class ComfyBaselineRuntime:
             "strength": float(specification.get("strength", 1.0)),
             "global": bool(specification.get("global", True)),
             "region_ids": list(specification.get("region_ids", [])),
+            "routing_mode": str(specification.get("routing_mode", "standard")),
+            "trigger_phrase": str(specification.get("trigger_phrase", "")),
             "matched_model_targets": len(patches),
             "unmatched_adapter_targets": max(0, adapter_count - len(patches)),
             "compatible": (
@@ -534,6 +548,12 @@ class ComfyBaselineRuntime:
                         "strength": strength,
                         "global": bool(specification.get("global", True)),
                         "region_ids": list(specification.get("region_ids", [])),
+                        "routing_mode": str(
+                            specification.get("routing_mode", "standard")
+                        ),
+                        "trigger_phrase": str(
+                            specification.get("trigger_phrase", "")
+                        ),
                         "status": "disabled",
                         "compatible": None,
                         "model_only": True,
@@ -591,13 +611,15 @@ class ComfyBaselineRuntime:
         preset: str,
         values,
         multiplier: float,
-        event: Callable[[str, dict[str, Any]], None] | None,
+        identity_protection: float = 1.0,
+        bound_plan: BoundRegionalPromptPlan | None = None,
+        event: Callable[[str, dict[str, Any]], None] | None = None,
     ):
         """Patch Krea's global 1×12 text-fusion projector before LoRA routing.
 
-        The projector reduces the layerwise text-fusion axis for every token. It has
-        no pixel-space routing interface, so region-gating it would corrupt the
-        strict outside-zero guarantee provided by regional LoRA adapters.
+        The projector reduces the layerwise text-fusion axis for every token. Face
+        identity prompt spans can retain some or all of the baseline layer mixture;
+        every other token continues to receive the complete preset delta.
         """
 
         raw_values = (
@@ -614,6 +636,7 @@ class ComfyBaselineRuntime:
             "multiplier": float(multiplier),
             "effective_values": list(effective_values),
             "target": "diffusion_model.txtfusion.projector.weight",
+            "identity_protection": float(identity_protection),
         }
         if not enabled or not any(effective_values):
             summary["status"] = "disabled" if not enabled else "zero_effect"
@@ -632,6 +655,82 @@ class ComfyBaselineRuntime:
                 f"expected {expected_shape}"
             )
         delta = torch.tensor((effective_values,), dtype=torch.float32)
+        protected = tuple(
+            (identity.start, identity.end)
+            for identity in (bound_plan.face_identities if bound_plan else ())
+        )
+        summary["protected_token_spans"] = [list(span) for span in protected]
+        summary["protected_regions"] = [
+            identity.region_id
+            for identity in (bound_plan.face_identities if bound_plan else ())
+        ]
+        if protected and identity_protection > 0.0:
+            import torch.nn.functional as functional
+
+            import comfy.weight_adapter
+
+            token_mask = projector_token_delta_mask(
+                bound_plan.text_token_count,
+                protected,
+                identity_protection,
+            )
+            base_adapter_type = comfy.weight_adapter.WeightAdapterBase
+
+            class TokenSelectiveProjectorDelta(base_adapter_type):
+                name = "k2_token_selective_projector_delta"
+
+                def __init__(self, weight, mask) -> None:
+                    self.weights = (weight,)
+                    self.loaded_keys = set()
+                    self.mask = mask
+                    self._weight_cache = {}
+                    self._mask_cache = {}
+
+                def h(self, x, base_out):
+                    del base_out
+                    if x.ndim != 4 or x.shape[1] != len(self.mask):
+                        raise RuntimeError(
+                            "Krea projector identity protection expected "
+                            f"{len(self.mask)} text tokens, received {tuple(x.shape)}"
+                        )
+                    cache_key = (x.device, x.dtype)
+                    weight = self._weight_cache.get(cache_key)
+                    if weight is None:
+                        weight = self.weights[0].to(device=x.device, dtype=x.dtype)
+                        self._weight_cache[cache_key] = weight
+                    mask = self._mask_cache.get(cache_key)
+                    if mask is None:
+                        mask = torch.tensor(
+                            self.mask, device=x.device, dtype=x.dtype
+                        ).view(1, -1, 1, 1)
+                        self._mask_cache[cache_key] = mask
+                    return functional.linear(x, weight) * mask
+
+            manager = comfy.weight_adapter.BypassInjectionManager()
+            manager.add_adapter(
+                target,
+                TokenSelectiveProjectorDelta(delta, token_mask),
+                strength=1.0,
+            )
+            patched_model = self.model.clone()
+            injections = manager.create_injections(patched_model.model)
+            if manager.get_hook_count() != 1:
+                raise RuntimeError("could not install token-selective projector delta")
+            patched_model.set_injections("k2_projector_delta", injections)
+            summary["status"] = "applied_token_selective_diff"
+            summary["protected_token_count"] = sum(
+                value < 1.0 for value in token_mask
+            )
+            patched_model.set_attachments("projector_settings", summary)
+            if event is not None:
+                event(
+                    "Applied token-selective global projector vector "
+                    f"({preset}) at {float(multiplier):.4f}×; protected "
+                    f"{summary['protected_token_count']} face-identity token(s)",
+                    {"projector": summary},
+                )
+            return patched_model, summary
+
         patched_model = self.model.clone()
         patched_keys = patched_model.add_patches({target: ("diff", (delta,))})
         if target not in patched_keys:
@@ -781,6 +880,7 @@ class ComfyBaselineRuntime:
 
         comfy.model_management.unload_all_models()
         generation_model.remove_injections("k2_routed_loras")
+        generation_model.remove_injections("k2_projector_delta")
         gc.collect()
         comfy.model_management.soft_empty_cache(force=True)
 
@@ -1047,6 +1147,7 @@ class ComfyBaselineRuntime:
         projector_preset: str = DEFAULT_PROJECTOR_PRESET,
         projector_values: tuple[float, ...] = (),
         projector_multiplier: float = 1.0,
+        projector_identity_protection: float = 1.0,
         post_upscale: bool = False,
         upscale_scale: int = 2,
         upscale_method: str = "lanczos",
@@ -1063,10 +1164,13 @@ class ComfyBaselineRuntime:
             raise ValueError("steps must be between 1 and 100")
         if not 0.0 <= regional_lora_delta_adaptation_gain <= 1.0:
             raise ValueError("LoRA delta adaptation gain must be between zero and one")
+        if not 0.0 <= projector_identity_protection <= 1.0:
+            raise ValueError("projector identity protection must be between zero and one")
         if post_upscale and upscale_method == "model":
             if upscale_model_path is None or not upscale_model_path.expanduser().is_file():
                 raise ValueError("select a readable neural upscaler model before generation")
         filename_prefix = validate_filename_prefix(filename_prefix)
+        lora_specifications = list(loras or [])
         regional_plan = (
             compile_regional_prompt_plan(
                 width,
@@ -1080,6 +1184,9 @@ class ComfyBaselineRuntime:
                 subject_fill=regional_subject_fill,
                 late_step_scale=regional_late_step_scale,
                 emphases=emphases,
+                character_identity_triggers=character_identity_triggers(
+                    lora_specifications
+                ),
             )
             if regional_prompting and (regions or emphases)
             else None
@@ -1102,11 +1209,12 @@ class ComfyBaselineRuntime:
                 projector_preset=projector_preset,
                 projector_values=projector_values,
                 projector_multiplier=projector_multiplier,
+                projector_identity_protection=projector_identity_protection,
                 post_upscale=post_upscale,
                 upscale_scale=upscale_scale,
                 upscale_method=upscale_method,
                 upscale_model_path=upscale_model_path,
-                loras=list(loras or []),
+                loras=lora_specifications,
                 progress=progress,
                 event=event,
                 oom_recovered=False,
@@ -1143,6 +1251,7 @@ class ComfyBaselineRuntime:
             projector_preset=projector_preset,
             projector_values=projector_values,
             projector_multiplier=projector_multiplier,
+            projector_identity_protection=projector_identity_protection,
             post_upscale=post_upscale,
             upscale_scale=upscale_scale,
             upscale_method=upscale_method,
@@ -1170,6 +1279,7 @@ class ComfyBaselineRuntime:
         projector_preset: str,
         projector_values: tuple[float, ...],
         projector_multiplier: float,
+        projector_identity_protection: float,
         post_upscale: bool,
         upscale_scale: int,
         upscale_method: str,
@@ -1230,6 +1340,8 @@ class ComfyBaselineRuntime:
             preset=projector_preset,
             values=projector_values,
             multiplier=projector_multiplier,
+            identity_protection=projector_identity_protection,
+            bound_plan=bound_regional_plan,
             event=event,
         )
         generation_model, lora_reports, lora_statistics = self._apply_routed_loras(
@@ -1427,6 +1539,343 @@ class ComfyBaselineRuntime:
             "oom_recovered": oom_recovered,
             "memory": self.memory_snapshot("generation complete"),
         }
+
+    def refine_faces(
+        self,
+        *,
+        image_path: Path,
+        regions: tuple[RegionDefinition, ...],
+        loras: list[dict[str, Any]],
+        seed: int = 0,
+        steps: int = 8,
+        denoise: float = 0.15,
+        crop_size: int = 512,
+        padding: float = 2.0,
+        feather: float = 0.12,
+        blend: float = 0.5,
+        lora_scale: float = 0.5,
+        detector_threshold: float = 0.4,
+        output_directory: Path | None = None,
+        event: Callable[[str, dict[str, Any]], None] | None = None,
+    ) -> dict[str, Any]:
+        if not self.loaded:
+            raise RuntimeError("baseline components must be loaded before face refinement")
+        source_path = image_path.expanduser().resolve()
+        if source_path.suffix.casefold() != ".png" or not source_path.is_file():
+            raise ValueError(f"face refinement requires a readable PNG: {source_path}")
+        settings = FaceDetailSettings(
+            enabled=True,
+            steps=steps,
+            denoise=denoise,
+            crop_size=crop_size,
+            padding=padding,
+            feather=feather,
+            blend=blend,
+            lora_scale=lora_scale,
+            detector_threshold=detector_threshold,
+        )
+
+        from PIL import Image, PngImagePlugin
+
+        with Image.open(source_path) as source:
+            source_image = source.convert("RGB")
+        refined_image, summary = self._run_face_detail_pass(
+            source_image,
+            settings=settings,
+            regions=regions,
+            loras=loras,
+            seed=seed,
+            event=event,
+        )
+        destination = (output_directory or source_path.parent).expanduser().resolve()
+        destination.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        output_path = destination / (
+            f"{source_path.stem}_face_refined_{stamp}_seed-{seed}.png"
+        )
+        metadata = PngImagePlugin.PngInfo()
+        metadata.add_text("k2lab_mode", "krea2_face_refinement")
+        metadata.add_text("source_image", str(source_path))
+        metadata.add_text("seed", str(seed))
+        metadata.add_text("face_detail", json.dumps(summary))
+        refined_image.save(output_path, pnginfo=metadata)
+        return {
+            "image_path": str(output_path),
+            "source_image": str(source_path),
+            "width": refined_image.width,
+            "height": refined_image.height,
+            "seed": seed,
+            "face_detail": summary,
+            "memory": self.memory_snapshot("face refinement complete"),
+        }
+
+    def _run_face_detail_pass(
+        self,
+        image,
+        *,
+        settings: FaceDetailSettings,
+        regions: tuple[RegionDefinition, ...],
+        loras: list[dict[str, Any]],
+        seed: int,
+        event: Callable[[str, dict[str, Any]], None] | None,
+    ):
+        from PIL import Image
+
+        summary: dict[str, Any] = {
+            "enabled": settings.enabled,
+            "backend": FACE_DETAIL_BACKEND if settings.enabled else "disabled",
+            "status": "disabled",
+            "detection_count": 0,
+            "refined_count": 0,
+            "settings": {
+                "steps": settings.steps,
+                "denoise": settings.denoise,
+                "crop_size": settings.crop_size,
+                "padding": settings.padding,
+                "feather": settings.feather,
+                "blend": settings.blend,
+                "lora_scale": settings.lora_scale,
+                "detector_threshold": settings.detector_threshold,
+            },
+            "faces": [],
+        }
+        if not settings.enabled:
+            return image, summary
+
+        detector_path = discover_face_detector(self.comfyui_root)
+        if detector_path is None:
+            raise RuntimeError(
+                "automatic face detailing is enabled, but the bundled NanoDet "
+                "face_det.onnx model was not found under the configured ComfyUI root"
+            )
+        summary["detector"] = str(detector_path)
+        detector = OnnxNanoFaceDetector(
+            detector_path, threshold=settings.detector_threshold
+        )
+        detections = detector.detect(image)
+        summary["detection_count"] = len(detections)
+        targets = assign_faces_to_regional_loras(detections, regions, loras)
+        if event is not None:
+            event(
+                f"Face detector found {len(detections)} face(s); "
+                f"{len(targets)} matched a regional LoRA",
+                {
+                    "face_detail": {
+                        "detection_count": len(detections),
+                        "target_count": len(targets),
+                    }
+                },
+            )
+        if not detections:
+            summary["status"] = "no_faces_detected"
+            return image, summary
+        if not targets:
+            summary["status"] = "no_regional_lora_faces"
+            return image, summary
+
+        result = image.convert("RGB")
+        face_reports: list[dict[str, Any]] = []
+        for index, target in enumerate(targets):
+            crop_box = expanded_square_crop(
+                target.face.box,
+                image.width,
+                image.height,
+                settings.padding,
+            )
+            source_crop = result.crop(crop_box).resize(
+                (settings.crop_size, settings.crop_size), Image.Resampling.LANCZOS
+            )
+            detail_seed = (seed + 104729 * (index + 1)) % 2_147_483_648
+            identity_triggers = character_identity_triggers(target.loras).get(
+                target.region_id, ()
+            )
+            detail_prompt = character_identity_prompt(
+                target.prompt, identity_triggers
+            )
+            detail_loras = []
+            strengths = []
+            for specification in target.loras:
+                original_strength = float(specification.get("strength", 1.0))
+                requested_strength = original_strength * settings.lora_scale
+                effective_strength = max(-4.0, min(4.0, requested_strength))
+                detail_loras.append(
+                    {
+                        **specification,
+                        "strength": effective_strength,
+                        "global": True,
+                        "region_ids": [],
+                    }
+                )
+                strengths.append(
+                    {
+                        "id": str(specification.get("id", "LoRA")),
+                        "name": str(specification.get("name", "LoRA")),
+                        "source": original_strength,
+                        "requested": requested_strength,
+                        "effective": effective_strength,
+                    }
+                )
+            if event is not None:
+                event(
+                    f"Face detail {index + 1}/{len(targets)} started for "
+                    f"{target.region_name}",
+                    {
+                        "face_detail": {
+                            "region_id": target.region_id,
+                            "crop_box": list(crop_box),
+                            "seed": detail_seed,
+                        }
+                    },
+                )
+            refined_crop, lora_reports = self._refine_face_crop(
+                source_crop,
+                prompt=detail_prompt,
+                loras=detail_loras,
+                settings=settings,
+                seed=detail_seed,
+                event=event,
+            )
+            result = composite_face_crop(
+                result,
+                refined_crop,
+                crop_box,
+                settings.feather,
+                settings.blend,
+            )
+            report = {
+                "region_id": target.region_id,
+                "region_name": target.region_name,
+                "detected_box": [
+                    target.face.box.x0,
+                    target.face.box.y0,
+                    target.face.box.x1,
+                    target.face.box.y1,
+                ],
+                "detector_score": target.face.score,
+                "crop_box": list(crop_box),
+                "seed": detail_seed,
+                "prompt": detail_prompt,
+                "strengths": strengths,
+                "loras": lora_reports,
+            }
+            face_reports.append(report)
+            if event is not None:
+                event(
+                    f"Face detail {index + 1}/{len(targets)} completed for "
+                    f"{target.region_name}",
+                    {"face_detail": report},
+                )
+        summary["status"] = "complete"
+        summary["refined_count"] = len(face_reports)
+        summary["faces"] = face_reports
+        return result, summary
+
+    def _refine_face_crop(
+        self,
+        crop,
+        *,
+        prompt: str,
+        loras: list[dict[str, Any]],
+        settings: FaceDetailSettings,
+        seed: int,
+        event: Callable[[str, dict[str, Any]], None] | None,
+    ):
+        import numpy as np
+        import torch
+        from PIL import Image
+
+        import comfy.model_management
+        import comfy.sample
+
+        self._ensure_memory("before face-detail text encoding", event)
+        positive = self.clip.encode_from_tokens_scheduled(self.clip.tokenize(prompt))
+        negative = self.clip.encode_from_tokens_scheduled(self.clip.tokenize(""))
+        if not positive:
+            raise RuntimeError("Krea text encoder returned no face-detail conditioning")
+        text_token_counts = {int(condition[0].shape[1]) for condition in positive}
+        if len(text_token_counts) != 1:
+            raise RuntimeError("Krea face-detail conditioning must use one text sequence length")
+        text_token_count = text_token_counts.pop()
+
+        pixels = torch.from_numpy(
+            np.asarray(crop.convert("RGB"), dtype=np.float32).copy() / 255.0
+        ).unsqueeze(0)
+        self._ensure_memory("before face-detail VAE encode", event)
+        latent = self._encode_vae(pixels)
+        latent = comfy.sample.fix_empty_latent_channels(
+            self.model, latent, downscale_ratio_spacial=8
+        )
+        noise = comfy.sample.prepare_noise(latent, seed)
+        self._ensure_memory("before face-detail denoising", event)
+        generation_model, lora_reports, _statistics = self._apply_routed_loras(
+            loras,
+            base_model=self.model,
+            width=settings.crop_size,
+            height=settings.crop_size,
+            text_token_count=text_token_count,
+            regional_plan=None,
+            bound_plan=None,
+            event=event,
+        )
+
+        def callback(step: int, denoised, current, total: int) -> None:
+            del denoised, current
+            snapshot = self.memory_snapshot(
+                f"face-detail denoising step {step + 1}/{total}"
+            )
+            if snapshot["gpu_free_bytes"] < snapshot["critical_free_bytes"]:
+                raise CriticalGpuMemoryPressure(
+                    "critical GPU memory pressure after face-detail denoising step "
+                    f"{step + 1}/{total}: "
+                    f"{snapshot['gpu_free_bytes'] / GIB:.2f} GiB free"
+                )
+
+        try:
+            samples = comfy.sample.sample(
+                generation_model,
+                noise,
+                settings.steps,
+                1.0,
+                "euler",
+                "simple",
+                positive,
+                negative,
+                latent,
+                denoise=settings.denoise,
+                callback=callback,
+                disable_pbar=True,
+                seed=seed,
+            )
+        except Exception:
+            self._release_generation_model(generation_model)
+            raise
+        self._ensure_memory("before face-detail VAE decode", event)
+        self._prepare_vae_handoff(generation_model, event)
+        images = self._decode_vae(samples)
+        image_tensor = images[0]
+        while image_tensor.ndim > 3 and image_tensor.shape[0] == 1:
+            image_tensor = image_tensor[0]
+        if image_tensor.ndim != 3 or image_tensor.shape[-1] != 3:
+            raise RuntimeError(
+                f"unexpected face-detail decoded image shape: {tuple(images.shape)}"
+            )
+        array = (
+            image_tensor.detach()
+            .to(device="cpu", dtype=torch.float32)
+            .clamp(0, 1)
+            .numpy()
+            * 255.0
+        ).round().astype(np.uint8)
+        return Image.fromarray(array), lora_reports
+
+    def _encode_vae(self, pixels):
+        import torch
+
+        # ComfyUI may load VAE parameters as inference tensors. Autograd cannot
+        # save those tensors for a backward pass, and face refinement never needs
+        # gradients, so keep regular and tiled VAE encoding under no-grad.
+        with torch.no_grad():
+            return self.vae.encode(pixels)
 
     def _decode_vae(self, samples):
         import torch

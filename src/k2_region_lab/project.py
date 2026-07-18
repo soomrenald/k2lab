@@ -5,6 +5,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from k2_region_lab.lora import (
+    CHARACTER_IDENTITY_LORA_ROUTING,
+    LORA_ROUTING_MODES,
+    STANDARD_LORA_ROUTING,
+)
 from k2_region_lab.projector import (
     CUSTOM_PROJECTOR_PRESET,
     DEFAULT_PROJECTOR_PRESET,
@@ -20,8 +25,22 @@ from k2_region_lab.regions import PixelBox, RegionDefinition
 
 
 PROJECT_SCHEMA = "k2-region-lab-project"
-PROJECT_VERSION = 11
-SUPPORTED_PROJECT_VERSIONS = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, PROJECT_VERSION}
+PROJECT_VERSION = 14
+SUPPORTED_PROJECT_VERSIONS = {
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    PROJECT_VERSION,
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,10 +49,18 @@ class SavedLora:
     global_scope: bool = True
     region_ids: tuple[str, ...] = ()
     strength: float = 1.0
+    routing_mode: str = STANDARD_LORA_ROUTING
+    trigger_phrase: str = ""
 
     def __post_init__(self) -> None:
         if not -4.0 <= self.strength <= 4.0:
             raise ValueError("saved LoRA strength must be between -4 and 4")
+        if self.routing_mode not in LORA_ROUTING_MODES:
+            raise ValueError(f"unsupported saved LoRA routing mode: {self.routing_mode!r}")
+        if self.routing_mode == CHARACTER_IDENTITY_LORA_ROUTING and not self.trigger_phrase.strip():
+            raise ValueError("character identity routing requires a trigger phrase")
+        if self.routing_mode == CHARACTER_IDENTITY_LORA_ROUTING and self.global_scope:
+            raise ValueError("character identity routing requires regional scope")
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,6 +86,16 @@ class ProjectState:
     projector_preset: str = DEFAULT_PROJECTOR_PRESET
     projector_values: tuple[float, ...] = PROJECTOR_PRESETS[DEFAULT_PROJECTOR_PRESET]
     projector_multiplier: float = 1.0
+    projector_identity_protection: float = 1.0
+    face_detail_seed: int = 0
+    face_detail_steps: int = 8
+    face_detail_denoise: float = 0.15
+    face_detail_crop_size: int = 512
+    face_detail_padding: float = 2.0
+    face_detail_feather: float = 0.12
+    face_detail_blend: float = 0.5
+    face_detail_lora_scale: float = 0.5
+    face_detail_detector_threshold: float = 0.4
     post_upscale: bool = False
     upscale_scale: int = 2
     upscale_method: str = "lanczos"
@@ -95,6 +132,26 @@ class ProjectState:
         validate_projector_values(self.projector_values)
         if not -20.0 <= self.projector_multiplier <= 20.0:
             raise ValueError("projector multiplier must be between -20 and 20")
+        if not 0.0 <= self.projector_identity_protection <= 1.0:
+            raise ValueError("projector identity protection must be between zero and one")
+        if not 0 <= self.face_detail_seed <= 2_147_483_647:
+            raise ValueError("face-detail seed must be between 0 and 2147483647")
+        if not 1 <= self.face_detail_steps <= 100:
+            raise ValueError("face-detail steps must be between 1 and 100")
+        if not 0.0 < self.face_detail_denoise <= 1.0:
+            raise ValueError("face-detail denoise must be in (0, 1]")
+        if self.face_detail_crop_size not in {256, 512, 768, 1024}:
+            raise ValueError("unsupported face-detail crop size")
+        if not 1.0 <= self.face_detail_padding <= 4.0:
+            raise ValueError("face-detail padding must be between 1 and 4")
+        if not 0.0 <= self.face_detail_feather <= 0.5:
+            raise ValueError("face-detail feather must be between zero and 0.5")
+        if not 0.0 <= self.face_detail_blend <= 1.0:
+            raise ValueError("face-detail blend must be between zero and one")
+        if not 0.0 <= self.face_detail_lora_scale <= 4.0:
+            raise ValueError("face-detail LoRA scale must be between zero and four")
+        if not 0.0 < self.face_detail_detector_threshold < 1.0:
+            raise ValueError("face detector threshold must be in (0, 1)")
         if self.upscale_scale not in {2, 4}:
             raise ValueError("post-upscale scale must be 2 or 4")
         if self.upscale_method not in {"lanczos", "model"}:
@@ -166,6 +223,16 @@ def project_document(state: ProjectState) -> dict[str, Any]:
             "projector_preset": state.projector_preset,
             "projector_values": list(state.projector_values),
             "projector_multiplier": state.projector_multiplier,
+            "projector_identity_protection": state.projector_identity_protection,
+            "face_detail_seed": state.face_detail_seed,
+            "face_detail_steps": state.face_detail_steps,
+            "face_detail_denoise": state.face_detail_denoise,
+            "face_detail_crop_size": state.face_detail_crop_size,
+            "face_detail_padding": state.face_detail_padding,
+            "face_detail_feather": state.face_detail_feather,
+            "face_detail_blend": state.face_detail_blend,
+            "face_detail_lora_scale": state.face_detail_lora_scale,
+            "face_detail_detector_threshold": state.face_detail_detector_threshold,
             "post_upscale": state.post_upscale,
             "upscale_scale": state.upscale_scale,
             "upscale_method": state.upscale_method,
@@ -185,6 +252,7 @@ def project_document(state: ProjectState) -> dict[str, Any]:
                 },
                 "prompt": region.prompt,
                 "negative_prompt": region.negative_prompt,
+                "face_identity_prompt": region.face_identity_prompt,
                 "enabled": region.enabled,
                 "priority": region.priority,
                 "spatial_role": region.spatial_role,
@@ -197,6 +265,8 @@ def project_document(state: ProjectState) -> dict[str, Any]:
                 "global": lora.global_scope,
                 "region_ids": list(lora.region_ids),
                 "strength": lora.strength,
+                "routing_mode": lora.routing_mode,
+                "trigger_phrase": lora.trigger_phrase,
             }
             for lora in state.loras
         ],
@@ -224,6 +294,7 @@ def project_state(document: dict[str, Any]) -> ProjectState:
             ),
             prompt=str(item.get("prompt", "")),
             negative_prompt=str(item.get("negative_prompt", "")),
+            face_identity_prompt=str(item.get("face_identity_prompt", "")),
             enabled=bool(item.get("enabled", True)),
             priority=int(item.get("priority", 0)),
             spatial_role=str(item.get("spatial_role", "auto")),
@@ -236,6 +307,8 @@ def project_state(document: dict[str, Any]) -> ProjectState:
             global_scope=bool(item.get("global", True)),
             region_ids=tuple(str(region_id) for region_id in item.get("region_ids", [])),
             strength=float(item.get("strength", 1.0)),
+            routing_mode=str(item.get("routing_mode", STANDARD_LORA_ROUTING)),
+            trigger_phrase=str(item.get("trigger_phrase", "")),
         )
         for item in document.get("loras", [])
     )
@@ -283,6 +356,20 @@ def project_state(document: dict[str, Any]) -> ProjectState:
             )
         ),
         projector_multiplier=float(generation.get("projector_multiplier", 1.0)),
+        projector_identity_protection=float(
+            generation.get("projector_identity_protection", 1.0)
+        ),
+        face_detail_seed=int(generation.get("face_detail_seed", 0)),
+        face_detail_steps=int(generation.get("face_detail_steps", 8)),
+        face_detail_denoise=float(generation.get("face_detail_denoise", 0.15)),
+        face_detail_crop_size=int(generation.get("face_detail_crop_size", 512)),
+        face_detail_padding=float(generation.get("face_detail_padding", 2.0)),
+        face_detail_feather=float(generation.get("face_detail_feather", 0.12)),
+        face_detail_blend=float(generation.get("face_detail_blend", 0.5)),
+        face_detail_lora_scale=float(generation.get("face_detail_lora_scale", 0.5)),
+        face_detail_detector_threshold=float(
+            generation.get("face_detail_detector_threshold", 0.4)
+        ),
         post_upscale=bool(generation.get("post_upscale", False)),
         upscale_scale=int(generation.get("upscale_scale", 2)),
         upscale_method=str(generation.get("upscale_method", "lanczos")),

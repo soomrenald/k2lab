@@ -3,6 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from k2_region_lab.lora.library import (
+    CHARACTER_IDENTITY_LORA_ROUTING,
+    LORA_ROUTING_MODES,
+    STANDARD_LORA_ROUTING,
+)
 from k2_region_lab.regional_prompting import (
     BoundRegionalPromptPlan,
     RegionalPromptPlan,
@@ -23,6 +28,8 @@ class LoraDeltaRoute:
     region_names: tuple[str, ...]
     text_token_mask: tuple[float, ...]
     image_token_mask: tuple[float, ...]
+    routing_mode: str = STANDARD_LORA_ROUTING
+    trigger_phrase: str = ""
     backend: str = BACKEND
 
     def sequence_mask(self, sequence_length: int, *, text_fusion: bool) -> tuple[float, ...]:
@@ -60,7 +67,34 @@ class LoraDeltaRoute:
                 if self.image_token_mask
                 else 0.0
             ),
+            "routing_mode": self.routing_mode,
+            "trigger_phrase": self.trigger_phrase,
         }
+
+
+def character_identity_triggers(
+    specifications: list[dict[str, Any]],
+) -> dict[str, tuple[str, ...]]:
+    """Collect saved identity triggers by regional target for prompt compilation."""
+    collected: dict[str, list[str]] = {}
+    for specification in specifications:
+        routing_mode = str(
+            specification.get("routing_mode", STANDARD_LORA_ROUTING)
+        )
+        if routing_mode not in LORA_ROUTING_MODES:
+            raise ValueError(f"unsupported LoRA routing mode: {routing_mode!r}")
+        if routing_mode != CHARACTER_IDENTITY_LORA_ROUTING:
+            continue
+        trigger_phrase = str(specification.get("trigger_phrase", "")).strip()
+        if not trigger_phrase:
+            raise ValueError("character identity routing requires a trigger phrase")
+        if bool(specification.get("global", True)):
+            raise ValueError("character identity routing requires regional scope")
+        for region_id in map(str, specification.get("region_ids", ())):
+            triggers = collected.setdefault(region_id, [])
+            if trigger_phrase not in triggers:
+                triggers.append(trigger_phrase)
+    return {region_id: tuple(triggers) for region_id, triggers in collected.items()}
 
 
 def compile_lora_delta_routes(
@@ -99,6 +133,14 @@ def compile_lora_delta_routes(
         lora_id = str(specification.get("id", specification.get("name", "LoRA")))
         display_name = str(specification.get("name", lora_id))
         global_scope = bool(specification.get("global", True))
+        routing_mode = str(
+            specification.get("routing_mode", STANDARD_LORA_ROUTING)
+        )
+        if routing_mode not in LORA_ROUTING_MODES:
+            raise ValueError(f"unsupported LoRA routing mode: {routing_mode!r}")
+        trigger_phrase = str(specification.get("trigger_phrase", "")).strip()
+        if routing_mode == CHARACTER_IDENTITY_LORA_ROUTING and not trigger_phrase:
+            raise ValueError("character identity routing requires a trigger phrase")
         region_ids = tuple(dict.fromkeys(map(str, specification.get("region_ids", ()))))
         if global_scope:
             routes.append(
@@ -111,6 +153,8 @@ def compile_lora_delta_routes(
                     region_names=(),
                     text_token_mask=all_text,
                     image_token_mask=all_image,
+                    routing_mode=STANDARD_LORA_ROUTING,
+                    trigger_phrase=trigger_phrase,
                 )
             )
             continue
@@ -134,6 +178,10 @@ def compile_lora_delta_routes(
             region = active_regions[region_id]
             span = token_spans[region_id]
             names.append(region.name)
+            # Character identity mode adds explicit trigger anchors to the clause,
+            # but its LoRA delta retains normal coverage across the full regional
+            # description. Trigger-only text gating proved too sparse for identity
+            # adapters whose learned signal depends on the surrounding semantics.
             for index in range(span.start, span.end):
                 text_mask[index] = 1.0
             strict_box_mask = geometry.rasterize_box(region.box)
@@ -151,6 +199,8 @@ def compile_lora_delta_routes(
                 region_names=tuple(names),
                 text_token_mask=tuple(text_mask),
                 image_token_mask=tuple(image_mask),
+                routing_mode=routing_mode,
+                trigger_phrase=trigger_phrase,
             )
         )
     return tuple(routes)

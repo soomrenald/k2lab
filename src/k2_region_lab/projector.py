@@ -9,8 +9,8 @@ CUSTOM_PROJECTOR_PRESET: Final = "custom"
 DEFAULT_PROJECTOR_PRESET: Final = "filter_bypass2"
 
 # These are the 12-column txtfusion.projector deltas from the supplied reference
-# table. They are applied only through the global projector patch, never through a
-# regional LoRA token gate.
+# table. They are independent from regional LoRA gates; an optional text-token mask
+# can protect explicit face identity prompt spans from some or all of the delta.
 PROJECTOR_PRESETS: Final[dict[str, tuple[float, ...]]] = {
     "filter_bypass2": (
         0.0,
@@ -103,3 +103,28 @@ def effective_projector_values(values, multiplier: float) -> tuple[float, ...]:
     if not isfinite(scale):
         raise ValueError("projector multiplier must be finite")
     return tuple(value * scale for value in vector)
+
+
+def projector_token_delta_mask(
+    text_token_count: int,
+    protected_spans: tuple[tuple[int, int], ...],
+    protection: float,
+) -> tuple[float, ...]:
+    """Scale the projector delta while preserving selected identity tokens.
+
+    A value of one applies the complete projector preset delta. A fully protected
+    token receives zero projector delta and therefore uses the baseline layer mix.
+    """
+
+    if text_token_count <= 0:
+        raise ValueError("projector token mask requires a positive token count")
+    amount = float(protection)
+    if not 0.0 <= amount <= 1.0:
+        raise ValueError("projector identity protection must be between zero and one")
+    mask = [1.0] * text_token_count
+    for start, end in protected_spans:
+        if start < 0 or end <= start or end > text_token_count:
+            raise ValueError("projector protected token span is outside the text sequence")
+        for index in range(start, end):
+            mask[index] = min(mask[index], 1.0 - amount)
+    return tuple(mask)

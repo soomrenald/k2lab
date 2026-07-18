@@ -48,7 +48,7 @@ class AppSettings:
     model_directories: ModelDirectories
     data_directory: Path
     worker_python: Path = field(
-        default_factory=lambda: Path("~/ComfyUI/venv_rocm/bin/python").expanduser()
+        default_factory=lambda: Path("~/ComfyUI/venv_rocm7/bin/python").expanduser()
     )
     comfyui_root: Path = field(default_factory=lambda: Path("~/ComfyUI").expanduser())
     auto_start_worker: bool = True
@@ -73,7 +73,7 @@ class AppSettings:
             model_directories=ModelDirectories.from_environment(),
             data_directory=data_directory,
             worker_python=_configured_executable(
-                "K2LAB_WORKER_PYTHON", "~/ComfyUI/venv_rocm/bin/python"
+                "K2LAB_WORKER_PYTHON", "~/ComfyUI/venv_rocm7/bin/python"
             ),
             comfyui_root=_configured_path("K2LAB_COMFYUI_ROOT", "~/ComfyUI"),
             auto_start_worker=os.environ.get("K2LAB_AUTO_START_WORKER", "1")

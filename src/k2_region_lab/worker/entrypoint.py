@@ -223,6 +223,9 @@ def main() -> int:
                     ),
                     projector_values=tuple(payload.get("projector_values", ())),
                     projector_multiplier=float(payload.get("projector_multiplier", 1.0)),
+                    projector_identity_protection=float(
+                        payload.get("projector_identity_protection", 1.0)
+                    ),
                     post_upscale=bool(payload.get("post_upscale", False)),
                     upscale_scale=int(payload.get("upscale_scale", 2)),
                     upscale_method=str(payload.get("upscale_method", "lanczos")),
@@ -247,6 +250,59 @@ def main() -> int:
                     command_id=command_id,
                 )
                 return 0
+            elif kind == CommandKind.REFINE_FACES:
+                if runtime is None or not runtime.loaded:
+                    raise RuntimeError("load the Krea 2 baseline before refining faces")
+                emit(
+                    WorkerState.RUNNING,
+                    "Face refinement started",
+                    command_id=command_id,
+                )
+
+                def refinement_event(
+                    message: str, event_payload: dict[str, Any]
+                ) -> None:
+                    emit(
+                        WorkerState.RUNNING,
+                        message,
+                        command_id=command_id,
+                        payload=event_payload,
+                    )
+
+                refined = runtime.refine_faces(
+                    image_path=Path(payload["image_path"]),
+                    output_directory=(
+                        Path(payload["output_directory"])
+                        if payload.get("output_directory")
+                        else None
+                    ),
+                    regions=region_definitions_from_payload(payload.get("regions", [])),
+                    loras=list(payload.get("loras", [])),
+                    seed=int(payload.get("seed", 0)),
+                    steps=int(payload.get("steps", 8)),
+                    denoise=float(payload.get("denoise", 0.15)),
+                    crop_size=int(payload.get("crop_size", 512)),
+                    padding=float(payload.get("padding", 2.0)),
+                    feather=float(payload.get("feather", 0.12)),
+                    blend=float(payload.get("blend", 0.5)),
+                    lora_scale=float(payload.get("lora_scale", 0.5)),
+                    detector_threshold=float(
+                        payload.get("detector_threshold", 0.4)
+                    ),
+                    event=refinement_event,
+                )
+                emit(
+                    WorkerState.READY,
+                    "Face refinement complete",
+                    command_id=command_id,
+                    payload=refined,
+                )
+                emit(
+                    WorkerState.COMPLETE,
+                    "Face refinement worker releasing GPU and system RAM",
+                    command_id=command_id,
+                )
+                return 0
             elif kind == CommandKind.SHUTDOWN:
                 emit(WorkerState.COMPLETE, "GPU worker stopped", command_id=command_id)
                 return 0
@@ -261,7 +317,11 @@ def main() -> int:
                 command_id=command_id,
                 payload={"exception_type": type(error).__name__},
             )
-            if kind in {CommandKind.LOAD_MODEL, CommandKind.GENERATE_BASELINE}:
+            if kind in {
+                CommandKind.LOAD_MODEL,
+                CommandKind.GENERATE_BASELINE,
+                CommandKind.REFINE_FACES,
+            }:
                 return 1
     return 0
 

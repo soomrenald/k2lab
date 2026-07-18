@@ -6,6 +6,7 @@ from types import ModuleType
 from types import MethodType
 from unittest.mock import patch
 
+from k2_region_lab.lora import CHARACTER_IDENTITY_LORA_ROUTING
 from k2_region_lab.regional_lora import compile_lora_delta_routes
 from k2_region_lab.regional_prompting import compile_regional_prompt_plan
 from k2_region_lab.regions import PixelBox, RegionDefinition
@@ -80,6 +81,55 @@ class RegionalLoraRoutingTests(unittest.TestCase):
         self.assertEqual(route.region_ids, ("left", "right"))
         self.assertEqual(route.image_token_mask, (1.0, 1.0))
         self.assertEqual(route.region_names, ("Left subject", "Right subject"))
+
+    def test_character_identity_route_keeps_full_regional_text_coverage(self) -> None:
+        regions = (
+            RegionDefinition(
+                "person",
+                "Person",
+                PixelBox(16, 0, 32, 16),
+                "lface, an adult woman wearing a blue coat",
+            ),
+        )
+        plan = compile_regional_prompt_plan(
+            32,
+            16,
+            "portrait",
+            regions,
+            character_identity_triggers={"person": ("lface",)},
+        )
+        bound = plan.bind_tokens(len, conditioning_text_token_count=len(plan.prompt))
+
+        route = compile_lora_delta_routes(
+            [
+                {
+                    "id": "face",
+                    "name": "Face",
+                    "strength": 1.0,
+                    "global": False,
+                    "region_ids": ["person"],
+                    "routing_mode": CHARACTER_IDENTITY_LORA_ROUTING,
+                    "trigger_phrase": "lface",
+                }
+            ],
+            width=32,
+            height=16,
+            text_token_count=bound.text_token_count,
+            regional_plan=plan,
+            bound_plan=bound,
+        )[0]
+
+        region_span = next(
+            span for span in bound.spans if span.region_id == "person"
+        )
+        enabled_indices = set(range(region_span.start, region_span.end))
+        self.assertEqual(route.image_token_mask, (0.0, 1.0))
+        self.assertEqual(
+            {index for index, value in enumerate(route.text_token_mask) if value},
+            enabled_indices,
+        )
+        self.assertEqual(route.routing_mode, CHARACTER_IDENTITY_LORA_ROUTING)
+        self.assertGreater(len(enabled_indices), 2)
 
     def test_global_route_enables_every_lane_without_a_regional_plan(self) -> None:
         route = compile_lora_delta_routes(
@@ -203,7 +253,7 @@ class RegionalLoraRoutingTests(unittest.TestCase):
 
             @staticmethod
             def assert_unloaded(key):
-                if calls != ["unload"]:
+                if not calls or calls[0] != "unload":
                     raise AssertionError("adapter hooks were removed before model unload")
                 calls.append(f"remove:{key}")
 
@@ -216,7 +266,12 @@ class RegionalLoraRoutingTests(unittest.TestCase):
 
         self.assertEqual(
             calls,
-            ["unload", "remove:k2_routed_loras", "empty:True"],
+            [
+                "unload",
+                "remove:k2_routed_loras",
+                "remove:k2_projector_delta",
+                "empty:True",
+            ],
         )
 
 

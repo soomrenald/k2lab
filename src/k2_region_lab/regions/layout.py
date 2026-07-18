@@ -17,6 +17,7 @@ class RegionDefinition:
     box: PixelBox
     prompt: str = ""
     negative_prompt: str = ""
+    face_identity_prompt: str = ""
     enabled: bool = True
     priority: int = 0
     spatial_role: str = "auto"
