@@ -1,6 +1,6 @@
 # K2 Region Lab
 
-K2 Region Lab provides both a local PySide6 application and a complete ComfyUI custom-node package for pixel-space control of Krea 2. A region is one shared spatial domain for prompt routing, unfused LoRA delta gating, influence measurement, and attention tuning.
+K2 Region Lab is a local PySide6 research application for generic pixel-space control of Krea 2. A region is one shared spatial domain for prompt routing, unfused LoRA delta gating, influence measurement, and attention tuning.
 
 ## Installation
 
@@ -34,14 +34,6 @@ With the default paths, simply run:
 ```bash
 k2lab
 ```
-
-To use the ComfyUI version, link the tracked node package into the existing ComfyUI checkout and restart ComfyUI:
-
-```bash
-ln -s "$(pwd)/comfyui/krea_region_lora" "$HOME/ComfyUI/custom_nodes/krea_region_lora"
-```
-
-The ComfyUI package contains a composable bare-node workflow and a full `K2 Region Lab App` node with a draw-and-label canvas, region prompt editors, spatial controls, phrase emphasis, projector settings, and regional LoRA slot assignment. Separate `K2 Face Detailer` and `K2 Post Upscaler` nodes use native ComfyUI model/conditioning/image inputs. See `comfyui/krea_region_lora/README.md` for the node map and example wiring.
 
 For an NVIDIA installation, point K2 Lab at the Python interpreter from a CUDA-enabled ComfyUI environment. Nothing needs to be installed into the lightweight desktop environment beyond the normal K2 Lab dependencies:
 
@@ -81,7 +73,6 @@ The implementation is at the foundation milestone. It currently provides:
 - confirmed cleanup of current-user K2 workers without terminating unrelated GPU applications;
 - in-app CUDA/ROCm diagnostics with device permissions, runtime identity, and remediation hints;
 - dependency-light unit tests for the geometry and artifact-discovery contracts.
-- a 20-node ComfyUI package with compact/full region editors, native conditioning and model inputs, regional LoRA routing, a separate face detailer, and a separate exact-scale upscaler.
 
 The configured default model locations are:
 
@@ -97,13 +88,6 @@ The model execution environment targets Python 3.12. The geometry and discovery 
 
 ```bash
 PYTHONPATH=src python -m unittest discover -s tests -v
-```
-
-Run the ComfyUI-node tests with the Python interpreter used by ComfyUI:
-
-```bash
-cd comfyui/krea_region_lora
-~/ComfyUI/venv_rocm7/bin/python run_tests.py
 ```
 
 Inspect configured model artifacts without launching Qt:
