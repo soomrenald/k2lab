@@ -287,6 +287,26 @@ class RegionalPromptingTests(unittest.TestCase):
         self.assertLess(bound.emphases[0].start, bound.emphases[0].end)
         self.assertLess(bound.emphases[1].start, bound.emphases[1].end)
 
+    def test_prompt_emphasis_excludes_tokenized_leading_space_from_start(self) -> None:
+        region = RegionDefinition(
+            "subject", "Subject", PixelBox(0, 0, 32, 64), "woman in foreground"
+        )
+        plan = compile_regional_prompt_plan(
+            64,
+            64,
+            "gallery",
+            (region,),
+            emphases=(PromptEmphasis("subject", "foreground", 0.8),),
+        )
+
+        def qwen_like_prefix_count(prefix: str) -> int:
+            words = len(prefix.rstrip().split())
+            return words + int(bool(prefix) and prefix[-1].isspace())
+
+        bound = plan.bind_tokens(qwen_like_prefix_count)
+
+        self.assertEqual(bound.emphases[0].end - bound.emphases[0].start, 1)
+
     def test_subject_field_peaks_at_center_while_background_fills_its_box(self) -> None:
         subject = RegionDefinition(
             "subject",

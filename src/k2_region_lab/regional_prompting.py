@@ -155,7 +155,7 @@ class RegionalPromptPlan:
                 phrase=emphasis.phrase,
                 strength=emphasis.strength,
                 start=prompt_prefix_token_count(
-                    self.prompt[: emphasis.character_span[0]]
+                    self.prompt[: emphasis.character_span[0]].rstrip()
                 ),
                 end=prompt_prefix_token_count(
                     self.prompt[: emphasis.character_span[1]]
@@ -164,8 +164,15 @@ class RegionalPromptPlan:
             )
             for emphasis in self.emphases
         )
-        if any(emphasis.end <= emphasis.start for emphasis in emphases):
-            raise ValueError("each emphasized phrase must own at least one text token")
+        invalid_emphasis = next(
+            (emphasis for emphasis in emphases if emphasis.end <= emphasis.start),
+            None,
+        )
+        if invalid_emphasis is not None:
+            raise ValueError(
+                f"emphasized phrase {invalid_emphasis.phrase!r} does not align "
+                "with a complete text token"
+            )
         if emphases and max(emphasis.end for emphasis in emphases) > text_token_count:
             raise ValueError("emphasized text span exceeds the conditioning sequence")
         character_identities = tuple(
