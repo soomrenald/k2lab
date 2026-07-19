@@ -22,7 +22,6 @@ from k2_region_lab.face_detail import (
     expanded_square_crop,
 )
 from k2_region_lab.lora import (
-    CHARACTER_IDENTITY_LORA_ROUTING,
     adapter_prefixes,
     align_krea_lora_state_dict,
     inspect_lora_header,
@@ -103,6 +102,10 @@ class LoraDeltaStatistics:
             image_norms = None
             folded_batches = batch // text_count
             text_observations = folded_batches * enabled_text * int(token_norms.shape[1])
+        elif route_kind == "text_projector":
+            text_norms = token_norms
+            image_norms = None
+            text_observations = batch * enabled_text * int(token_norms.shape[2])
         elif route_kind == "text_refiner":
             text_norms = token_norms
             image_norms = None
@@ -657,14 +660,18 @@ class ComfyBaselineRuntime:
             report["application_mode"] = (
                 "unfused_token_delta_gate"
                 if route.global_scope
-                or route.routing_mode == CHARACTER_IDENTITY_LORA_ROUTING
-                else "unfused_image_token_local_delta_gate"
+                else "unfused_region_text_image_delta_gate_v3"
             )
             skipped = skipped_targets.get(route.lora_id, [])
             report["applied_model_targets"] = len(patches) - len(skipped)
             report["locality_skipped_targets"] = len(skipped)
             report["locality_skipped_target_examples"] = skipped[:8]
             report["route"] = route.summary()
+            if report["applied_model_targets"] == 0:
+                raise ValueError(
+                    f"Regional LoRA {report['display_name']!r} has no targets that "
+                    "can be routed locally; no LoRA was applied"
+                )
             reports.append(report)
 
         statistics = LoraDeltaStatistics(routes)
@@ -882,8 +889,7 @@ class ComfyBaselineRuntime:
                 key = (
                     route.lora_id,
                     self.route_kind,
-                    x.shape[0],
-                    x.shape[-2],
+                    tuple(x.shape),
                     x.device,
                     x.dtype,
                 )
@@ -892,6 +898,11 @@ class ComfyBaselineRuntime:
                     if self.route_kind == "text_layerwise":
                         values = route.layerwise_text_batch_mask(int(x.shape[0]))
                         mask = torch.tensor(values, device=x.device, dtype=x.dtype).view(-1, 1, 1)
+                    elif self.route_kind == "text_projector":
+                        values = route.sequence_mask(int(x.shape[1]), text_fusion=True)
+                        mask = torch.tensor(values, device=x.device, dtype=x.dtype).view(
+                            1, -1, 1, 1
+                        )
                     else:
                         values = route.sequence_mask(
                             int(x.shape[-2]),
@@ -927,8 +938,10 @@ class ComfyBaselineRuntime:
                     route_kind=(
                         "text_layerwise"
                         if ".txtfusion.layerwise_blocks." in str(key)
+                        else "text_projector"
+                        if ".txtfusion.projector." in str(key)
                         else "text_refiner"
-                        if ".txtfusion." in str(key)
+                        if ".txtfusion." in str(key) or ".txtmlp." in str(key)
                         else "combined"
                     ),
                 ),
@@ -1529,10 +1542,18 @@ class ComfyBaselineRuntime:
                 raise RuntimeError(
                     "Krea main-stream attention was not reached by the spatial override"
                 )
+            if attention_override.text_refiner_calls == 0:
+                raise RuntimeError(
+                    "Krea text-refiner attention was not reached by the regional "
+                    "text partition"
+                )
             if event is not None:
                 event(
                     "Unified spatial attention applied",
-                    {"attention_calls": attention_override.matched_calls},
+                    {
+                        "attention_calls": attention_override.matched_calls,
+                        "text_refiner_attention_calls": attention_override.text_refiner_calls,
+                    },
                 )
                 if regional_lora_delta_adaptation:
                     event(
@@ -2004,9 +2025,13 @@ class ComfyBaselineRuntime:
             ]
         if attention_override is not None:
             summary["attention_calls"] = attention_override.matched_calls
+            summary["text_refiner_attention_calls"] = attention_override.text_refiner_calls
             summary["attention_implementation"] = "chunked-exact-softmax-v1"
             summary["attention_query_chunk_size"] = (
                 attention_override.query_chunk_size
             )
             summary["lora_delta_adaptation"] = attention_override.summary()
+            summary["text_partition"] = "subject_keys_private_to_region"
+            summary["subject_box_exclusion"] = True
+            summary["image_partition"] = "subject_keys_private_to_region"
         return summary

@@ -8,7 +8,7 @@ from typing import Callable
 from k2_region_lab.regions import CanvasGeometry, PixelBox, RegionDefinition
 
 
-BACKEND = "krea-unified-spatial-attention-v4"
+BACKEND = "krea-unified-spatial-attention-v5"
 GLOBAL_EMPHASIS_SCOPE = "__global__"
 
 
@@ -91,6 +91,7 @@ class UnifiedPromptRegion:
     clause: str
     character_span: tuple[int, int]
     image_token_field: tuple[float, ...]
+    image_token_mask: tuple[float, ...]
     spatial_role: str
 
 
@@ -134,6 +135,7 @@ class RegionalPromptPlan:
                     self.prompt[: region.character_span[1]]
                 ),
                 image_token_field=region.image_token_field,
+                image_token_mask=region.image_token_mask,
                 spatial_role=region.spatial_role,
             )
             for region in self.regions
@@ -291,6 +293,7 @@ class RegionalTokenSpan:
     start: int
     end: int
     image_token_field: tuple[float, ...]
+    image_token_mask: tuple[float, ...]
     spatial_role: str
 
 
@@ -478,6 +481,7 @@ def compile_regional_prompt_plan(
                 clause=clause,
                 character_span=(start, end),
                 image_token_field=image_token_field,
+                image_token_mask=geometry.rasterize_box(box),
                 spatial_role=role,
             )
         )

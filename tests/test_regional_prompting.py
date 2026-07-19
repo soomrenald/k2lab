@@ -12,7 +12,11 @@ from k2_region_lab.regional_prompting import (
     region_definitions_from_payload,
 )
 from k2_region_lab.regions import PixelBox, RegionDefinition
-from k2_region_lab.spatial_attention import KreaSpatialAttentionOverride, spatial_pair_bias
+from k2_region_lab.spatial_attention import (
+    KreaSpatialAttentionOverride,
+    spatial_pair_bias,
+    text_region_ownership,
+)
 
 
 class RegionalPromptingTests(unittest.TestCase):
@@ -170,6 +174,68 @@ class RegionalPromptingTests(unittest.TestCase):
         self.assertEqual(override.step_scale, 1.0)
         override.set_denoising_progress(8, 8)
         self.assertAlmostEqual(override.step_scale, 0.35)
+
+    def test_subject_text_attention_is_partitioned_between_regions(self) -> None:
+        try:
+            import torch
+        except ModuleNotFoundError:
+            self.skipTest("Torch is exercised in the configured ComfyUI worker environment")
+
+        regions = (
+            RegionDefinition("left", "Left", PixelBox(0, 0, 16, 16), "red coat"),
+            RegionDefinition("right", "Right", PixelBox(16, 0, 32, 16), "blue coat"),
+        )
+        plan = compile_regional_prompt_plan(32, 16, "portrait", regions)
+        bound = plan.bind_tokens(len, conditioning_text_token_count=len(plan.prompt))
+        override = KreaSpatialAttentionOverride(bound)
+        owners = torch.tensor(text_region_ownership(bound), dtype=torch.int16)
+        scores = torch.zeros((1, 1, bound.text_token_count, bound.text_token_count))
+
+        override._partition_regional_text(
+            scores, 0, bound.text_token_count, owners
+        )
+
+        left, right = bound.spans
+        self.assertTrue(torch.isneginf(scores[0, 0, left.start, right.start]))
+        self.assertTrue(torch.isneginf(scores[0, 0, right.start, left.start]))
+        self.assertTrue(torch.isneginf(scores[0, 0, 0, left.start]))
+        self.assertEqual(float(scores[0, 0, left.start, left.start]), 0.0)
+        self.assertEqual(float(scores[0, 0, left.start, 0]), 0.0)
+
+    def test_subject_text_cannot_reach_image_tokens_outside_its_box(self) -> None:
+        try:
+            import torch
+        except ModuleNotFoundError:
+            self.skipTest("Torch is exercised in the configured ComfyUI worker environment")
+
+        regions = (
+            RegionDefinition("left", "Left", PixelBox(0, 0, 16, 16), "red coat"),
+            RegionDefinition("right", "Right", PixelBox(16, 0, 32, 16), "blue coat"),
+        )
+        plan = compile_regional_prompt_plan(
+            32, 16, "portrait", regions, falloff_pixels=0.0
+        )
+        bound = plan.bind_tokens(len, conditioning_text_token_count=len(plan.prompt))
+        override = KreaSpatialAttentionOverride(bound)
+        reference = torch.zeros((1, 1, bound.text_token_count + 2, 1))
+        _fields, _emphases, _owners, combined_owners = override._pair_fields(reference)
+        scores = torch.zeros((1, 1, bound.text_token_count + 2, bound.text_token_count + 2))
+
+        override._partition_regional_stream(
+            scores, 0, bound.text_token_count + 2, combined_owners
+        )
+
+        left, right = bound.spans
+        left_image = bound.text_token_count
+        right_image = left_image + 1
+        self.assertTrue(torch.isneginf(scores[0, 0, left.start, right_image]))
+        self.assertTrue(torch.isneginf(scores[0, 0, right_image, left.start]))
+        self.assertTrue(torch.isneginf(scores[0, 0, left_image, right_image]))
+        self.assertTrue(torch.isneginf(scores[0, 0, right_image, left_image]))
+        self.assertTrue(torch.isneginf(scores[0, 0, 0, left_image]))
+        self.assertEqual(float(scores[0, 0, left.start, left_image]), 0.0)
+        self.assertEqual(float(scores[0, 0, left_image, left.start]), 0.0)
+        self.assertEqual(float(scores[0, 0, left_image, 0]), 0.0)
 
     def test_lora_delta_adaptation_uses_bounded_region_scales(self) -> None:
         region = RegionDefinition(

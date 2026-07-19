@@ -26,7 +26,7 @@ class RegionalLoraRoutingTests(unittest.TestCase):
         bound = plan.bind_tokens(len, conditioning_text_token_count=len(plan.prompt))
         return plan, bound
 
-    def test_standard_regional_route_is_image_only_inside_its_pixel_box(self) -> None:
+    def test_standard_regional_route_gates_its_clause_and_pixel_box(self) -> None:
         plan, bound = self._plans()
         route = compile_lora_delta_routes(
             [
@@ -45,7 +45,11 @@ class RegionalLoraRoutingTests(unittest.TestCase):
             bound_plan=bound,
         )[0]
         self.assertEqual(route.image_token_mask, (0.0, 1.0))
-        self.assertEqual(route.text_token_mask, (0.0,) * bound.text_token_count)
+        right_span = next(span for span in bound.spans if span.region_id == "right")
+        self.assertEqual(
+            {index for index, value in enumerate(route.text_token_mask) if value},
+            set(range(right_span.start, right_span.end)),
+        )
         self.assertEqual(
             route.sequence_mask(bound.text_token_count, text_fusion=True),
             route.text_token_mask,
@@ -73,7 +77,7 @@ class RegionalLoraRoutingTests(unittest.TestCase):
             bound_plan=bound,
         )[0]
 
-        self.assertFalse(
+        self.assertTrue(
             route_allows_adapter_target(
                 route, "diffusion_model.txtfusion.refiner_blocks.0.attn.wq.weight"
             )
@@ -348,14 +352,60 @@ class RegionalLoraRoutingTests(unittest.TestCase):
         )
 
         self.assertEqual(
-            set(installed), {"diffusion_model.blocks.0.attn.wo.weight"}
+            set(installed),
+            {
+                "diffusion_model.txtfusion.refiner_blocks.0.attn.wq.weight",
+                "diffusion_model.blocks.0.attn.wo.weight",
+            },
         )
-        self.assertEqual(reports[0]["applied_model_targets"], 1)
-        self.assertEqual(reports[0]["locality_skipped_targets"], 2)
+        self.assertEqual(reports[0]["applied_model_targets"], 2)
+        self.assertEqual(reports[0]["locality_skipped_targets"], 1)
         self.assertEqual(
             reports[0]["application_mode"],
-            "unfused_image_token_local_delta_gate",
+            "unfused_region_text_image_delta_gate_v3",
         )
+
+    def test_runtime_rejects_a_regional_lora_with_no_routable_targets(self) -> None:
+        plan, bound = self._plans()
+        runtime = object.__new__(ComfyBaselineRuntime)
+        runtime.model = object()
+
+        def fake_load(self, specification):
+            del self
+            return (
+                {"diffusion_model.blocks.0.attn.wv.weight": object()},
+                None,
+                {
+                    "id": specification["id"],
+                    "display_name": specification["name"],
+                    "strength": 1.0,
+                    "global": False,
+                    "region_ids": specification["region_ids"],
+                    "compatible": True,
+                    "adapter_count": 1,
+                    "matched_model_targets": 1,
+                },
+            )
+
+        runtime._load_lora_patches = MethodType(fake_load, runtime)
+        with self.assertRaisesRegex(ValueError, "no targets that can be routed locally"):
+            runtime._apply_routed_loras(
+                [{
+                    "id": "broadcast-only",
+                    "name": "Broadcast only",
+                    "path": "/unused/broadcast.safetensors",
+                    "strength": 1.0,
+                    "global": False,
+                    "region_ids": ["right"],
+                }],
+                base_model=runtime.model,
+                width=32,
+                height=16,
+                text_token_count=bound.text_token_count,
+                regional_plan=plan,
+                bound_plan=bound,
+                event=None,
+            )
 
     def test_vae_handoff_unloads_model_before_discarding_adapter_hooks(self) -> None:
         calls = []

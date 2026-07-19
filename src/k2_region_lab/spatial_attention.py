@@ -5,6 +5,32 @@ from typing import Any
 from k2_region_lab.regional_prompting import BoundRegionalPromptPlan
 
 
+def text_region_ownership(plan: BoundRegionalPromptPlan) -> tuple[int, ...]:
+    """Return zero for shared text and a distinct owner for each subject clause."""
+    owners = [0] * plan.text_token_count
+    owner = 0
+    for span in plan.spans:
+        if span.spatial_role != "subject":
+            continue
+        owner += 1
+        owners[span.start : span.end] = [owner] * (span.end - span.start)
+    return tuple(owners)
+
+
+def image_region_ownership(plan: BoundRegionalPromptPlan) -> tuple[int, ...]:
+    """Assign each subject-box image token to the first/highest-priority subject."""
+    owners = [0] * plan.image_token_count
+    owner = 0
+    for span in plan.spans:
+        if span.spatial_role != "subject":
+            continue
+        owner += 1
+        for index, weight in enumerate(span.image_token_mask):
+            if weight > 0.0 and owners[index] == 0:
+                owners[index] = owner
+    return tuple(owners)
+
+
 def spatial_pair_bias(
     image_token_field: tuple[float, ...],
     strength: float,
@@ -26,7 +52,7 @@ def spatial_pair_bias(
 
 
 class KreaSpatialAttentionOverride:
-    """Inject a chunked text/image score bias into Krea's main stream only.
+    """Partition regional text and route it to image tokens in one model pass.
 
     Some CUDA/ROCm SDPA kernels cannot use a dense additive mask efficiently.
     Query chunking computes the exact biased softmax without ever materializing
@@ -55,6 +81,9 @@ class KreaSpatialAttentionOverride:
             plan.text_token_count + plan.image_token_count
         )
         self.matched_calls = 0
+        self.text_refiner_calls = 0
+        self.text_owners = text_region_ownership(plan)
+        self.image_owners = image_region_ownership(plan)
         self.step_scale = 1.0
         self.region_scales: dict[str, float] = {}
         self._cache: dict[tuple[str, int | None, str], Any] = {}
@@ -62,15 +91,31 @@ class KreaSpatialAttentionOverride:
     def __call__(self, original, *args, **kwargs):
         q = args[0]
         k = args[1]
-        if (
-            q.shape[-2] != self.expected_sequence_length
-            or k.shape[-2] != self.expected_sequence_length
-        ):
+        query_length = int(q.shape[-2])
+        key_length = int(k.shape[-2])
+        main_stream = (
+            query_length == self.expected_sequence_length
+            and key_length == self.expected_sequence_length
+        )
+        # Krea folds prompt tokens into the batch while its first two text-fusion
+        # blocks attend over the checkpoint's 12 Qwen layer states.
+        folded_layerwise_text = (
+            query_length == 12
+            and query_length == self.plan.text_token_count
+            and int(q.shape[0]) >= self.plan.text_token_count
+            and int(q.shape[0]) % self.plan.text_token_count == 0
+        )
+        text_refiner = (
+            query_length == self.plan.text_token_count
+            and key_length == self.plan.text_token_count
+            and not folded_layerwise_text
+        )
+        if not main_stream and not text_refiner:
             return original(*args, **kwargs)
 
         if kwargs.get("mask") is not None:
             raise RuntimeError(
-                "Krea chunked spatial attention requires an unmasked main stream"
+                "Krea chunked regional attention requires an unmasked stream"
             )
         if not kwargs.get("skip_reshape", False) or q.ndim != 4:
             raise RuntimeError(
@@ -80,13 +125,16 @@ class KreaSpatialAttentionOverride:
         v = args[2]
         original_head_dim = q.shape[-1]
         scale = float(kwargs.get("scale", original_head_dim**-0.5))
-        output = self._chunked_attention(q, k, v, scale)
-        self.matched_calls += 1
+        output = self._chunked_attention(q, k, v, scale, main_stream=main_stream)
+        if main_stream:
+            self.matched_calls += 1
+        else:
+            self.text_refiner_calls += 1
         if kwargs.get("skip_output_reshape", False):
             return output
         return output.transpose(1, 2).reshape(output.shape[0], output.shape[2], -1)
 
-    def _chunked_attention(self, q, k, v, scale: float):
+    def _chunked_attention(self, q, k, v, scale: float, *, main_stream: bool):
         import torch
 
         output = torch.empty(
@@ -95,12 +143,16 @@ class KreaSpatialAttentionOverride:
             device=v.device,
         )
         key_transposed = k.transpose(-2, -1)
-        pair_fields, emphasis_fields = self._pair_fields(q)
+        pair_fields, emphasis_fields, text_owners, combined_owners = self._pair_fields(q)
         for start in range(0, q.shape[-2], self.query_chunk_size):
             end = min(q.shape[-2], start + self.query_chunk_size)
             scores = torch.matmul(q[:, :, start:end], key_transposed) * scale
             scores = scores.float()
-            self._add_spatial_bias(scores, start, end, pair_fields, emphasis_fields)
+            if main_stream:
+                self._partition_regional_stream(scores, start, end, combined_owners)
+                self._add_spatial_bias(scores, start, end, pair_fields, emphasis_fields)
+            else:
+                self._partition_regional_text(scores, start, end, text_owners)
             probabilities = torch.softmax(scores, dim=-1).to(v.dtype)
             output[:, :, start:end] = torch.matmul(probabilities, v)
             del scores, probabilities
@@ -137,9 +189,35 @@ class KreaSpatialAttentionOverride:
             )
             for emphasis in self.plan.emphases
         )
-        cached = fields, emphasis_fields
+        text_owners = torch.tensor(
+            self.text_owners, dtype=torch.int16, device=device
+        )
+        combined_owners = torch.tensor(
+            self.text_owners + self.image_owners,
+            dtype=torch.int16,
+            device=device,
+        )
+        cached = fields, emphasis_fields, text_owners, combined_owners
         self._cache[key] = cached
         return cached
+
+    def _partition_regional_text(self, scores, start, end, text_owners) -> None:
+        """Keep subject-owned keys private to that subject in both text stages."""
+        self._partition_owned_keys(scores, start, end, text_owners)
+
+    def _partition_regional_stream(self, scores, start, end, combined_owners) -> None:
+        """Prevent subject text/image keys from carrying deltas to other owners."""
+        self._partition_owned_keys(scores, start, end, combined_owners)
+
+    @staticmethod
+    def _partition_owned_keys(scores, start, end, owners) -> None:
+        query_owners = owners[start:end]
+        blocked = (owners.reshape(1, -1) > 0) & (
+            query_owners.reshape(-1, 1) != owners.reshape(1, -1)
+        )
+        scores.masked_fill_(
+            blocked.reshape(1, 1, end - start, -1), float("-inf")
+        )
 
     def _add_spatial_bias(self, scores, start, end, pair_fields, emphasis_fields) -> None:
         text_count = self.plan.text_token_count
@@ -212,6 +290,10 @@ class KreaSpatialAttentionOverride:
 
     def summary(self) -> dict[str, object]:
         return {
+            "text_refiner_attention_calls": self.text_refiner_calls,
+            "text_partition": "subject_keys_private_to_region",
+            "subject_box_exclusion": True,
+            "image_partition": "subject_keys_private_to_region",
             "lora_delta_adaptation": self.lora_delta_adaptation,
             "lora_delta_adaptation_gain": self.lora_delta_adaptation_gain,
             "final_region_scales": dict(self.region_scales),

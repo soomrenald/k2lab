@@ -681,8 +681,9 @@ class MainWindow(QMainWindow):
         self.regional_outside_penalty_input.setSingleStep(0.1)
         self.regional_outside_penalty_input.setValue(1.0)
         self.regional_outside_penalty_input.setToolTip(
-            "Suppress subject prompt attention away from its target box; background "
-            "bands automatically use one quarter of this penalty"
+            "Increase center-to-edge contrast inside subject boxes; subject text is "
+            "hard-blocked outside its box. Background bands use one quarter of this "
+            "penalty and may feather beyond their boxes."
         )
         layout.addRow("Outside penalty", self.regional_outside_penalty_input)
         self.regional_feather_input = QSpinBox()
@@ -691,7 +692,8 @@ class MainWindow(QMainWindow):
         self.regional_feather_input.setSuffix(" px")
         self.regional_feather_input.setValue(128)
         self.regional_feather_input.setToolTip(
-            "Distance outside each box over which its attention guidance smoothly fades"
+            "Distance over which background-band guidance fades beyond its box. "
+            "Subject text remains hard-confined to image tokens intersecting its box."
         )
         layout.addRow("Spatial falloff", self.regional_feather_input)
         self.regional_subject_competition_input = QCheckBox(
@@ -1168,9 +1170,12 @@ class MainWindow(QMainWindow):
         )
         self.lora_routing_mode_input.setEnabled(False)
         self.lora_routing_mode_input.setToolTip(
-            "Standard regional routing is image-token-only and omits text-fusion "
-            "and attention key/value targets that would broadcast the effect. "
-            "Character identity retains its explicit regional face anchor."
+            "Standard regional routing gates text-fusion deltas to each assigned "
+            "prompt clause and lets those tokens condition only image tokens inside "
+            "the assigned box. Subject-owned image keys also remain private so the "
+            "delta cannot relay through the shared image stream. Main-stream "
+            "attention key/value targets are omitted. "
+            "Character identity additionally inserts an explicit face anchor."
         )
         self.lora_routing_mode_input.currentIndexChanged.connect(
             self._lora_routing_mode_changed
@@ -1187,8 +1192,8 @@ class MainWindow(QMainWindow):
         strength_row.addRow("Identity trigger", self.lora_trigger_input)
         layout.addLayout(strength_row)
         self.lora_routing_note = QLabel(
-            "Standard routing applies token-local LoRA targets only to image tokens "
-            "inside the assigned boxes."
+            "Standard routing partitions each assigned prompt clause and confines "
+            "its LoRA-conditioned image attention to the assigned boxes."
         )
         self.lora_routing_note.setWordWrap(True)
         layout.addWidget(self.lora_routing_note)
@@ -1776,9 +1781,10 @@ class MainWindow(QMainWindow):
             "each assigned region. The LoRA keeps full regional text coverage and "
             "its image delta remains confined to the region box."
             if character_identity
-            else "Standard routing is image-token-only. Text-fusion and attention "
-            "key/value targets are omitted because they cannot be confined by an "
-            "output-token box mask."
+            else "Standard routing gates text-fusion deltas to assigned regional "
+            "clauses. Subject clauses and subject-owned image keys cannot feed other "
+            "regions, while shared scene keys may still feed each subject. Main-stream "
+            "attention key/value targets remain omitted because their outputs broadcast."
         )
 
     def _lora_routing_mode_changed(self) -> None:
