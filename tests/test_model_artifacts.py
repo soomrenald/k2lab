@@ -50,6 +50,38 @@ class ModelArtifactTests(unittest.TestCase):
             self.assertTrue(artifacts.complete)
             self.assertEqual(artifacts.transformer.path.name, "krea2_turbo_fp8_scaled.safetensors")
 
+    def test_explicit_configured_files_override_name_based_discovery(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            diffusion = root / "diffusion_models"
+            text = root / "text_encoders"
+            vae = root / "vae"
+            diffusion.mkdir()
+            text.mkdir()
+            vae.mkdir()
+            tensor = {"weight": {"dtype": "BF16", "shape": [1], "data_offsets": [0, 2]}}
+            explicit_diffusion = diffusion / "custom-transformer.safetensors"
+            explicit_text = text / "custom-encoder.safetensors"
+            explicit_vae = vae / "custom-decoder.safetensors"
+            write_header(explicit_diffusion, tensor)
+            write_header(explicit_text, tensor)
+            write_header(explicit_vae, tensor)
+
+            artifacts = discover_model_artifacts(
+                ModelDirectories(
+                    diffusion,
+                    text,
+                    vae,
+                    diffusion_model_file=explicit_diffusion,
+                    text_encoder_file=explicit_text,
+                    vae_file=explicit_vae,
+                )
+            )
+
+            self.assertEqual(artifacts.transformer.path, explicit_diffusion)
+            self.assertEqual(artifacts.text_encoder.path, explicit_text)
+            self.assertEqual(artifacts.vae.path, explicit_vae)
+
 
 if __name__ == "__main__":
     unittest.main()

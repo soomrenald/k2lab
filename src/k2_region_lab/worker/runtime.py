@@ -442,8 +442,11 @@ def validate_model_artifacts(
 class ComfyBaselineRuntime:
     """Owns baseline Comfy model objects exclusively inside the GPU worker."""
 
-    def __init__(self, comfyui_root: Path) -> None:
+    def __init__(
+        self, comfyui_root: Path, *, face_detector_path: Path | None = None
+    ) -> None:
         self.comfyui_root = comfyui_root
+        self.face_detector_path = face_detector_path
         self.model = None
         self.clip = None
         self.vae = None
@@ -1818,7 +1821,9 @@ class ComfyBaselineRuntime:
         if not settings.enabled:
             return image, summary
 
-        detector_path = discover_face_detector(self.comfyui_root)
+        detector_path = getattr(self, "face_detector_path", None) or discover_face_detector(
+            self.comfyui_root
+        )
         if detector_path is None:
             raise RuntimeError(
                 "automatic face detailing is enabled, but the bundled NanoDet "

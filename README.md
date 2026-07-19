@@ -80,13 +80,39 @@ The implementation is at the foundation milestone. It currently provides:
 - in-app CUDA/ROCm diagnostics with device permissions, runtime identity, and remediation hints;
 - dependency-light unit tests for the geometry and artifact-discovery contracts.
 
-The configured default model locations are:
+The checked-in [`k2_region_lab.toml`](k2_region_lab.toml) file contains the default
+paths and generation settings. Its default model locations are:
 
 ```text
 ~/ComfyUI/models/diffusion_models/krea2_turbo_fp8_scaled.safetensors
 ~/ComfyUI/models/text_encoders/qwen3vl_4b_fp8_scaled.safetensors
 ~/ComfyUI/models/vae/qwen_image_vae.safetensors
 ```
+
+## Configuration
+
+K2 Region Lab loads the first available TOML configuration from the following
+locations:
+
+1. the file named by `K2LAB_CONFIG_FILE`;
+2. `k2_region_lab.toml` in the current working directory;
+3. `~/.config/k2-region-lab/config.toml`.
+
+Environment variables override values from the selected file. Relative paths in a
+TOML file are resolved relative to that file, so the checked-in `output_directory =
+"outputs"` continues to point at this checkout's output folder regardless of the
+shell's working directory. Blank entries under `[models]` retain automatic model
+discovery; set an entry to an exact file when several compatible models share a
+directory.
+
+The `[paths]` section configures the ComfyUI checkout, GPU-worker interpreter,
+application data and output folders, and the transformer, text encoder, VAE, LoRA,
+and upscaler model directories. `[models]` optionally pins the exact transformer,
+text encoder, VAE, face detector, and default upscaler files. `[runtime]` contains
+worker startup and memory defaults. `[generation]` contains the new-project canvas,
+step, sampler, scheduler, seed, seed behavior, and filename defaults. Edit the
+checked-in file for this installation, or copy it to the user configuration path
+for a configuration shared by multiple checkouts.
 
 ## Development
 
@@ -113,8 +139,10 @@ Do not resolve or replace the ComfyUI worker interpreter symlink: its venv path 
 The desktop starts its GPU worker with `~/ComfyUI/venv_rocm7/bin/python` by default. Override the runtime without changing GUI dependencies using:
 
 ```text
+K2LAB_CONFIG_FILE
 K2LAB_WORKER_PYTHON
 K2LAB_COMFYUI_ROOT
+K2LAB_DATA_DIR
 K2LAB_AUTO_START_WORKER
 K2LAB_MEMORY_POLICY
 K2LAB_RESERVE_VRAM_GB
@@ -126,6 +154,13 @@ K2LAB_FILENAME_PREFIX
 K2_TURBO_DIR
 K2_TEXT_ENCODER_DIR
 K2_VAE_DIR
+K2_LORA_DIR
+K2_UPSCALE_MODEL_DIR
+K2_TURBO_MODEL
+K2_TEXT_ENCODER_MODEL
+K2_VAE_MODEL
+K2_FACE_DETECTOR_MODEL
+K2_UPSCALE_MODEL
 ```
 
 Memory settings can be selected in **Model & memory** or set before launch. A policy is a safety floor: its reserve and system-RAM values may be raised in the UI, but not lowered. **Custom / any GPU** removes the hardware-size assumptions and permits a 0.5–128 GiB VRAM reserve and a 4–256 GiB available-RAM guard.
@@ -143,7 +178,9 @@ Memory settings can be selected in **Model & memory** or set before launch. A po
 
 These controls make allocation behavior tunable; they cannot make an unsupported Torch/ComfyUI build or an arbitrarily large render fit a particular card. On smaller GPUs, start with `low_8gb` or `safe_12gb`, keep OOM recovery enabled, and reduce the canvas from 1024×1024 if necessary. Smaller-VRAM profiles require more system RAM because ComfyUI offloads more weights to the CPU. The custom policy is also useful for cards between the named sizes.
 
-The right-side settings pane has separate **Model & memory** and **Generation & spatial** tabs so only one control group is visible at a time. Use **Validate tensors** before **Load Krea 2 baseline**. Validation reads only safetensors headers and writes complete manifests under the configured K2 Lab data directory. After loading, **Generate image** runs an eight-step Euler/simple Turbo pass by default and displays the saved image behind the editable region boxes. **Sampler** selects the denoising integration algorithm and **Scheduler** selects its noise/sigma schedule; both dropdowns reproduce the ordered `KSampler.SAMPLERS` and `KSampler.SCHEDULERS` registries from current ComfyUI. The worker validates the selection against the configured ComfyUI installation before sampling. Both values are saved in project JSON, embedded PNG project metadata, and separate PNG text fields. Project Open/Save dialogs start in the checkout's `prompts/` folder, and new generations default to the sibling `outputs/` folder. The generation tab provides an output-folder browser and editable filename prefix; both are saved in project JSON. The unified-prompt preview is a resizable, selectable-text dialog. The event viewer follows new messages only while its scrollbar is already at the latest event. Every dock pane can be resized, floated, closed, and restored from the checkable **View** menu; **View → Restore default pane layout** docks and shows all panes again.
+The right-side **Model and generation settings** pane contains **Model & memory**, **Generation & spatial**, **LoRA library & scope**, **Token emphasis**, and **Projector** tabs, so LoRA setup no longer occupies a separate dock. Use **Validate tensors** before **Load Krea 2 baseline**. Validation reads only safetensors headers and writes complete manifests under the configured K2 Lab data directory. After loading, **Generate image** runs an eight-step Euler/simple Turbo pass by default and displays the saved image behind the editable region boxes. **Sampler** selects the denoising integration algorithm and **Scheduler** selects its noise/sigma schedule; both dropdowns reproduce the ordered `KSampler.SAMPLERS` and `KSampler.SCHEDULERS` registries from current ComfyUI. The worker validates the selection against the configured ComfyUI installation before sampling. Both values are saved in project JSON, embedded PNG project metadata, and separate PNG text fields. Project Open/Save dialogs start in the checkout's `prompts/` folder, and new generations default to the sibling `outputs/` folder. The generation tab provides an output-folder browser and editable filename prefix; both are saved in project JSON. The unified-prompt preview is a resizable, selectable-text dialog. The event viewer follows new messages only while its scrollbar is already at the latest event.
+
+Drag the inner right edge of the left prompt pane or the inner left edge of the right settings pane to resize it. The two side panes are independent: resizing the right pane takes space from or returns space to the center workspace without changing the left pane. Drag the top edge of the bottom Events pane upward to make Events taller and shrink everything above it, or downward to restore height to the upper panes. The bottom pane owns both lower corners and therefore resizes the complete upper row consistently. Each dock can also be floated, closed, and restored from the checkable **View** menu; **View → Restore default pane layout** docks and shows all panes again.
 
 The **Projector** tab controls Krea's 12-column `txtfusion.projector` delta. It provides the `FilterBypass2`, `FilterBypass3`, `skc3vo`, and `z0jglf` reference presets, twelve editable vector fields, and one multiplier that scales the entire vector. The control is off by default and is saved in project JSON and PNG metadata. Each subject region also has a separate **Face identity prompt** for the character trigger and stable face/hair description. **Face identity protection** scales the projector delta only on that field's exact Qwen token span: `0` applies the complete preset, while `1` retains the baseline projector mixture for those identity tokens. Body, pose, action, and scene tokens continue receiving the complete preset, and there is no image-space exclusion mask. K2 Lab installs this token-selective projector delta before regional LoRA hooks, preserving regional LoRA routing unchanged.
 

@@ -49,6 +49,19 @@ def model_directories(payload: dict[str, Any]) -> ModelDirectories:
         diffusion_models=Path(payload["diffusion_models"]),
         text_encoders=Path(payload["text_encoders"]),
         vae=Path(payload["vae"]),
+        loras=Path(payload.get("loras", "~/ComfyUI/models/loras")).expanduser(),
+        upscale_models=Path(
+            payload.get("upscale_models", "~/ComfyUI/models/upscale_models")
+        ).expanduser(),
+        diffusion_model_file=(
+            Path(payload["diffusion_model_file"])
+            if payload.get("diffusion_model_file") else None
+        ),
+        text_encoder_file=(
+            Path(payload["text_encoder_file"])
+            if payload.get("text_encoder_file") else None
+        ),
+        vae_file=Path(payload["vae_file"]) if payload.get("vae_file") else None,
     )
 
 
@@ -118,7 +131,13 @@ def main() -> int:
                     "Loading Krea 2 baseline components",
                     command_id=command_id,
                 )
-                runtime = runtime or ComfyBaselineRuntime(comfyui_root)
+                runtime = runtime or ComfyBaselineRuntime(
+                    comfyui_root,
+                    face_detector_path=(
+                        Path(payload["face_detector_path"])
+                        if payload.get("face_detector_path") else None
+                    ),
+                )
                 loaded = runtime.load(
                     artifacts,
                     memory_policy_key=str(payload.get("memory_policy", "safe_16gb")),

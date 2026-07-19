@@ -10,6 +10,82 @@ from k2_region_lab.config import AppSettings
 
 
 class ConfigTests(unittest.TestCase):
+    def test_toml_config_sets_model_paths_and_generation_defaults(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = root / "settings.toml"
+            config.write_text(
+                """
+[paths]
+comfyui_root = "comfy"
+worker_python = "worker/bin/python"
+data_directory = "data"
+output_directory = "renders"
+diffusion_models = "models/diffusion"
+text_encoders = "models/text"
+vae = "models/vae"
+loras = "models/loras"
+upscale_models = "models/upscale"
+
+[models]
+diffusion_model = "models/diffusion/krea.safetensors"
+text_encoder = "models/text/qwen.safetensors"
+vae = "models/vae/qwen_vae.safetensors"
+face_detector = "models/detectors/face.onnx"
+upscale_model = "models/upscale/4x.pth"
+
+[runtime]
+auto_start_worker = false
+memory_policy = "balanced"
+reserve_vram_gb = 3.5
+minimum_system_ram_gb = 12.0
+cpu_vae = true
+oom_recovery = false
+
+[generation]
+width = 768
+height = 1152
+steps = 12
+sampler = "heun"
+scheduler = "normal"
+seed = 42
+seed_mode = "increment"
+filename_prefix = "configured"
+""".strip(),
+                encoding="utf-8",
+            )
+            with patch.dict(
+                os.environ, {"K2LAB_CONFIG_FILE": str(config)}, clear=True
+            ):
+                settings = AppSettings.from_environment()
+
+            models = settings.model_directories
+            self.assertEqual(models.diffusion_models, root / "models/diffusion")
+            self.assertEqual(models.text_encoders, root / "models/text")
+            self.assertEqual(models.vae, root / "models/vae")
+            self.assertEqual(models.loras, root / "models/loras")
+            self.assertEqual(models.upscale_models, root / "models/upscale")
+            self.assertEqual(
+                models.diffusion_model_file,
+                root / "models/diffusion/krea.safetensors",
+            )
+            self.assertEqual(settings.face_detector_path, root / "models/detectors/face.onnx")
+            self.assertEqual(settings.default_upscale_model, root / "models/upscale/4x.pth")
+            self.assertEqual(settings.output_directory, root / "renders")
+            self.assertFalse(settings.auto_start_worker)
+            self.assertEqual(settings.reserve_vram_gb, 3.5)
+            self.assertTrue(settings.cpu_vae)
+            self.assertFalse(settings.oom_recovery)
+            self.assertEqual(settings.default_width, 768)
+            self.assertEqual(settings.default_height, 1152)
+            self.assertEqual(settings.default_steps, 12)
+            self.assertEqual(settings.default_sampler, "heun")
+            self.assertEqual(settings.default_scheduler, "normal")
+            self.assertEqual(settings.default_seed, 42)
+            self.assertEqual(settings.default_seed_mode, "increment")
+            self.assertEqual(settings.filename_prefix, "configured")
+            self.assertEqual(settings.config_file, config)
+
     def test_rocm7_worker_is_the_default(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
             settings = AppSettings.from_environment()

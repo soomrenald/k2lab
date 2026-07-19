@@ -100,11 +100,12 @@ class DesktopSmokeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             window = self.make_window(Path(directory))
 
-            self.assertEqual(window.settings_tabs.count(), 4)
+            self.assertEqual(window.settings_tabs.count(), 5)
             self.assertEqual(window.settings_tabs.tabText(0), "Model & memory")
             self.assertEqual(window.settings_tabs.tabText(1), "Generation & spatial")
-            self.assertEqual(window.settings_tabs.tabText(2), "Token emphasis")
-            self.assertEqual(window.settings_tabs.tabText(3), "Projector")
+            self.assertEqual(window.settings_tabs.tabText(2), "LoRA library & scope")
+            self.assertEqual(window.settings_tabs.tabText(3), "Token emphasis")
+            self.assertEqual(window.settings_tabs.tabText(4), "Projector")
             runtime_page = window.settings_tabs.widget(0)
             generation_page = window.settings_tabs.widget(1)
             self.assertFalse(runtime_page.isHidden())
@@ -113,6 +114,10 @@ class DesktopSmokeTests(unittest.TestCase):
             window.settings_tabs.setCurrentIndex(1)
             self.assertTrue(runtime_page.isHidden())
             self.assertFalse(generation_page.isHidden())
+
+            window.settings_tabs.setCurrentIndex(2)
+            self.assertFalse(window.lora_list.isHidden())
+            self.assertFalse(window.lora_scope_list.isHidden())
 
     def test_view_menu_can_hide_show_float_and_restore_every_dock(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -129,7 +134,6 @@ class DesktopSmokeTests(unittest.TestCase):
             expected = {
                 "prompt_regions_dock": "Prompt and regions",
                 "model_settings_dock": "Model and generation settings",
-                "lora_library_dock": "LoRA library and scope",
                 "events_dock": "Events",
             }
             required_features = (
@@ -161,6 +165,56 @@ class DesktopSmokeTests(unittest.TestCase):
                 window.dockWidgetArea(window.event_dock),
                 Qt.DockWidgetArea.BottomDockWidgetArea,
             )
+            self.assertEqual(
+                window.corner(Qt.Corner.BottomLeftCorner),
+                Qt.DockWidgetArea.BottomDockWidgetArea,
+            )
+            self.assertEqual(
+                window.corner(Qt.Corner.BottomRightCorner),
+                Qt.DockWidgetArea.BottomDockWidgetArea,
+            )
+            window.close()
+
+    def test_right_and_bottom_pane_resizing_preserves_requested_neighbors(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            window = self.make_window(Path(directory))
+            window.resize(1700, 900)
+            window.show()
+            self.application.processEvents()
+            window.resizeDocks(
+                [window.prompt_dock, window.model_dock],
+                [340, 420],
+                Qt.Orientation.Horizontal,
+            )
+            window.resizeDocks(
+                [window.event_dock], [170], Qt.Orientation.Vertical
+            )
+            self.application.processEvents()
+
+            left_width = window.prompt_dock.width()
+            center_height = window.workspace_tabs.height()
+            bottom_height = window.event_dock.height()
+            window.resizeDocks(
+                [window.model_dock], [600], Qt.Orientation.Horizontal
+            )
+            self.application.processEvents()
+            self.assertLessEqual(abs(window.prompt_dock.width() - left_width), 2)
+
+            window.resizeDocks(
+                [window.event_dock], [bottom_height + 100], Qt.Orientation.Vertical
+            )
+            self.application.processEvents()
+            self.assertGreater(window.event_dock.height(), bottom_height)
+            self.assertLess(window.workspace_tabs.height(), center_height)
+
+            grown_bottom = window.event_dock.height()
+            shrunken_upper = window.workspace_tabs.height()
+            window.resizeDocks(
+                [window.event_dock], [max(100, grown_bottom - 120)], Qt.Orientation.Vertical
+            )
+            self.application.processEvents()
+            self.assertLess(window.event_dock.height(), grown_bottom)
+            self.assertGreater(window.workspace_tabs.height(), shrunken_upper)
             window.close()
 
     def test_clear_canvas_image_keeps_regions_and_prompts(self) -> None:

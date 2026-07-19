@@ -132,21 +132,41 @@ def _select(
     )
 
 
+def _explicit(path: Path | None, kind: ArtifactKind) -> ModelArtifact | None:
+    if path is None:
+        return None
+    selected = path.expanduser().resolve()
+    if not selected.is_file():
+        raise FileNotFoundError(f"configured {kind.value} model does not exist: {selected}")
+    if selected.suffix.casefold() != ".safetensors":
+        raise ValueError(f"configured {kind.value} model is not a safetensors file: {selected}")
+    return ModelArtifact(
+        kind=kind,
+        path=selected,
+        size_bytes=selected.stat().st_size,
+        summary=read_safetensors_summary(selected),
+    )
+
+
 def discover_model_artifacts(directories: ModelDirectories) -> ArtifactSet:
     return ArtifactSet(
-        transformer=_select(
+        transformer=_explicit(
+            directories.diffusion_model_file, ArtifactKind.TRANSFORMER
+        ) or _select(
             directories.diffusion_models,
             ArtifactKind.TRANSFORMER,
             required=("krea",),
             preferred=("krea2", "turbo", "fp8", "scaled"),
         ),
-        text_encoder=_select(
+        text_encoder=_explicit(
+            directories.text_encoder_file, ArtifactKind.TEXT_ENCODER
+        ) or _select(
             directories.text_encoders,
             ArtifactKind.TEXT_ENCODER,
             required=("qwen",),
             preferred=("qwen3vl", "4b", "fp8", "scaled"),
         ),
-        vae=_select(
+        vae=_explicit(directories.vae_file, ArtifactKind.VAE) or _select(
             directories.vae,
             ArtifactKind.VAE,
             required=("vae",),

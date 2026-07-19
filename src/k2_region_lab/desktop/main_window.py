@@ -114,7 +114,10 @@ class ScaledImagePreview(QLabel):
         self._original_pixmap = QPixmap()
         self._overlays: list[tuple[float, float, float, float, str, bool]] = []
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.setMinimumSize(320, 320)
+        # Keep the comparison usable when the bottom Events dock is dragged up.
+        # The preview expands normally, but must not impose a tall minimum on the
+        # complete upper dock row.
+        self.setMinimumSize(128, 128)
         self.setWordWrap(True)
         self.setStyleSheet(
             "QLabel { background: #191919; border: 1px solid #555; color: #aaa; }"
@@ -208,7 +211,7 @@ class MainWindow(QMainWindow):
         self._face_result_path: Path | None = None
         self._face_detections: list[dict[str, object]] = []
         self._syncing_face_selection = False
-        self._upscale_model_path: Path | None = None
+        self._upscale_model_path = settings.default_upscale_model
         self._generation_active = False
         self._pending_generation_payload: dict[str, object] | None = None
         self._pending_face_refinement_payload: dict[str, object] | None = None
@@ -221,6 +224,13 @@ class MainWindow(QMainWindow):
             settings.data_directory
         )
         self.setWindowTitle("K2 Region Lab")
+        self.setDockNestingEnabled(True)
+        self.setCorner(
+            Qt.Corner.BottomLeftCorner, Qt.DockWidgetArea.BottomDockWidgetArea
+        )
+        self.setCorner(
+            Qt.Corner.BottomRightCorner, Qt.DockWidgetArea.BottomDockWidgetArea
+        )
         self._build_file_menu()
 
         self.canvas = RegionCanvas(settings.default_width, settings.default_height)
@@ -249,10 +259,6 @@ class MainWindow(QMainWindow):
 
         self._build_prompt_dock()
         self._build_model_dock()
-        self._build_lora_dock()
-        self.splitDockWidget(
-            self.model_dock, self.lora_dock, Qt.Orientation.Horizontal
-        )
         self._build_event_dock()
         self._build_view_menu()
         self._fit_initial_window_to_screen()
@@ -328,7 +334,6 @@ class MainWindow(QMainWindow):
         self._dock_widgets = (
             self.prompt_dock,
             self.model_dock,
-            self.lora_dock,
             self.event_dock,
         )
         self._dock_toggle_actions: dict[str, QAction] = {}
@@ -352,19 +357,13 @@ class MainWindow(QMainWindow):
             Qt.DockWidgetArea.RightDockWidgetArea, self.model_dock
         )
         self.addDockWidget(
-            Qt.DockWidgetArea.RightDockWidgetArea, self.lora_dock
-        )
-        self.splitDockWidget(
-            self.model_dock, self.lora_dock, Qt.Orientation.Horizontal
-        )
-        self.addDockWidget(
             Qt.DockWidgetArea.BottomDockWidgetArea, self.event_dock
         )
         for dock in self._dock_widgets:
             dock.show()
         self.resizeDocks(
-            [self.prompt_dock, self.model_dock, self.lora_dock],
-            [360, 420, 420],
+            [self.prompt_dock, self.model_dock],
+            [360, 520],
             Qt.Orientation.Horizontal,
         )
         self.resizeDocks(
@@ -376,6 +375,7 @@ class MainWindow(QMainWindow):
     def _build_prompt_dock(self) -> None:
         dock = QDockWidget("Prompt and regions", self)
         self._configure_dock(dock, "prompt_regions_dock")
+        dock.setMinimumWidth(260)
         body = QWidget(dock)
         layout = QVBoxLayout(body)
         layout.addWidget(QLabel("Global prompt"))
@@ -667,6 +667,7 @@ class MainWindow(QMainWindow):
     def _build_model_dock(self) -> None:
         dock = QDockWidget("Model and generation settings", self)
         self._configure_dock(dock, "model_settings_dock")
+        dock.setMinimumWidth(340)
         body = QWidget(dock)
         body_layout = QVBoxLayout(body)
         self.settings_tabs = QTabWidget()
@@ -747,11 +748,12 @@ class MainWindow(QMainWindow):
         )
         self.steps_input = QSpinBox()
         self.steps_input.setRange(1, 100)
-        self.steps_input.setValue(8)
+        self.steps_input.setValue(self.settings.default_steps)
         self.sampler_input = QComboBox()
         for sampler in COMFYUI_SAMPLERS:
             self.sampler_input.addItem(sampler, sampler)
-        self.sampler_input.setCurrentIndex(self.sampler_input.findData("euler"))
+        sampler_index = self.sampler_input.findData(self.settings.default_sampler)
+        self.sampler_input.setCurrentIndex(max(0, sampler_index))
         self.sampler_input.setToolTip(
             "Sampling algorithm passed directly to ComfyUI KSampler. Euler is the "
             "Krea 2 Turbo default."
@@ -759,16 +761,15 @@ class MainWindow(QMainWindow):
         self.scheduler_input = QComboBox()
         for scheduler in COMFYUI_SCHEDULERS:
             self.scheduler_input.addItem(scheduler, scheduler)
-        self.scheduler_input.setCurrentIndex(
-            self.scheduler_input.findData("simple")
-        )
+        scheduler_index = self.scheduler_input.findData(self.settings.default_scheduler)
+        self.scheduler_input.setCurrentIndex(max(0, scheduler_index))
         self.scheduler_input.setToolTip(
             "Noise schedule passed directly to ComfyUI KSampler. Simple is the "
             "Krea 2 Turbo default."
         )
         self.seed_input = QSpinBox()
         self.seed_input.setRange(0, 2_147_483_647)
-        self.seed_input.setValue(0)
+        self.seed_input.setValue(self.settings.default_seed)
         layout.addRow("Turbo steps", self.steps_input)
         layout.addRow("Sampler", self.sampler_input)
         layout.addRow("Scheduler", self.scheduler_input)
@@ -777,6 +778,8 @@ class MainWindow(QMainWindow):
         self.seed_mode_input.addItem("Fixed", "fixed")
         self.seed_mode_input.addItem("Random", "random")
         self.seed_mode_input.addItem("Increment", "increment")
+        seed_mode_index = self.seed_mode_input.findData(self.settings.default_seed_mode)
+        self.seed_mode_input.setCurrentIndex(max(0, seed_mode_index))
         layout.addRow("Seed behavior", self.seed_mode_input)
         self.regional_prompting_input = QCheckBox("Use unified spatial prompting")
         self.regional_prompting_input.setChecked(True)
@@ -891,6 +894,9 @@ class MainWindow(QMainWindow):
         self.upscale_model_input = QLineEdit()
         self.upscale_model_input.setReadOnly(True)
         self.upscale_model_input.setPlaceholderText("Select ESRGAN-compatible model…")
+        self.upscale_model_input.setText(
+            str(self._upscale_model_path) if self._upscale_model_path else ""
+        )
         self.upscale_model_browse = QPushButton("Browse…")
         self.upscale_model_browse.clicked.connect(self._browse_upscale_model)
         self.upscale_model_clear = QPushButton("Clear")
@@ -936,6 +942,7 @@ class MainWindow(QMainWindow):
         generation_button_layout.addWidget(self.generate_button)
         generation_button_layout.addWidget(self.stop_generation_button)
         layout.addRow(generation_buttons)
+        self._build_lora_tab()
         self._build_token_emphasis_tab()
         self._build_projector_tab()
         dock.setWidget(body)
@@ -1243,10 +1250,8 @@ class MainWindow(QMainWindow):
         ):
             control.setEnabled(enabled)
 
-    def _build_lora_dock(self) -> None:
-        dock = QDockWidget("LoRA library and scope", self)
-        self._configure_dock(dock, "lora_library_dock")
-        body = QWidget(dock)
+    def _build_lora_tab(self) -> None:
+        body = QWidget()
         columns = QHBoxLayout(body)
         library_group = QGroupBox("Library")
         layout = QVBoxLayout(library_group)
@@ -1324,13 +1329,12 @@ class MainWindow(QMainWindow):
         self.lora_scope_list.itemChanged.connect(self._lora_scope_changed)
         scope_layout.addWidget(self.lora_scope_list)
         columns.addWidget(scope_group, 1)
-        dock.setWidget(self._scrollable(body))
-        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
-        self.lora_dock = dock
+        self.settings_tabs.addTab(self._scrollable(body), "LoRA library & scope")
 
     def _build_event_dock(self) -> None:
         dock = QDockWidget("Events", self)
         self._configure_dock(dock, "events_dock")
+        dock.setMinimumHeight(100)
         splitter = QSplitter(Qt.Orientation.Horizontal, dock)
         self.events = EventListWidget(splitter)
         self.resource_monitor = ResourceMonitorWidget(splitter)
@@ -1420,7 +1424,9 @@ class MainWindow(QMainWindow):
         if source_path is None or not source_path.is_file():
             QMessageBox.warning(self, "Source PNG required", "Load a first-pass PNG first.")
             return
-        detector_path = discover_face_detector(self.settings.comfyui_root)
+        detector_path = self.settings.face_detector_path or discover_face_detector(
+            self.settings.comfyui_root
+        )
         if detector_path is None:
             QMessageBox.warning(
                 self,
@@ -1460,6 +1466,8 @@ class MainWindow(QMainWindow):
                     str(source_path),
                     "--comfyui-root",
                     str(self.settings.comfyui_root),
+                    "--detector-path",
+                    str(detector_path),
                     "--threshold",
                     str(self.face_detail_detector_threshold_input.value()),
                     "--provider",
@@ -1718,7 +1726,7 @@ class MainWindow(QMainWindow):
         start = (
             self._upscale_model_path.parent
             if self._upscale_model_path is not None
-            else self.settings.comfyui_root / "models" / "upscale_models"
+            else self.settings.model_directories.upscale_models
         )
         selected, _ = QFileDialog.getOpenFileName(
             self,
@@ -2002,7 +2010,7 @@ class MainWindow(QMainWindow):
         )
 
     def _browse_lora(self) -> None:
-        comfy_loras = Path("~/ComfyUI/models/loras").expanduser()
+        comfy_loras = self.settings.model_directories.loras
         start = comfy_loras if comfy_loras.is_dir() else Path.home()
         selected, _ = QFileDialog.getOpenFileName(
             self,
@@ -2306,6 +2314,21 @@ class MainWindow(QMainWindow):
             "diffusion_models": str(directories.diffusion_models),
             "text_encoders": str(directories.text_encoders),
             "vae": str(directories.vae),
+            "loras": str(directories.loras),
+            "upscale_models": str(directories.upscale_models),
+            "diffusion_model_file": (
+                str(directories.diffusion_model_file)
+                if directories.diffusion_model_file else None
+            ),
+            "text_encoder_file": (
+                str(directories.text_encoder_file)
+                if directories.text_encoder_file else None
+            ),
+            "vae_file": str(directories.vae_file) if directories.vae_file else None,
+            "face_detector_path": (
+                str(self.settings.face_detector_path)
+                if self.settings.face_detector_path else None
+            ),
             "worker_python": str(self.settings.worker_python),
             "comfyui_root": str(self.settings.comfyui_root),
             "data_directory": str(self.settings.data_directory),
@@ -2411,6 +2434,12 @@ class MainWindow(QMainWindow):
         state = ProjectState(
             canvas_width=self._default_settings.default_width,
             canvas_height=self._default_settings.default_height,
+            steps=self._default_settings.default_steps,
+            sampler=self._default_settings.default_sampler,
+            scheduler=self._default_settings.default_scheduler,
+            seed=self._default_settings.default_seed,
+            seed_mode=self._default_settings.default_seed_mode,
+            upscale_model=self._default_settings.default_upscale_model,
         )
         self._apply_project_state(state, load_latest_face_source=False)
         self._current_project_path = None
@@ -2495,11 +2524,36 @@ class MainWindow(QMainWindow):
         worker_python = current.worker_python
         return AppSettings(
             model_directories=ModelDirectories(
-                Path(
+                diffusion_models=Path(
                     runtime.get("diffusion_models", current_directories.diffusion_models)
                 ).expanduser(),
-                Path(runtime.get("text_encoders", current_directories.text_encoders)).expanduser(),
-                Path(runtime.get("vae", current_directories.vae)).expanduser(),
+                text_encoders=Path(
+                    runtime.get("text_encoders", current_directories.text_encoders)
+                ).expanduser(),
+                vae=Path(runtime.get("vae", current_directories.vae)).expanduser(),
+                loras=Path(runtime.get("loras", current_directories.loras)).expanduser(),
+                upscale_models=Path(
+                    runtime.get("upscale_models", current_directories.upscale_models)
+                ).expanduser(),
+                diffusion_model_file=(
+                    Path(value).expanduser()
+                    if (value := runtime.get(
+                        "diffusion_model_file", current_directories.diffusion_model_file
+                    ))
+                    else None
+                ),
+                text_encoder_file=(
+                    Path(value).expanduser()
+                    if (value := runtime.get(
+                        "text_encoder_file", current_directories.text_encoder_file
+                    ))
+                    else None
+                ),
+                vae_file=(
+                    Path(value).expanduser()
+                    if (value := runtime.get("vae_file", current_directories.vae_file))
+                    else None
+                ),
             ),
             data_directory=data_directory,
             worker_python=worker_python,
@@ -2516,8 +2570,22 @@ class MainWindow(QMainWindow):
             filename_prefix=validate_filename_prefix(
                 runtime.get("filename_prefix", current.filename_prefix)
             ),
+            face_detector_path=(
+                Path(value).expanduser()
+                if (value := runtime.get(
+                    "face_detector_path", current.face_detector_path
+                ))
+                else None
+            ),
+            default_upscale_model=current.default_upscale_model,
             default_width=state.canvas_width,
             default_height=state.canvas_height,
+            default_steps=current.default_steps,
+            default_sampler=current.default_sampler,
+            default_scheduler=current.default_scheduler,
+            default_seed=current.default_seed,
+            default_seed_mode=current.default_seed_mode,
+            config_file=current.config_file,
         )
 
     def _load_project_from(self, path: Path, *, show_error_dialog: bool = False) -> bool:
@@ -2708,6 +2776,21 @@ class MainWindow(QMainWindow):
             "diffusion_models": str(directories.diffusion_models),
             "text_encoders": str(directories.text_encoders),
             "vae": str(directories.vae),
+            "loras": str(directories.loras),
+            "upscale_models": str(directories.upscale_models),
+            "diffusion_model_file": (
+                str(directories.diffusion_model_file)
+                if directories.diffusion_model_file else None
+            ),
+            "text_encoder_file": (
+                str(directories.text_encoder_file)
+                if directories.text_encoder_file else None
+            ),
+            "vae_file": str(directories.vae_file) if directories.vae_file else None,
+            "face_detector_path": (
+                str(self.settings.face_detector_path)
+                if self.settings.face_detector_path else None
+            ),
             "manifest_directory": str(self.settings.data_directory / "manifests"),
             "memory_policy": policy_key,
             "reserve_vram_gb": effective_reserve_vram_gb(
