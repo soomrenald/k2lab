@@ -32,6 +32,37 @@ def _absolute_executable(value: str | Path, *, base: Path | None = None) -> Path
     return path.absolute()
 
 
+def discover_worker_python(comfyui_root: Path) -> Path:
+    """Choose a GPU-enabled ComfyUI interpreter without assuming CUDA or ROCm."""
+
+    root = comfyui_root.expanduser().resolve()
+    preferred = (
+        root / ".venv" / "bin" / "python",
+        root / "venv" / "bin" / "python",
+        root / "venv_rocm7" / "bin" / "python",
+        root / "venv_rocm" / "bin" / "python",
+        root / "python_embeded" / "python.exe",
+    )
+    for candidate in preferred:
+        if candidate.is_file():
+            return candidate.absolute()
+    try:
+        discovered = sorted(
+            candidate
+            for environment in root.iterdir()
+            if environment.is_dir()
+            for candidate in (environment / "bin" / "python",)
+            if candidate.is_file()
+        )
+    except OSError:
+        discovered = []
+    if discovered:
+        return discovered[0].absolute()
+    # Keep a useful, platform-neutral path in diagnostics when no environment
+    # exists yet. The GUI also lets the user select an interpreter explicitly.
+    return (root / ".venv" / "bin" / "python").absolute()
+
+
 def _optional_path(value: object, *, base: Path | None = None) -> Path | None:
     text = str(value or "").strip()
     return _absolute_path(text, base=base) if text else None
@@ -169,7 +200,7 @@ class AppSettings:
     model_directories: ModelDirectories
     data_directory: Path
     worker_python: Path = field(
-        default_factory=lambda: Path("~/ComfyUI/venv_rocm7/bin/python").expanduser()
+        default_factory=lambda: discover_worker_python(Path("~/ComfyUI").expanduser())
     )
     comfyui_root: Path = field(default_factory=lambda: Path("~/ComfyUI").expanduser())
     auto_start_worker: bool = True
@@ -215,6 +246,21 @@ class AppSettings:
         models = _table(document, "models")
         runtime = _table(document, "runtime")
         generation = _table(document, "generation")
+        comfyui_root = _absolute_path(
+            _env_or(
+                paths,
+                "comfyui_root",
+                "K2LAB_COMFYUI_ROOT",
+                "~/ComfyUI",
+            ),
+            base=base,
+        )
+        configured_worker = _env_or(
+            paths,
+            "worker_python",
+            "K2LAB_WORKER_PYTHON",
+            "auto",
+        )
         policy_from_environment = os.environ.get("K2LAB_MEMORY_POLICY")
         policy = memory_policy(
             str(policy_from_environment or runtime.get("memory_policy", "safe_16gb"))
@@ -242,24 +288,12 @@ class AppSettings:
         return cls(
             model_directories=model_directories,
             data_directory=data_directory,
-            worker_python=_absolute_executable(
-                _env_or(
-                    paths,
-                    "worker_python",
-                    "K2LAB_WORKER_PYTHON",
-                    "~/ComfyUI/venv_rocm7/bin/python",
-                ),
-                base=base,
+            worker_python=(
+                discover_worker_python(comfyui_root)
+                if str(configured_worker).strip().casefold() in {"", "auto"}
+                else _absolute_executable(configured_worker, base=base)
             ),
-            comfyui_root=_absolute_path(
-                _env_or(
-                    paths,
-                    "comfyui_root",
-                    "K2LAB_COMFYUI_ROOT",
-                    "~/ComfyUI",
-                ),
-                base=base,
-            ),
+            comfyui_root=comfyui_root,
             auto_start_worker=_boolean(
                 _env_or(
                     policy_controls,

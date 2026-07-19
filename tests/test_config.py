@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from k2_region_lab.config import AppSettings
+from k2_region_lab.config import AppSettings, discover_worker_python
 
 
 class ConfigTests(unittest.TestCase):
@@ -86,14 +86,26 @@ filename_prefix = "configured"
             self.assertEqual(settings.filename_prefix, "configured")
             self.assertEqual(settings.config_file, config)
 
-    def test_rocm7_worker_is_the_default(self) -> None:
-        with patch.dict(os.environ, {}, clear=True):
-            settings = AppSettings.from_environment()
+    def test_worker_auto_discovery_prefers_vendor_neutral_environment(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cuda_python = root / ".venv" / "bin" / "python"
+            rocm_python = root / "venv_rocm7" / "bin" / "python"
+            cuda_python.parent.mkdir(parents=True)
+            rocm_python.parent.mkdir(parents=True)
+            cuda_python.touch()
+            rocm_python.touch()
 
-        self.assertEqual(
-            settings.worker_python,
-            Path("~/ComfyUI/venv_rocm7/bin/python").expanduser().absolute(),
-        )
+            self.assertEqual(discover_worker_python(root), cuda_python)
+
+    def test_worker_auto_discovery_supports_rocm_named_environment(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            rocm_python = root / "venv_rocm7" / "bin" / "python"
+            rocm_python.parent.mkdir(parents=True)
+            rocm_python.touch()
+
+            self.assertEqual(discover_worker_python(root), rocm_python)
 
     def test_emergency_memory_policy_supplies_safe_defaults(self) -> None:
         with patch.dict(

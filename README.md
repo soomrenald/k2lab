@@ -4,12 +4,12 @@ K2 Region Lab is a local PySide6 research application for generic pixel-space co
 
 ## Installation
 
-K2 Region Lab targets Linux, Python 3.12, and either NVIDIA CUDA or AMD ROCm. It uses a separate lightweight desktop environment while launching model work through an existing GPU-enabled ComfyUI Python environment. Model weights are not included. The existing AMD setup remains the default, so current ROCm launches do not need to change.
+K2 Region Lab targets Linux, Python 3.12, and either NVIDIA CUDA or AMD ROCm. It uses a separate lightweight desktop environment while launching model work through an existing GPU-enabled ComfyUI Python environment. Model weights are not included. Runtime and model selection are accelerator-neutral; the selected ComfyUI environment determines whether Torch uses CUDA or ROCm.
 
 Prerequisites:
 
 - a current ComfyUI checkout with Krea 2 support;
-- a Python 3.12 ComfyUI environment with a working CUDA or ROCm PyTorch build (`torch.cuda.is_available()` must return `True`); the unchanged default is `~/ComfyUI/venv_rocm7/bin/python`;
+- a Python 3.12 ComfyUI environment with a working CUDA or ROCm PyTorch build (`torch.cuda.is_available()` must return `True`); automatic selection checks common `.venv`, `venv`, and ROCm environment names, and the GUI can select any other interpreter;
 - the Krea 2 Turbo transformer, Qwen text encoder, and VAE listed below.
 
 Clone the repository and install the desktop application in its own environment:
@@ -49,10 +49,10 @@ Face refinement additionally requires an ONNX Runtime package in the ComfyUI wor
 
 ```bash
 # AMD/ROCm or CPU-only detector execution
-"${K2LAB_WORKER_PYTHON:-$HOME/ComfyUI/venv_rocm7/bin/python}" -m pip install onnxruntime
+/path/to/ComfyUI/GPU_ENV/bin/python -m pip install onnxruntime
 
 # NVIDIA CUDA detector execution
-"${K2LAB_WORKER_PYTHON:-$HOME/ComfyUI/venv/bin/python}" -m pip install onnxruntime-gpu
+/path/to/ComfyUI/GPU_ENV/bin/python -m pip install onnxruntime-gpu
 ```
 
 Do not install both distributions in the same environment because they provide the same `onnxruntime` module. The Face refinement **Detector device** control defaults to **Auto**, which prefers `CUDAExecutionProvider` when the NVIDIA package exposes it and otherwise uses `CPUExecutionProvider`. **CPU** is the portable AMD/ROCm choice; **NVIDIA CUDA** requires a working CUDA ONNX Runtime installation and fails explicitly instead of silently changing providers.
@@ -112,7 +112,8 @@ text encoder, VAE, face detector, and default upscaler files. `[runtime]` contai
 worker startup and memory defaults. `[generation]` contains the new-project canvas,
 step, sampler, scheduler, seed, seed behavior, and filename defaults. Edit the
 checked-in file for this installation, or copy it to the user configuration path
-for a configuration shared by multiple checkouts.
+for a configuration shared by multiple checkouts. Set `worker_python = "auto"` for
+vendor-neutral environment discovery, or provide an exact CUDA/ROCm interpreter.
 
 ## Development
 
@@ -136,7 +137,7 @@ k2lab
 
 Do not resolve or replace the ComfyUI worker interpreter symlink: its venv path is required so Python finds that CUDA or ROCm environment's `pyvenv.cfg`. The application preserves this path automatically.
 
-The desktop starts its GPU worker with `~/ComfyUI/venv_rocm7/bin/python` by default. Override the runtime without changing GUI dependencies using:
+The desktop automatically selects a common GPU-enabled environment under the configured ComfyUI checkout. Override the runtime without changing GUI dependencies using:
 
 ```text
 K2LAB_CONFIG_FILE
@@ -178,7 +179,7 @@ Memory settings can be selected in **Model & memory** or set before launch. A po
 
 These controls make allocation behavior tunable; they cannot make an unsupported Torch/ComfyUI build or an arbitrarily large render fit a particular card. On smaller GPUs, start with `low_8gb` or `safe_12gb`, keep OOM recovery enabled, and reduce the canvas from 1024×1024 if necessary. Smaller-VRAM profiles require more system RAM because ComfyUI offloads more weights to the CPU. The custom policy is also useful for cards between the named sizes.
 
-The right-side **Model and generation settings** pane contains **Model & memory**, **Generation & spatial**, **LoRA library & scope**, **Token emphasis**, and **Projector** tabs, so LoRA setup no longer occupies a separate dock. Use **Validate tensors** before **Load Krea 2 baseline**. Validation reads only safetensors headers and writes complete manifests under the configured K2 Lab data directory. After loading, **Generate image** runs an eight-step Euler/simple Turbo pass by default and displays the saved image behind the editable region boxes. **Sampler** selects the denoising integration algorithm and **Scheduler** selects its noise/sigma schedule; both dropdowns reproduce the ordered `KSampler.SAMPLERS` and `KSampler.SCHEDULERS` registries from current ComfyUI. The worker validates the selection against the configured ComfyUI installation before sampling. Both values are saved in project JSON, embedded PNG project metadata, and separate PNG text fields. Project Open/Save dialogs start in the checkout's `prompts/` folder, and new generations default to the sibling `outputs/` folder. The generation tab provides an output-folder browser and editable filename prefix; both are saved in project JSON. The unified-prompt preview is a resizable, selectable-text dialog. The event viewer follows new messages only while its scrollbar is already at the latest event.
+The right-side **Model and generation settings** pane contains **Model & memory**, **Generation & spatial**, **LoRA library & scope**, **Token emphasis**, and **Projector** tabs, so LoRA setup no longer occupies a separate dock. **Model & memory** can select the ComfyUI checkout and its CUDA- or ROCm-enabled Python interpreter. The transformer, text encoder, and VAE each have **Choose…** and **Auto** controls: Choose pins an exact compatible safetensors file, while Auto selects by architecture/name from the configured model directory. This permits NVIDIA users to choose an appropriate BF16, FP16, or supported FP8 Krea build without changing regional mechanics. The face detector is also selectable; it must retain the compatible NanoDet input/output architecture even though ONNX execution can use CPU or NVIDIA CUDA. Use **Validate tensors** before **Load Krea 2 baseline**. Validation reads only safetensors headers and writes complete manifests under the configured K2 Lab data directory. Changing the runtime or primary model selection stops an idle worker so the next load cannot accidentally retain the previous weights. After loading, **Generate image** runs an eight-step Euler/simple Turbo pass by default and displays the saved image behind the editable region boxes. **Sampler** selects the denoising integration algorithm and **Scheduler** selects its noise/sigma schedule; both dropdowns reproduce the ordered `KSampler.SAMPLERS` and `KSampler.SCHEDULERS` registries from current ComfyUI. The worker validates the selection against the configured ComfyUI installation before sampling. Both values are saved in project JSON, embedded PNG project metadata, and separate PNG text fields. Project Open/Save dialogs start in the checkout's `prompts/` folder, and new generations default to the sibling `outputs/` folder. The generation tab provides an output-folder browser and editable filename prefix; both are saved in project JSON. The unified-prompt preview is a resizable, selectable-text dialog. The event viewer follows new messages only while its scrollbar is already at the latest event.
 
 Drag the inner right edge of the left prompt pane or the inner left edge of the right settings pane to resize it. The two side panes are independent: resizing the right pane takes space from or returns space to the center workspace without changing the left pane. Drag the top edge of the bottom Events pane upward to make Events taller and shrink everything above it, or downward to restore height to the upper panes. The bottom pane owns both lower corners and therefore resizes the complete upper row consistently. Each dock can also be floated, closed, and restored from the checkable **View** menu; **View → Restore default pane layout** docks and shows all panes again.
 
@@ -216,5 +217,5 @@ Use **Release K2 GPU memory…** if a failed run leaves a K2 worker holding VRAM
 
 Launch with `DEBUG=1 k2lab` to write bounded rotating logs under `~/.local/share/k2-region-lab/logs/` (or the configured `K2LAB_DATA_DIR`). The desktop and GPU worker use separate `desktop-debug.log` and `worker-debug.log` files.
 
-The original local stack uses PyTorch 2.9.1 with ROCm 6.4. Because scaled FP8 execution is native only on ROCm 6.5 or newer, the worker automatically uses ComfyUI's low-VRAM fallback on ROCm 6.4. CUDA workers enable the same native FP8 model option on NVIDIA compute capability 8.9 or 9.x-and-newer devices; older CUDA devices retain ComfyUI's compatible fallback. **Safe 16 GB** remains the default policy: neither its 4 GiB VRAM floor nor its 14 GiB available-system-RAM floor can be reduced by an older saved project, and it reports memory at each generation boundary and denoising step. If free VRAM crosses the critical floor between denoising steps, the worker stops before the next allocation and makes one deterministic retry with CPU VAE decode and a reserve increase proportional to the detected GPU capacity; the original 16 GiB setup still moves from 4 GiB to 5 GiB. Memory controls are locked while a model is loaded so the active worker configuration remains explicit. The worker also enables PyTorch expandable allocator segments and ROCm's experimental AOTriton attention backend when the environment does not explicitly configure them. A 1024×1024 eight-step run does not fit reliably on the tested 16 GB GPU under ROCm 6.4's BF16 dequantization fallback. The same baseline completed on PyTorch 2.10.0 with ROCm 7.1 and native scaled FP8/AOTriton, keeping about 2.8 GiB free during denoising. GPU VAE decode may exhaust its regular allocation and use ComfyUI's tiled fallback; K2 Lab keeps that fallback inside PyTorch inference mode for PyTorch 2.10 compatibility. ROCm 7.1 therefore remains the default worker for the original installation. Set `K2LAB_WORKER_PYTHON` at launch only when a different compatible CUDA or ROCm ComfyUI environment is required; the application-owned worker choice takes precedence over paths stored by older projects.
+The original local stack uses PyTorch 2.9.1 with ROCm 6.4. Because scaled FP8 execution is native only on ROCm 6.5 or newer, the worker automatically uses ComfyUI's low-VRAM fallback on ROCm 6.4. CUDA workers enable the same native FP8 model option on NVIDIA compute capability 8.9 or 9.x-and-newer devices; older CUDA devices retain ComfyUI's compatible fallback. **Safe 16 GB** remains the default policy: neither its 4 GiB VRAM floor nor its 14 GiB available-system-RAM floor can be reduced by an older saved project, and it reports memory at each generation boundary and denoising step. If free VRAM crosses the critical floor between denoising steps, the worker stops before the next allocation and makes one deterministic retry with CPU VAE decode and a reserve increase proportional to the detected GPU capacity; the original 16 GiB setup still moves from 4 GiB to 5 GiB. Memory controls are locked while a model is loaded so the active worker configuration remains explicit. The worker also enables PyTorch expandable allocator segments and ROCm's experimental AOTriton attention backend when the environment does not explicitly configure them. A 1024×1024 eight-step run does not fit reliably on the tested 16 GB GPU under ROCm 6.4's BF16 dequantization fallback. The same baseline completed on PyTorch 2.10.0 with ROCm 7.1 and native scaled FP8/AOTriton, keeping about 2.8 GiB free during denoising. GPU VAE decode may exhaust its regular allocation and use ComfyUI's tiled fallback; K2 Lab keeps that fallback inside PyTorch inference mode for PyTorch 2.10 compatibility. Auto-discovery still selects that ROCm 7.1 environment on the original installation, while CUDA installations normally resolve `.venv` or `venv`; the GUI and `K2LAB_WORKER_PYTHON` can select any other compatible environment. The application-owned worker choice takes precedence over paths stored by older projects.
 

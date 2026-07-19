@@ -106,6 +106,12 @@ class DesktopSmokeTests(unittest.TestCase):
             self.assertEqual(window.settings_tabs.tabText(2), "LoRA library & scope")
             self.assertEqual(window.settings_tabs.tabText(3), "Token emphasis")
             self.assertEqual(window.settings_tabs.tabText(4), "Projector")
+            self.assertEqual(window.comfyui_root_input.text(), str(window.settings.comfyui_root))
+            self.assertEqual(window.worker_python_input.text(), str(window.settings.worker_python))
+            self.assertFalse(window.transformer_browse.isHidden())
+            self.assertFalse(window.text_encoder_browse.isHidden())
+            self.assertFalse(window.vae_browse.isHidden())
+            self.assertFalse(window.face_detector_browse.isHidden())
             runtime_page = window.settings_tabs.widget(0)
             generation_page = window.settings_tabs.widget(1)
             self.assertFalse(runtime_page.isHidden())
@@ -118,6 +124,74 @@ class DesktopSmokeTests(unittest.TestCase):
             window.settings_tabs.setCurrentIndex(2)
             self.assertFalse(window.lora_list.isHidden())
             self.assertFalse(window.lora_scope_list.isHidden())
+
+    def test_krea_checkpoint_selector_pins_raw_model_in_worker_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            raw = root / "krea2_raw_int8_convrot.safetensors"
+            turbo = root / "krea2_turbo_fp8_scaled.safetensors"
+            text = root / "qwen3vl_4b_fp8_scaled.safetensors"
+            vae = root / "qwen_image_vae.safetensors"
+            for path in (raw, turbo, text, vae):
+                write_lora(path)
+            window = self.make_window(root)
+
+            self.assertEqual(window.diffusion_model_input.count(), 2)
+            self.assertEqual(window.diffusion_model_input.currentData(), str(turbo))
+            raw_index = window.diffusion_model_input.findData(str(raw))
+            window.diffusion_model_input.setCurrentIndex(raw_index)
+
+            self.assertEqual(
+                window.settings.model_directories.diffusion_model_file,
+                raw.resolve(),
+            )
+            self.assertEqual(window.artifacts.transformer.path, raw.resolve())
+            self.assertEqual(window._worker_payload()["diffusion_model_file"], str(raw))
+            self.assertFalse(window._models_compatible)
+            self.assertFalse(window._model_loaded)
+            window.close()
+
+    def test_runtime_and_primary_models_can_be_selected_for_cuda_or_rocm(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            comfyui = root / "ComfyUI-NVIDIA"
+            worker = comfyui / ".venv" / "bin" / "python"
+            worker.parent.mkdir(parents=True)
+            worker.touch()
+            transformer = root / "krea-bf16.safetensors"
+            write_lora(transformer)
+            detector = root / "face_det.onnx"
+            detector.touch()
+            window = self.make_window(root)
+
+            with patch.object(QFileDialog, "getExistingDirectory", return_value=str(comfyui)):
+                window._browse_comfyui_root()
+            self.assertEqual(window.settings.comfyui_root, comfyui)
+            self.assertEqual(window.settings.worker_python, worker)
+
+            with patch.object(
+                QFileDialog,
+                "getOpenFileName",
+                return_value=(str(transformer), "Safetensors model"),
+            ):
+                window._browse_primary_model("diffusion_model_file")
+            self.assertEqual(
+                window.settings.model_directories.diffusion_model_file,
+                transformer,
+            )
+
+            with patch.object(
+                QFileDialog,
+                "getOpenFileName",
+                return_value=(str(detector), "ONNX model"),
+            ):
+                window._browse_face_detector_model()
+            self.assertEqual(window.settings.face_detector_path, detector)
+
+            window._clear_primary_model("diffusion_model_file")
+            window._clear_face_detector_model()
+            self.assertIsNone(window.settings.model_directories.diffusion_model_file)
+            self.assertIsNone(window.settings.face_detector_path)
 
     def test_view_menu_can_hide_show_float_and_restore_every_dock(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

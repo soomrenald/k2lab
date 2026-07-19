@@ -7,7 +7,11 @@ import unittest
 from pathlib import Path
 
 from k2_region_lab.config import ModelDirectories
-from k2_region_lab.model import discover_model_artifacts, read_safetensors_summary
+from k2_region_lab.model import (
+    discover_krea_transformers,
+    discover_model_artifacts,
+    read_safetensors_summary,
+)
 
 
 def write_header(path: Path, tensors: dict, metadata: dict | None = None) -> None:
@@ -49,6 +53,25 @@ class ModelArtifactTests(unittest.TestCase):
             artifacts = discover_model_artifacts(ModelDirectories(diffusion, text, vae))
             self.assertTrue(artifacts.complete)
             self.assertEqual(artifacts.transformer.path.name, "krea2_turbo_fp8_scaled.safetensors")
+
+    def test_krea_transformer_selector_lists_raw_and_turbo(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            tensor = {"weight": {"dtype": "I8", "shape": [1], "data_offsets": [0, 1]}}
+            write_header(root / "krea2_raw_int8_convrot.safetensors", tensor)
+            write_header(root / "krea2_turbo_fp8_scaled.safetensors", tensor)
+            write_header(root / "unrelated_model.safetensors", tensor)
+
+            candidates = discover_krea_transformers(root)
+
+            self.assertEqual(
+                [candidate.path.name for candidate in candidates],
+                [
+                    "krea2_raw_int8_convrot.safetensors",
+                    "krea2_turbo_fp8_scaled.safetensors",
+                ],
+            )
+            self.assertTrue(all(candidate.summary.quantized for candidate in candidates))
 
     def test_explicit_configured_files_override_name_based_discovery(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

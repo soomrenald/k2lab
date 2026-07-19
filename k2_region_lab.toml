@@ -4,7 +4,9 @@
 
 [paths]
 comfyui_root = "~/ComfyUI"
-worker_python = "~/ComfyUI/venv_rocm7/bin/python"
+# "auto" checks common CUDA and ROCm ComfyUI environments. Set an exact path
+# when more than one GPU-enabled environment exists.
+worker_python = "auto"
 data_directory = "~/.local/share/k2-region-lab"
 output_directory = "outputs"
 diffusion_models = "~/ComfyUI/models/diffusion_models"

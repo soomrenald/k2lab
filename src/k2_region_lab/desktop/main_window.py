@@ -41,7 +41,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from k2_region_lab.config import AppSettings, ModelDirectories
+from k2_region_lab.config import AppSettings, ModelDirectories, discover_worker_python
 from k2_region_lab.desktop.region_canvas import RegionCanvas
 from k2_region_lab.desktop.resource_monitor import ResourceMonitorWidget
 from k2_region_lab.desktop.worker_client import ExternalWorkerClient
@@ -61,7 +61,11 @@ from k2_region_lab.memory import (
     effective_reserve_vram_gb,
     memory_policy,
 )
-from k2_region_lab.model import ArtifactSet, discover_model_artifacts
+from k2_region_lab.model import (
+    ArtifactSet,
+    discover_krea_transformers,
+    discover_model_artifacts,
+)
 from k2_region_lab.output import (
     default_output_directory,
     default_prompt_directory,
@@ -678,12 +682,103 @@ class MainWindow(QMainWindow):
         self.settings_tabs.addTab(
             self._scrollable(runtime_page), "Model & memory"
         )
+        self.comfyui_root_input = QLineEdit()
+        self.comfyui_root_input.setReadOnly(True)
+        self.comfyui_root_browse = QPushButton("Choose…")
+        self.comfyui_root_browse.setToolTip(
+            "Select the ComfyUI checkout used by the isolated GPU worker"
+        )
+        self.comfyui_root_browse.clicked.connect(self._browse_comfyui_root)
+        comfyui_row = QWidget()
+        comfyui_row_layout = QHBoxLayout(comfyui_row)
+        comfyui_row_layout.setContentsMargins(0, 0, 0, 0)
+        comfyui_row_layout.addWidget(self.comfyui_root_input, 1)
+        comfyui_row_layout.addWidget(self.comfyui_root_browse)
+        layout.addRow("ComfyUI checkout", comfyui_row)
+        self.worker_python_input = QLineEdit()
+        self.worker_python_input.setReadOnly(True)
+        self.worker_python_browse = QPushButton("Choose…")
+        self.worker_python_browse.setToolTip(
+            "Select Python from a CUDA- or ROCm-enabled ComfyUI environment"
+        )
+        self.worker_python_browse.clicked.connect(self._browse_worker_python)
+        self.worker_python_auto = QPushButton("Auto")
+        self.worker_python_auto.setToolTip(
+            "Search the selected ComfyUI checkout for a common virtual environment"
+        )
+        self.worker_python_auto.clicked.connect(self._auto_select_worker_python)
+        worker_row = QWidget()
+        worker_row_layout = QHBoxLayout(worker_row)
+        worker_row_layout.setContentsMargins(0, 0, 0, 0)
+        worker_row_layout.addWidget(self.worker_python_input, 1)
+        worker_row_layout.addWidget(self.worker_python_browse)
+        worker_row_layout.addWidget(self.worker_python_auto)
+        layout.addRow("GPU worker Python", worker_row)
         self.transformer_status = QLabel("Not discovered")
         self.text_status = QLabel("Not discovered")
         self.vae_status = QLabel("Not discovered")
-        layout.addRow("Turbo", self.transformer_status)
-        layout.addRow("Qwen", self.text_status)
-        layout.addRow("VAE", self.vae_status)
+        self.diffusion_model_input = QComboBox()
+        self.diffusion_model_input.setToolTip(
+            "Select a Krea 2 transformer found in the configured ComfyUI model directory"
+        )
+        self.diffusion_model_input.currentIndexChanged.connect(
+            self._diffusion_model_changed
+        )
+        layout.addRow("Krea checkpoint", self.diffusion_model_input)
+        self.transformer_browse = QPushButton("Choose…")
+        self.transformer_browse.clicked.connect(
+            lambda: self._browse_primary_model("diffusion_model_file")
+        )
+        self.transformer_auto = QPushButton("Auto")
+        self.transformer_auto.clicked.connect(
+            lambda: self._clear_primary_model("diffusion_model_file")
+        )
+        self.text_encoder_browse = QPushButton("Choose…")
+        self.text_encoder_browse.clicked.connect(
+            lambda: self._browse_primary_model("text_encoder_file")
+        )
+        self.text_encoder_auto = QPushButton("Auto")
+        self.text_encoder_auto.clicked.connect(
+            lambda: self._clear_primary_model("text_encoder_file")
+        )
+        self.vae_browse = QPushButton("Choose…")
+        self.vae_browse.clicked.connect(
+            lambda: self._browse_primary_model("vae_file")
+        )
+        self.vae_auto = QPushButton("Auto")
+        self.vae_auto.clicked.connect(
+            lambda: self._clear_primary_model("vae_file")
+        )
+        for label, status, browse, automatic in (
+            ("Transformer", self.transformer_status, self.transformer_browse, self.transformer_auto),
+            ("Text encoder", self.text_status, self.text_encoder_browse, self.text_encoder_auto),
+            ("VAE", self.vae_status, self.vae_browse, self.vae_auto),
+        ):
+            row = QWidget()
+            row_layout = QHBoxLayout(row)
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            row_layout.addWidget(status, 1)
+            row_layout.addWidget(browse)
+            row_layout.addWidget(automatic)
+            automatic.setToolTip("Clear the exact file and use compatible name-based discovery")
+            layout.addRow(label, row)
+        self.face_detector_input = QLineEdit()
+        self.face_detector_input.setReadOnly(True)
+        self.face_detector_browse = QPushButton("Choose…")
+        self.face_detector_browse.clicked.connect(self._browse_face_detector_model)
+        self.face_detector_auto = QPushButton("Auto")
+        self.face_detector_auto.clicked.connect(self._clear_face_detector_model)
+        self.face_detector_auto.setToolTip(
+            "Use the compatible face detector found under the selected ComfyUI checkout"
+        )
+        detector_row = QWidget()
+        detector_row_layout = QHBoxLayout(detector_row)
+        detector_row_layout.setContentsMargins(0, 0, 0, 0)
+        detector_row_layout.addWidget(self.face_detector_input, 1)
+        detector_row_layout.addWidget(self.face_detector_browse)
+        detector_row_layout.addWidget(self.face_detector_auto)
+        layout.addRow("Face detector", detector_row)
+        self._refresh_runtime_path_controls()
         refresh = QPushButton("Discover models")
         refresh.clicked.connect(self.discover_models)
         layout.addRow(refresh)
@@ -709,7 +804,7 @@ class MainWindow(QMainWindow):
         )
         self.release_worker_button.clicked.connect(self._release_k2_gpu_memory)
         layout.addRow(self.release_worker_button)
-        self.load_model_button = QPushButton("Load Krea 2 baseline")
+        self.load_model_button = QPushButton("Load selected Krea 2 model")
         self.load_model_button.clicked.connect(self._load_worker_model)
         self.load_model_button.setEnabled(False)
         layout.addRow(self.load_model_button)
@@ -1761,6 +1856,192 @@ class MainWindow(QMainWindow):
         precision = ", ".join(f"{dtype}:{count}" for dtype, count in artifact.summary.dtypes)
         return f"{artifact.path.name}\n{artifact.summary.tensor_count} tensors; {precision}"
 
+    def _refresh_runtime_path_controls(self) -> None:
+        if not hasattr(self, "worker_python_input"):
+            return
+        directories = self.settings.model_directories
+        self.comfyui_root_input.setText(str(self.settings.comfyui_root))
+        self.comfyui_root_input.setToolTip(str(self.settings.comfyui_root))
+        self.worker_python_input.setText(str(self.settings.worker_python))
+        self.worker_python_input.setToolTip(str(self.settings.worker_python))
+        detector = self.settings.face_detector_path
+        self.face_detector_input.setText(str(detector) if detector else "Auto-discover")
+        self.face_detector_input.setToolTip(
+            str(detector) if detector else "Search the selected ComfyUI checkout"
+        )
+        selections = (
+            (self.transformer_status, directories.diffusion_model_file),
+            (self.text_status, directories.text_encoder_file),
+            (self.vae_status, directories.vae_file),
+        )
+        for status, path in selections:
+            status.setToolTip(str(path) if path else "Automatic compatible-model discovery")
+
+    def _apply_runtime_settings(self, settings: AppSettings, *, rediscover: bool) -> bool:
+        if self._generation_active:
+            QMessageBox.warning(
+                self,
+                "Generation is running",
+                "Stop the current generation before changing GPU runtime or model files.",
+            )
+            return False
+        if hasattr(self, "worker_client") and self.worker_client.running:
+            self.worker_client.stop()
+        self.settings = settings
+        if hasattr(self, "worker_client"):
+            self.worker_client.settings = settings
+        self._model_loaded = False
+        self._models_compatible = False
+        self._accelerator_available = False
+        self.load_model_button.setEnabled(False)
+        self.worker_status.setText("Stopped")
+        self.accelerator_status.setText("Not probed")
+        self._refresh_runtime_path_controls()
+        if rediscover:
+            self.artifacts = None
+            self.transformer_status.setText("Not discovered")
+            self.text_status.setText("Not discovered")
+            self.vae_status.setText("Not discovered")
+            self.discover_models()
+        return True
+
+    def _browse_comfyui_root(self) -> None:
+        selected = QFileDialog.getExistingDirectory(
+            self,
+            "Select ComfyUI checkout",
+            str(self.settings.comfyui_root),
+        )
+        if not selected:
+            return
+        root = Path(selected).expanduser().resolve()
+        directories = ModelDirectories(
+            diffusion_models=root / "models" / "diffusion_models",
+            text_encoders=root / "models" / "text_encoders",
+            vae=root / "models" / "vae",
+            loras=root / "models" / "loras",
+            upscale_models=root / "models" / "upscale_models",
+        )
+        settings = replace(
+            self.settings,
+            comfyui_root=root,
+            worker_python=discover_worker_python(root),
+            model_directories=directories,
+            face_detector_path=None,
+            default_upscale_model=None,
+        )
+        if self._apply_runtime_settings(settings, rediscover=True):
+            self._upscale_model_path = None
+            self.upscale_model_input.clear()
+            self._set_upscale_controls_enabled()
+            self.events.addItem(f"ComfyUI checkout set to {root}")
+
+    def _browse_worker_python(self) -> None:
+        selected, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select CUDA- or ROCm-enabled ComfyUI Python",
+            str(self.settings.worker_python.parent),
+            "Python interpreter (python python3 python.exe);;All files (*)",
+        )
+        if not selected:
+            return
+        path = Path(selected).expanduser().absolute()
+        if self._apply_runtime_settings(
+            replace(self.settings, worker_python=path), rediscover=False
+        ):
+            self.events.addItem(f"GPU worker Python set to {path}")
+
+    def _auto_select_worker_python(self) -> None:
+        path = discover_worker_python(self.settings.comfyui_root)
+        if self._apply_runtime_settings(
+            replace(self.settings, worker_python=path), rediscover=False
+        ):
+            self.events.addItem(f"Auto-selected GPU worker Python: {path}")
+
+    def _browse_primary_model(self, field_name: str) -> None:
+        directories = self.settings.model_directories
+        labels = {
+            "diffusion_model_file": ("Krea transformer", directories.diffusion_models),
+            "text_encoder_file": ("Qwen text encoder", directories.text_encoders),
+            "vae_file": ("Krea VAE", directories.vae),
+        }
+        label, directory = labels[field_name]
+        selected, _ = QFileDialog.getOpenFileName(
+            self,
+            f"Select {label}",
+            str(directory),
+            "Safetensors model (*.safetensors);;All files (*)",
+        )
+        if not selected:
+            return
+        path = Path(selected).expanduser().resolve()
+        updated_directories = replace(directories, **{field_name: path})
+        if self._apply_runtime_settings(
+            replace(self.settings, model_directories=updated_directories),
+            rediscover=True,
+        ):
+            self.events.addItem(f"Selected {label}: {path.name}")
+
+    def _clear_primary_model(self, field_name: str) -> None:
+        directories = replace(
+            self.settings.model_directories, **{field_name: None}
+        )
+        if self._apply_runtime_settings(
+            replace(self.settings, model_directories=directories), rediscover=True
+        ):
+            self.events.addItem("Returned model selection to automatic discovery")
+
+    def _browse_face_detector_model(self) -> None:
+        start = (
+            self.settings.face_detector_path.parent
+            if self.settings.face_detector_path
+            else self.settings.comfyui_root
+        )
+        selected, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select ONNX face detector",
+            str(start),
+            "ONNX model (*.onnx);;All files (*)",
+        )
+        if not selected:
+            return
+        path = Path(selected).expanduser().resolve()
+        if self._apply_runtime_settings(
+            replace(self.settings, face_detector_path=path), rediscover=False
+        ):
+            self.events.addItem(f"Face detector set to {path.name}")
+
+    def _clear_face_detector_model(self) -> None:
+        if self._apply_runtime_settings(
+            replace(self.settings, face_detector_path=None), rediscover=False
+        ):
+            self.events.addItem("Face detector returned to automatic discovery")
+
+    def _diffusion_model_changed(self, index: int) -> None:
+        selected = self.diffusion_model_input.itemData(index)
+        if not selected:
+            return
+        selected_path = Path(str(selected)).expanduser().resolve()
+        current_path = self.settings.model_directories.diffusion_model_file
+        if current_path is not None and current_path.expanduser().resolve() == selected_path:
+            return
+        directories = replace(
+            self.settings.model_directories,
+            diffusion_model_file=selected_path,
+        )
+        changed = self._apply_runtime_settings(
+            replace(self.settings, model_directories=directories),
+            rediscover=True,
+        )
+        if not changed:
+            self.discover_models()
+            return
+        self.events.addItem(f"Selected Krea transformer: {selected_path.name}")
+        if "raw" in selected_path.name.casefold():
+            self.events.addItem(
+                "Raw checkpoint selected: regional hooks are architecture-compatible, "
+                "but generation still uses the CFG-free Turbo sampling path"
+            )
+
     @staticmethod
     def _region_label(region: RegionDefinition) -> str:
         box = region.box
@@ -1773,13 +2054,38 @@ class MainWindow(QMainWindow):
     def discover_models(self) -> None:
         try:
             self.artifacts = discover_model_artifacts(self.settings.model_directories)
+            candidates = discover_krea_transformers(
+                self.settings.model_directories.diffusion_models
+            )
         except (OSError, ValueError) as error:
             self.events.addItem(f"Model discovery failed: {error}")
             self.statusBar().showMessage("Model discovery failed")
             return
+        selected_transformer = (
+            self.artifacts.transformer.path if self.artifacts.transformer else None
+        )
+        candidate_paths = [artifact.path for artifact in candidates]
+        if selected_transformer is not None and selected_transformer not in candidate_paths:
+            candidate_paths.append(selected_transformer)
+        self.diffusion_model_input.blockSignals(True)
+        self.diffusion_model_input.clear()
+        for path in sorted(candidate_paths, key=lambda item: item.name.casefold()):
+            self.diffusion_model_input.addItem(path.name, str(path))
+            self.diffusion_model_input.setItemData(
+                self.diffusion_model_input.count() - 1,
+                str(path),
+                Qt.ItemDataRole.ToolTipRole,
+            )
+        if selected_transformer is not None:
+            selected_index = self.diffusion_model_input.findData(
+                str(selected_transformer)
+            )
+            self.diffusion_model_input.setCurrentIndex(selected_index)
+        self.diffusion_model_input.blockSignals(False)
         self.transformer_status.setText(self._artifact_label(self.artifacts.transformer))
         self.text_status.setText(self._artifact_label(self.artifacts.text_encoder))
         self.vae_status.setText(self._artifact_label(self.artifacts.vae))
+        self._refresh_runtime_path_controls()
         state = "complete" if self.artifacts.complete else "incomplete"
         self.generate_button.setEnabled(
             bool(self.artifacts.complete and not self._generation_active)
@@ -2619,6 +2925,7 @@ class MainWindow(QMainWindow):
         self._set_generation_active(False)
         self.settings = self._settings_from_project(state)
         self.worker_client.settings = self.settings
+        self._refresh_runtime_path_controls()
         self.width_input.setValue(state.canvas_width)
         self.height_input.setValue(state.canvas_height)
         self.canvas.set_canvas_size(state.canvas_width, state.canvas_height)
@@ -3138,6 +3445,7 @@ class MainWindow(QMainWindow):
 
     def _set_generation_active(self, active: bool) -> None:
         self._generation_active = active
+        self.diffusion_model_input.setEnabled(not active)
         self.generate_button.setEnabled(
             bool(not active and self.artifacts is not None and self.artifacts.complete)
         )

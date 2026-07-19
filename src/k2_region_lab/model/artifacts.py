@@ -86,7 +86,9 @@ def read_safetensors_summary(path: Path) -> SafetensorsSummary:
         if isinstance(value, dict)
     )
     quantization_text = str(metadata.get("_quantization_metadata", ""))
-    quantized = bool(quantization_text) or any(dtype.startswith("F8") for dtype in dtypes)
+    quantized = bool(quantization_text) or any(
+        dtype.startswith("F8") or dtype in {"I8", "U8"} for dtype in dtypes
+    )
     return SafetensorsSummary(
         tensor_count=len(tensors),
         dtypes=tuple(sorted(dtypes.items())),
@@ -145,6 +147,17 @@ def _explicit(path: Path | None, kind: ArtifactKind) -> ModelArtifact | None:
         path=selected,
         size_bytes=selected.stat().st_size,
         summary=read_safetensors_summary(selected),
+    )
+
+
+def discover_krea_transformers(directory: Path) -> tuple[ModelArtifact, ...]:
+    """Return every selectable Krea transformer in a ComfyUI model directory."""
+
+    return tuple(
+        artifact
+        for path in _candidate_files(directory)
+        if "krea" in path.name.casefold()
+        if (artifact := _explicit(path, ArtifactKind.TRANSFORMER)) is not None
     )
 
 
