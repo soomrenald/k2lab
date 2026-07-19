@@ -643,7 +643,6 @@ def _regional_clause(
 ) -> str:
     center_x = 100.0 * (box.x0 + box.x1) / (2.0 * width)
     center_y = 100.0 * (box.y0 + box.y1) / (2.0 * height)
-    width_percent = 100.0 * box.width / width
     height_percent = 100.0 * box.height / height
     horizontal = _horizontal_position(center_x)
     vertical = _vertical_position(center_y)
@@ -656,28 +655,16 @@ def _regional_clause(
         )
         return f"{location}, there is {description}."
 
-    location = (
-        f"In the {vertical} {horizontal}, centered about {center_x:.0f}% "
-        f"across and {center_y:.0f}% down"
-    )
-    if not subject_fill:
-        return (
-            f"{location}, occupying about {width_percent:.0f}% of the image width "
-            f"and {height_percent:.0f}% of its height, there is {description}."
-        )
-
-    x0_percent = 100.0 * box.x0 / width
-    x1_percent = 100.0 * box.x1 / width
-    y0_percent = 100.0 * box.y0 / height
-    y1_percent = 100.0 * box.y1 / height
+    location = f"In the {vertical} {horizontal}"
     framing = _subject_framing(height_percent)
+    if not subject_fill:
+        return f"{location}, render {description} as {framing}."
+
     return (
         f"{location}, render {description} as {framing}. The visible subject itself "
-        f"should nearly fill its target box, extending from about {x0_percent:.0f}% "
-        f"to {x1_percent:.0f}% across and {y0_percent:.0f}% to {y1_percent:.0f}% "
-        "down. Place the subject's topmost visible point near the top boundary and its "
-        "bottommost visible point near the bottom boundary. Keep the complete subject "
-        "inside those boundaries with minimal empty margin."
+        "should fill most of its assigned image area with minimal empty margin. Keep "
+        "the complete visible subject inside that area without drawing guides, borders, "
+        "coordinates, labels, text, or annotations."
     )
 
 

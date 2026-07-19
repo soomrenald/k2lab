@@ -63,8 +63,9 @@ class RegionalPromptingTests(unittest.TestCase):
             ordered_names,
             [region.name for region in regions],
         )
-        self.assertIn("centered about 17% across and 64% down", plan.prompt)
-        self.assertIn("visible subject itself should nearly fill its target box", plan.prompt)
+        self.assertIn("In the lower portion far-left side", plan.prompt)
+        self.assertIn("visible subject itself should fill most", plan.prompt)
+        self.assertIn("without drawing guides, borders, coordinates", plan.prompt)
         self.assertIn("prominent medium-to-large subject", plan.prompt)
         expected_order = (
             "From left to right, the subjects are "
