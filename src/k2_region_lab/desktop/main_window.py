@@ -5,11 +5,12 @@ import logging
 import os
 import re
 import secrets
+import subprocess
 from dataclasses import replace
 from pathlib import Path
 
 from PySide6.QtCore import QRectF, Qt
-from PySide6.QtGui import QAction, QKeySequence, QPixmap
+from PySide6.QtGui import QAction, QColor, QKeySequence, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -44,6 +45,11 @@ from k2_region_lab.config import AppSettings, ModelDirectories
 from k2_region_lab.desktop.region_canvas import RegionCanvas
 from k2_region_lab.desktop.resource_monitor import ResourceMonitorWidget
 from k2_region_lab.desktop.worker_client import ExternalWorkerClient
+from k2_region_lab.face_detail import (
+    DetectedFace,
+    assign_faces_to_regional_loras,
+    discover_face_detector,
+)
 from k2_region_lab.lora import (
     CHARACTER_IDENTITY_LORA_ROUTING,
     STANDARD_LORA_ROUTING,
@@ -62,7 +68,13 @@ from k2_region_lab.output import (
     validate_filename_prefix,
 )
 from k2_region_lab.processes import find_owned_k2_workers, terminate_workers
-from k2_region_lab.project import ProjectState, SavedLora, load_project, save_project
+from k2_region_lab.project import (
+    ProjectState,
+    SavedLora,
+    load_project,
+    project_document,
+    save_project,
+)
 from k2_region_lab.projector import (
     CUSTOM_PROJECTOR_PRESET,
     DEFAULT_PROJECTOR_PRESET,
@@ -99,6 +111,7 @@ class ScaledImagePreview(QLabel):
     def __init__(self, placeholder: str) -> None:
         super().__init__(placeholder)
         self._original_pixmap = QPixmap()
+        self._overlays: list[tuple[float, float, float, float, str, bool]] = []
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setMinimumSize(320, 320)
         self.setWordWrap(True)
@@ -116,19 +129,54 @@ class ScaledImagePreview(QLabel):
 
     def clear_image(self, placeholder: str) -> None:
         self._original_pixmap = QPixmap()
+        self._overlays = []
         self.clear()
         self.setText(placeholder)
+
+    def set_overlays(
+        self,
+        overlays: list[tuple[float, float, float, float, str, bool]],
+    ) -> None:
+        self._overlays = list(overlays)
+        self._fit_pixmap()
 
     def _fit_pixmap(self) -> None:
         if self._original_pixmap.isNull():
             return
-        self.setPixmap(
-            self._original_pixmap.scaled(
-                self.contentsRect().size(),
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            )
+        fitted = self._original_pixmap.scaled(
+            self.contentsRect().size(),
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
         )
+        if self._overlays:
+            annotated = fitted.copy()
+            painter = QPainter(annotated)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            scale_x = fitted.width() / max(1, self._original_pixmap.width())
+            scale_y = fitted.height() / max(1, self._original_pixmap.height())
+            for x0, y0, x1, y1, label, selected in self._overlays:
+                color = QColor("#39ff88" if selected else "#ffb340")
+                painter.setPen(QPen(color, 3))
+                rectangle = QRectF(
+                    x0 * scale_x,
+                    y0 * scale_y,
+                    max(1.0, (x1 - x0) * scale_x),
+                    max(1.0, (y1 - y0) * scale_y),
+                )
+                painter.drawRect(rectangle)
+                painter.fillRect(
+                    QRectF(rectangle.left(), rectangle.top(), max(28, len(label) * 8), 22),
+                    color,
+                )
+                painter.setPen(QColor("#101010"))
+                painter.drawText(
+                    QRectF(rectangle.left() + 4, rectangle.top(), max(24, len(label) * 8), 22),
+                    Qt.AlignmentFlag.AlignVCenter,
+                    label,
+                )
+            painter.end()
+            fitted = annotated
+        self.setPixmap(fitted)
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
@@ -157,6 +205,8 @@ class MainWindow(QMainWindow):
         self._background_image_path: Path | None = None
         self._face_source_path: Path | None = None
         self._face_result_path: Path | None = None
+        self._face_detections: list[dict[str, object]] = []
+        self._syncing_face_selection = False
         self._upscale_model_path: Path | None = None
         self._generation_active = False
         self._pending_generation_payload: dict[str, object] | None = None
@@ -514,7 +564,15 @@ class MainWindow(QMainWindow):
         self.face_detail_detector_threshold_input.setRange(0.05, 0.95)
         self.face_detail_detector_threshold_input.setDecimals(2)
         self.face_detail_detector_threshold_input.setSingleStep(0.05)
-        self.face_detail_detector_threshold_input.setValue(0.4)
+        self.face_detail_detector_threshold_input.setValue(0.15)
+        self.face_detail_detector_threshold_input.setToolTip(
+            "Minimum detector confidence. Lower values find subtler or smaller faces "
+            "but may add false positives. Detection is only a proposal: review the "
+            "numbered boxes and select exactly which faces should be refined."
+        )
+        self.face_detail_detector_threshold_input.valueChanged.connect(
+            self._face_detection_settings_changed
+        )
 
         control_items = (
             ("Seed", self.face_detail_seed_input),
@@ -536,21 +594,50 @@ class MainWindow(QMainWindow):
 
         action_row = QHBoxLayout()
         assignment_note = QLabel(
-            "Uses current project regions and regional LoRA assignments."
+            "1. Detect faces. 2. Review the numbered boxes and choose one or more. "
+            "3. Refine only the selected faces using their current regional LoRAs."
         )
         assignment_note.setWordWrap(True)
+        self.face_detect_button = QPushButton("1. Detect faces")
+        self.face_detect_button.setEnabled(False)
+        self.face_detect_button.setToolTip(
+            "Runs the CPU face detector and draws a numbered box around every candidate."
+        )
+        self.face_detect_button.clicked.connect(self._detect_faces_for_refinement)
         self.face_refine_button = QPushButton("Run face refinement")
         self.face_refine_button.setEnabled(False)
         self.face_refine_button.clicked.connect(self._run_face_refinement)
         action_row.addWidget(assignment_note, 1)
+        action_row.addWidget(self.face_detect_button)
         action_row.addWidget(self.face_refine_button)
         page_layout.addLayout(action_row)
+
+        selection_row = QHBoxLayout()
+        self.face_selection_list = QListWidget()
+        self.face_selection_list.setMaximumHeight(110)
+        self.face_selection_list.setToolTip(
+            "Checked faces will be refined. Orange boxes are detected but excluded; "
+            "green boxes are selected."
+        )
+        self.face_selection_list.itemChanged.connect(self._face_selection_changed)
+        selection_buttons = QVBoxLayout()
+        select_all = QPushButton("Select all")
+        select_all.clicked.connect(lambda: self._set_all_face_selections(True))
+        select_none = QPushButton("Select none")
+        select_none.clicked.connect(lambda: self._set_all_face_selections(False))
+        selection_buttons.addWidget(select_all)
+        selection_buttons.addWidget(select_none)
+        selection_buttons.addStretch(1)
+        selection_row.addWidget(QLabel("Detected faces"))
+        selection_row.addWidget(self.face_selection_list, 1)
+        selection_row.addLayout(selection_buttons)
+        page_layout.addLayout(selection_row)
 
         previews = QSplitter(Qt.Orientation.Horizontal)
         source_panel = QWidget()
         source_layout = QVBoxLayout(source_panel)
         source_layout.setContentsMargins(0, 0, 0, 0)
-        source_layout.addWidget(QLabel("First pass"))
+        source_layout.addWidget(QLabel("First pass with detected-face selection"))
         self.face_source_preview = ScaledImagePreview("No source PNG loaded")
         source_layout.addWidget(self.face_source_preview, 1)
         result_panel = QWidget()
@@ -1260,15 +1347,227 @@ class MainWindow(QMainWindow):
             return False
         self._face_source_path = source_path
         self.face_source_input.setText(str(source_path))
+        self._clear_face_detections()
         self._face_result_path = None
         self.face_result_input.clear()
         self.face_result_preview.clear_image(
             "Run face refinement to compare the result"
         )
-        self.face_refine_button.setEnabled(
-            bool(not self._generation_active and self.artifacts and self.artifacts.complete)
-        )
+        self.face_detect_button.setEnabled(not self._generation_active)
+        self.face_refine_button.setEnabled(False)
         return True
+
+    def _clear_face_detections(self) -> None:
+        self._face_detections = []
+        self._syncing_face_selection = True
+        self.face_selection_list.clear()
+        self._syncing_face_selection = False
+        self.face_source_preview.set_overlays([])
+        self.face_refine_button.setEnabled(False)
+
+    def _face_detection_settings_changed(self, _value=None) -> None:
+        if not self._face_detections:
+            return
+        self._clear_face_detections()
+        self.events.addItem(
+            "Face detector threshold changed; run detection again before refinement"
+        )
+
+    def _scaled_face_regions(self, image_width: int, image_height: int):
+        scale_x = image_width / max(1, self.width_input.value())
+        scale_y = image_height / max(1, self.height_input.value())
+        return tuple(
+            replace(
+                region,
+                box=PixelBox(
+                    region.box.x0 * scale_x,
+                    region.box.y0 * scale_y,
+                    region.box.x1 * scale_x,
+                    region.box.y1 * scale_y,
+                ),
+            )
+            for region in self.regions
+        )
+
+    def _detect_faces_for_refinement(self) -> None:
+        source_path = self._face_source_path
+        if source_path is None or not source_path.is_file():
+            QMessageBox.warning(self, "Source PNG required", "Load a first-pass PNG first.")
+            return
+        detector_path = discover_face_detector(self.settings.comfyui_root)
+        if detector_path is None:
+            QMessageBox.warning(
+                self,
+                "Face detector unavailable",
+                "The bundled face_det.onnx model was not found under the configured "
+                "ComfyUI root.",
+            )
+            return
+        # Do not resolve a virtualenv Python symlink: Python uses the symlink's
+        # location to find pyvenv.cfg and select the intended environment.
+        worker_python = self.settings.worker_python.expanduser().absolute()
+        if not worker_python.is_file():
+            QMessageBox.warning(
+                self,
+                "Face detector unavailable",
+                f"The configured worker interpreter does not exist: {worker_python}",
+            )
+            return
+        project_root = Path(__file__).resolve().parents[3]
+        environment = os.environ.copy()
+        environment.pop("PYTHONHOME", None)
+        environment["VIRTUAL_ENV"] = str(worker_python.parent.parent)
+        environment["PATH"] = os.pathsep.join(
+            (str(worker_python.parent), environment.get("PATH", ""))
+        )
+        python_paths = [str(project_root / "src"), str(self.settings.comfyui_root)]
+        if environment.get("PYTHONPATH"):
+            python_paths.append(environment["PYTHONPATH"])
+        environment["PYTHONPATH"] = os.pathsep.join(python_paths)
+        try:
+            completed = subprocess.run(
+                (
+                    str(worker_python),
+                    "-m",
+                    "k2_region_lab.worker.detect_faces",
+                    "--image",
+                    str(source_path),
+                    "--comfyui-root",
+                    str(self.settings.comfyui_root),
+                    "--threshold",
+                    str(self.face_detail_detector_threshold_input.value()),
+                ),
+                cwd=project_root,
+                env=environment,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=True,
+            )
+            detection_report = json.loads(completed.stdout)
+            image_width = int(detection_report["width"])
+            image_height = int(detection_report["height"])
+            detections = tuple(
+                DetectedFace(
+                    PixelBox(*map(float, item["box"])),
+                    float(item["score"]),
+                )
+                for item in detection_report["faces"]
+            )
+        except (
+            json.JSONDecodeError,
+            KeyError,
+            OSError,
+            subprocess.SubprocessError,
+            TypeError,
+            ValueError,
+        ) as error:
+            logging.getLogger(__name__).exception("face detection failed")
+            details = (
+                completed.stderr.strip()
+                if "completed" in locals() and completed.stderr.strip()
+                else str(error)
+            )
+            QMessageBox.warning(self, "Face detection failed", details)
+            return
+
+        targets = assign_faces_to_regional_loras(
+            detections,
+            self._scaled_face_regions(image_width, image_height),
+            self._lora_payload(),
+        )
+        target_by_box = {
+            (
+                target.face.box.x0,
+                target.face.box.y0,
+                target.face.box.x1,
+                target.face.box.y1,
+            ): target
+            for target in targets
+        }
+        self._face_detections = []
+        self._syncing_face_selection = True
+        self.face_selection_list.clear()
+        for index, face in enumerate(detections):
+            box_key = (face.box.x0, face.box.y0, face.box.x1, face.box.y1)
+            target = target_by_box.get(box_key)
+            matched = target is not None
+            record: dict[str, object] = {
+                "index": index,
+                "box": [face.box.x0, face.box.y0, face.box.x1, face.box.y1],
+                "score": face.score,
+                "region_id": target.region_id if target else None,
+                "region_name": target.region_name if target else None,
+            }
+            self._face_detections.append(record)
+            assignment = (
+                f"region {target.region_name}"
+                if target is not None
+                else "no regional LoRA match"
+            )
+            item = QListWidgetItem(
+                f"Face {index + 1} — confidence {face.score:.3f} — {assignment}"
+            )
+            item.setData(Qt.ItemDataRole.UserRole, index)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(
+                Qt.CheckState.Checked if matched else Qt.CheckState.Unchecked
+            )
+            self.face_selection_list.addItem(item)
+        self._syncing_face_selection = False
+        self._face_selection_changed()
+        if detections:
+            self.events.addItem(
+                f"Detected {len(detections)} face(s) at threshold "
+                f"{self.face_detail_detector_threshold_input.value():.2f}; "
+                f"{len(targets)} matched regional LoRAs"
+            )
+        else:
+            self.events.addItem(
+                "No faces detected. Lower the detector threshold and try again."
+            )
+            QMessageBox.information(
+                self,
+                "No faces detected",
+                "Lower the detector threshold and run detection again.",
+            )
+
+    def _selected_face_indices(self) -> list[int]:
+        return [
+            int(self.face_selection_list.item(row).data(Qt.ItemDataRole.UserRole))
+            for row in range(self.face_selection_list.count())
+            if self.face_selection_list.item(row).checkState() == Qt.CheckState.Checked
+        ]
+
+    def _face_selection_changed(self, _item=None) -> None:
+        if self._syncing_face_selection:
+            return
+        selected = set(self._selected_face_indices())
+        overlays = []
+        for record in self._face_detections:
+            box = list(record["box"])
+            index = int(record["index"])
+            region_name = record.get("region_name")
+            label = f"{index + 1}" + (f" {region_name}" if region_name else "")
+            overlays.append((*map(float, box), label, index in selected))
+        self.face_source_preview.set_overlays(overlays)
+        self.face_refine_button.setEnabled(
+            bool(
+                selected
+                and not self._generation_active
+                and self.artifacts is not None
+                and self.artifacts.complete
+            )
+        )
+
+    def _set_all_face_selections(self, checked: bool) -> None:
+        self._syncing_face_selection = True
+        for row in range(self.face_selection_list.count()):
+            self.face_selection_list.item(row).setCheckState(
+                Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
+            )
+        self._syncing_face_selection = False
+        self._face_selection_changed()
 
     def _browse_face_source(self) -> None:
         start = (
@@ -1303,6 +1602,14 @@ class MainWindow(QMainWindow):
         if source_path is None or not source_path.is_file():
             QMessageBox.warning(
                 self, "Source PNG required", "Load a first-pass PNG before refining."
+            )
+            return
+        selected_face_indices = self._selected_face_indices()
+        if not self._face_detections or not selected_face_indices:
+            QMessageBox.warning(
+                self,
+                "Select faces first",
+                "Run face detection, then check one or more numbered faces to refine.",
             )
             return
         loras = self._lora_payload()
@@ -1361,8 +1668,10 @@ class MainWindow(QMainWindow):
                 "detector_threshold": (
                     self.face_detail_detector_threshold_input.value()
                 ),
+                "selected_face_indices": selected_face_indices,
                 "regions": regions,
                 "loras": loras,
+                "project_json": project_document(self._project_state()),
             }
         )
         self._pending_face_refinement_payload = payload
@@ -1437,6 +1746,14 @@ class MainWindow(QMainWindow):
             bool(
                 self.artifacts.complete
                 and not self._generation_active
+                and self._face_source_path is not None
+                and self._face_source_path.is_file()
+                and self._selected_face_indices()
+            )
+        )
+        self.face_detect_button.setEnabled(
+            bool(
+                not self._generation_active
                 and self._face_source_path is not None
                 and self._face_source_path.is_file()
             )
@@ -2319,9 +2636,12 @@ class MainWindow(QMainWindow):
         self.face_source_input.clear()
         self.face_result_input.clear()
         self.face_source_preview.clear_image("No source PNG loaded")
+        self._face_detections = []
+        self.face_selection_list.clear()
         self.face_result_preview.clear_image(
             "Run face refinement to compare the result"
         )
+        self.face_detect_button.setEnabled(False)
         self.face_refine_button.setEnabled(False)
         if state.background_image and state.background_image.is_file():
             if self.canvas.set_image(str(state.background_image)):
@@ -2431,7 +2751,11 @@ class MainWindow(QMainWindow):
                 and self.artifacts.complete
                 and self._face_source_path is not None
                 and self._face_source_path.is_file()
+                and self._selected_face_indices()
             )
+        )
+        self.face_detect_button.setEnabled(
+            bool(self._face_source_path is not None and self._face_source_path.is_file())
         )
         self._set_memory_controls_enabled(True)
         if stopped:
@@ -2623,6 +2947,9 @@ class MainWindow(QMainWindow):
                     for region in self.regions
                 ],
                 "loras": self._lora_payload(),
+                "project_json": project_document(
+                    replace(self._project_state(), seed=seed)
+                ),
             }
         )
         self._pending_generation_payload = payload
@@ -2690,6 +3017,14 @@ class MainWindow(QMainWindow):
                 not active
                 and self.artifacts is not None
                 and self.artifacts.complete
+                and self._face_source_path is not None
+                and self._face_source_path.is_file()
+                and self._selected_face_indices()
+            )
+        )
+        self.face_detect_button.setEnabled(
+            bool(
+                not active
                 and self._face_source_path is not None
                 and self._face_source_path.is_file()
             )

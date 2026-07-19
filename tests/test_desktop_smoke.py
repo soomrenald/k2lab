@@ -21,6 +21,7 @@ if PYSIDE_AVAILABLE:
         QDialog,
         QDockWidget,
         QFileDialog,
+        QListWidgetItem,
         QMessageBox,
         QTextEdit,
     )
@@ -889,6 +890,8 @@ class DesktopSmokeTests(unittest.TestCase):
             self.assertEqual(payload["loras"][0]["path"], str(lora_path.resolve()))
             self.assertEqual(payload["regions"][0]["prompt"], "a detailed red teapot")
             self.assertEqual(payload["regions"][0]["face_identity_prompt"], "")
+            self.assertEqual(payload["project_json"]["schema"], "k2-region-lab-project")
+            self.assertEqual(payload["project_json"]["generation"]["seed"], 1234)
 
             image_path = root / "baseline.png"
             pixmap = QPixmap(32, 32)
@@ -923,6 +926,20 @@ class DesktopSmokeTests(unittest.TestCase):
             window._add_lora_path(lora_path)
             window.lora_scope_list.item(1).setCheckState(Qt.CheckState.Checked)
             self.assertTrue(window._set_face_refinement_source(source))
+            window._face_detections = [
+                {
+                    "index": 0,
+                    "box": [40.0, 80.0, 100.0, 150.0],
+                    "score": 0.9,
+                    "region_id": window.regions[0].region_id,
+                    "region_name": window.regions[0].name,
+                }
+            ]
+            face_item = QListWidgetItem("Face 1")
+            face_item.setData(Qt.ItemDataRole.UserRole, 0)
+            face_item.setFlags(face_item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            face_item.setCheckState(Qt.CheckState.Checked)
+            window.face_selection_list.addItem(face_item)
             window.face_detail_seed_input.setValue(77)
             window.face_detail_blend_input.setValue(0.35)
             window.worker_client.send = Mock()
@@ -945,6 +962,8 @@ class DesktopSmokeTests(unittest.TestCase):
             self.assertEqual(payload["seed"], 77)
             self.assertEqual(payload["blend"], 0.35)
             self.assertEqual(payload["crop_size"], 512)
+            self.assertEqual(payload["selected_face_indices"], [0])
+            self.assertEqual(payload["project_json"]["schema"], "k2-region-lab-project")
             self.assertEqual(payload["regions"][0]["box"]["x0"], 16.0)
             self.assertFalse(payload["loras"][0]["global"])
 

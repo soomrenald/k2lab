@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 import numpy as np
-from PIL import Image
+from PIL import Image, PngImagePlugin
 
 from k2_region_lab.face_detail import (
     DEFAULT_DETECTOR_RELATIVE_PATH,
@@ -156,7 +156,10 @@ class FaceDetailRuntimeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source = root / "first_pass.png"
-            Image.new("RGB", (64, 64), "blue").save(source)
+            source_metadata = PngImagePlugin.PngInfo()
+            source_metadata.add_text("k2lab_project", '{"source":true}')
+            source_metadata.add_text("global_prompt", "source prompt")
+            Image.new("RGB", (64, 64), "blue").save(source, pnginfo=source_metadata)
             runtime = ComfyBaselineRuntime.__new__(ComfyBaselineRuntime)
             runtime.model = object()
             runtime.clip = object()
@@ -171,12 +174,74 @@ class FaceDetailRuntimeTests(unittest.TestCase):
                 regions=(),
                 loras=[],
                 seed=42,
+                selected_face_indices=(1,),
+                project_json={"schema": "k2-region-lab-project", "version": 14},
             )
+            output_path = Path(report["image_path"])
+            with Image.open(output_path) as refined:
+                refined_metadata = dict(refined.info)
 
-        output_path = Path(report["image_path"])
         self.assertIn("face_refined", output_path.name)
         self.assertEqual(report["source_image"], str(source.resolve()))
         runtime._run_face_detail_pass.assert_called_once()
+        self.assertEqual(
+            runtime._run_face_detail_pass.call_args.kwargs["selected_face_indices"],
+            (1,),
+        )
+        self.assertEqual(refined_metadata["k2lab_mode"], "krea2_face_refinement")
+        self.assertEqual(refined_metadata["global_prompt"], "source prompt")
+        self.assertEqual(
+            refined_metadata["k2lab_project"],
+            '{"schema":"k2-region-lab-project","version":14}',
+        )
+
+    def test_selected_face_indices_filter_detected_targets(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            detector_path = root / DEFAULT_DETECTOR_RELATIVE_PATH
+            detector_path.parent.mkdir(parents=True)
+            detector_path.write_bytes(b"x" * 2048)
+            runtime = ComfyBaselineRuntime.__new__(ComfyBaselineRuntime)
+            runtime.comfyui_root = root
+            runtime._refine_face_crop = Mock(
+                return_value=(Image.new("RGB", (256, 256), "red"), [])
+            )
+            regions = (
+                RegionDefinition("left", "Left", PixelBox(0, 0, 128, 256), "left face"),
+                RegionDefinition("right", "Right", PixelBox(128, 0, 256, 256), "right face"),
+            )
+            loras = [
+                {"id": "left", "global": False, "strength": 1.0, "region_ids": ["left"]},
+                {
+                    "id": "right",
+                    "global": False,
+                    "strength": 1.0,
+                    "region_ids": ["right"],
+                },
+            ]
+            fake_detector = Mock()
+            fake_detector.detect.return_value = (
+                DetectedFace(PixelBox(30, 40, 70, 80), 0.8),
+                DetectedFace(PixelBox(180, 40, 220, 80), 0.9),
+            )
+            with patch(
+                "k2_region_lab.worker.runtime.OnnxNanoFaceDetector",
+                return_value=fake_detector,
+            ):
+                _result, summary = runtime._run_face_detail_pass(
+                    Image.new("RGB", (256, 256), "black"),
+                    settings=FaceDetailSettings(enabled=True, crop_size=256),
+                    regions=regions,
+                    loras=loras,
+                    seed=0,
+                    selected_face_indices=(1,),
+                )
+
+        self.assertEqual(summary["detection_count"], 2)
+        self.assertEqual(summary["selected_indices"], [1])
+        self.assertEqual(summary["selected_count"], 1)
+        self.assertEqual(summary["refined_count"], 1)
+        self.assertEqual(summary["faces"][0]["region_id"], "right")
 
 
 if __name__ == "__main__":

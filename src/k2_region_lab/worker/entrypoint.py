@@ -235,6 +235,11 @@ def main() -> int:
                         else None
                     ),
                     loras=list(payload.get("loras", [])),
+                    project_json=(
+                        dict(payload["project_json"])
+                        if isinstance(payload.get("project_json"), dict)
+                        else None
+                    ),
                     progress=progress,
                     event=runtime_event,
                 )
@@ -287,7 +292,17 @@ def main() -> int:
                     blend=float(payload.get("blend", 0.5)),
                     lora_scale=float(payload.get("lora_scale", 0.5)),
                     detector_threshold=float(
-                        payload.get("detector_threshold", 0.4)
+                        payload.get("detector_threshold", 0.15)
+                    ),
+                    selected_face_indices=(
+                        tuple(int(index) for index in payload["selected_face_indices"])
+                        if payload.get("selected_face_indices") is not None
+                        else None
+                    ),
+                    project_json=(
+                        dict(payload["project_json"])
+                        if isinstance(payload.get("project_json"), dict)
+                        else None
                     ),
                     event=refinement_event,
                 )

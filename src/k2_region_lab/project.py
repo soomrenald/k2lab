@@ -95,7 +95,7 @@ class ProjectState:
     face_detail_feather: float = 0.12
     face_detail_blend: float = 0.5
     face_detail_lora_scale: float = 0.5
-    face_detail_detector_threshold: float = 0.4
+    face_detail_detector_threshold: float = 0.15
     post_upscale: bool = False
     upscale_scale: int = 2
     upscale_method: str = "lanczos"
@@ -368,7 +368,7 @@ def project_state(document: dict[str, Any]) -> ProjectState:
         face_detail_blend=float(generation.get("face_detail_blend", 0.5)),
         face_detail_lora_scale=float(generation.get("face_detail_lora_scale", 0.5)),
         face_detail_detector_threshold=float(
-            generation.get("face_detail_detector_threshold", 0.4)
+            generation.get("face_detail_detector_threshold", 0.15)
         ),
         post_upscale=bool(generation.get("post_upscale", False)),
         upscale_scale=int(generation.get("upscale_scale", 2)),

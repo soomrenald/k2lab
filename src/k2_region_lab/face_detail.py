@@ -26,7 +26,7 @@ class FaceDetailSettings:
     feather: float = 0.12
     blend: float = 0.5
     lora_scale: float = 0.5
-    detector_threshold: float = 0.4
+    detector_threshold: float = 0.15
 
     def __post_init__(self) -> None:
         if not 1 <= self.steps <= 100:
@@ -364,4 +364,6 @@ class OnnxNanoFaceDetector:
             faces.append(
                 DetectedFace(PixelBox(x0, y0, x1, y1), float(scores[index]))
             )
-        return tuple(faces)
+        return tuple(
+            sorted(faces, key=lambda face: (face.center[0], face.center[1], -face.score))
+        )

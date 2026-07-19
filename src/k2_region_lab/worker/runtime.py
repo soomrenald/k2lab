@@ -1259,6 +1259,7 @@ class ComfyBaselineRuntime:
         upscale_method: str = "lanczos",
         upscale_model_path: Path | None = None,
         loras: list[dict[str, Any]] | None = None,
+        project_json: dict[str, Any] | None = None,
         progress: Callable[[int, int, dict[str, Any]], None] | None = None,
         event: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
@@ -1321,6 +1322,7 @@ class ComfyBaselineRuntime:
                 upscale_method=upscale_method,
                 upscale_model_path=upscale_model_path,
                 loras=lora_specifications,
+                project_json=project_json,
                 progress=progress,
                 event=event,
                 oom_recovered=False,
@@ -1363,6 +1365,7 @@ class ComfyBaselineRuntime:
             upscale_method=upscale_method,
             upscale_model_path=upscale_model_path,
             loras=list(loras or []),
+            project_json=project_json,
             progress=progress,
             event=event,
             oom_recovered=True,
@@ -1391,6 +1394,7 @@ class ComfyBaselineRuntime:
         upscale_method: str,
         upscale_model_path: Path | None,
         loras: list[dict[str, Any]],
+        project_json: dict[str, Any] | None,
         progress: Callable[[int, int, dict[str, Any]], None] | None,
         event: Callable[[str, dict[str, Any]], None] | None,
         oom_recovered: bool,
@@ -1620,6 +1624,11 @@ class ComfyBaselineRuntime:
         metadata.add_text("size", f"{output_image.width}x{output_image.height}")
         metadata.add_text("base_size", f"{width}x{height}")
         metadata.add_text("filename_prefix", filename_prefix)
+        if project_json is not None:
+            metadata.add_text(
+                "k2lab_project",
+                json.dumps(project_json, separators=(",", ":")),
+            )
         regional_summary = self._regional_summary(
             regional_plan, bound_regional_plan, attention_override
         )
@@ -1668,7 +1677,9 @@ class ComfyBaselineRuntime:
         feather: float = 0.12,
         blend: float = 0.5,
         lora_scale: float = 0.5,
-        detector_threshold: float = 0.4,
+        detector_threshold: float = 0.15,
+        selected_face_indices: tuple[int, ...] | None = None,
+        project_json: dict[str, Any] | None = None,
         output_directory: Path | None = None,
         event: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
@@ -1692,6 +1703,11 @@ class ComfyBaselineRuntime:
         from PIL import Image, PngImagePlugin
 
         with Image.open(source_path) as source:
+            source_metadata = {
+                str(key): str(value)
+                for key, value in source.info.items()
+                if isinstance(value, (str, int, float, bool))
+            }
             source_image = source.convert("RGB")
         refined_image, summary = self._run_face_detail_pass(
             source_image,
@@ -1699,6 +1715,7 @@ class ComfyBaselineRuntime:
             regions=regions,
             loras=loras,
             seed=seed,
+            selected_face_indices=selected_face_indices,
             event=event,
         )
         destination = (output_directory or source_path.parent).expanduser().resolve()
@@ -1708,10 +1725,21 @@ class ComfyBaselineRuntime:
             f"{source_path.stem}_face_refined_{stamp}_seed-{seed}.png"
         )
         metadata = PngImagePlugin.PngInfo()
+        for key, value in source_metadata.items():
+            if key in {"k2lab_mode", "source_image", "seed", "face_detail"} or (
+                key == "k2lab_project" and project_json is not None
+            ):
+                continue
+            metadata.add_text(key, value)
         metadata.add_text("k2lab_mode", "krea2_face_refinement")
         metadata.add_text("source_image", str(source_path))
         metadata.add_text("seed", str(seed))
         metadata.add_text("face_detail", json.dumps(summary))
+        if project_json is not None:
+            metadata.add_text(
+                "k2lab_project",
+                json.dumps(project_json, separators=(",", ":")),
+            )
         refined_image.save(output_path, pnginfo=metadata)
         return {
             "image_path": str(output_path),
@@ -1731,7 +1759,8 @@ class ComfyBaselineRuntime:
         regions: tuple[RegionDefinition, ...],
         loras: list[dict[str, Any]],
         seed: int,
-        event: Callable[[str, dict[str, Any]], None] | None,
+        selected_face_indices: tuple[int, ...] | None = None,
+        event: Callable[[str, dict[str, Any]], None] | None = None,
     ):
         from PIL import Image
 
@@ -1740,6 +1769,7 @@ class ComfyBaselineRuntime:
             "backend": FACE_DETAIL_BACKEND if settings.enabled else "disabled",
             "status": "disabled",
             "detection_count": 0,
+            "selected_count": 0,
             "refined_count": 0,
             "settings": {
                 "steps": settings.steps,
@@ -1752,6 +1782,7 @@ class ComfyBaselineRuntime:
                 "detector_threshold": settings.detector_threshold,
             },
             "faces": [],
+            "detections": [],
         }
         if not settings.enabled:
             return image, summary
@@ -1768,20 +1799,44 @@ class ComfyBaselineRuntime:
         )
         detections = detector.detect(image)
         summary["detection_count"] = len(detections)
-        targets = assign_faces_to_regional_loras(detections, regions, loras)
+        summary["detections"] = [
+            {
+                "index": index,
+                "box": [face.box.x0, face.box.y0, face.box.x1, face.box.y1],
+                "score": face.score,
+            }
+            for index, face in enumerate(detections)
+        ]
+        if selected_face_indices is None:
+            selected_detections = detections
+            selected_indices = tuple(range(len(detections)))
+        else:
+            requested = set(selected_face_indices)
+            selected_indices = tuple(
+                index for index in range(len(detections)) if index in requested
+            )
+            selected_detections = tuple(detections[index] for index in selected_indices)
+        summary["selected_indices"] = list(selected_indices)
+        summary["selected_count"] = len(selected_detections)
+        targets = assign_faces_to_regional_loras(selected_detections, regions, loras)
         if event is not None:
             event(
                 f"Face detector found {len(detections)} face(s); "
+                f"{len(selected_detections)} selected; "
                 f"{len(targets)} matched a regional LoRA",
                 {
                     "face_detail": {
                         "detection_count": len(detections),
+                        "selected_count": len(selected_detections),
                         "target_count": len(targets),
                     }
                 },
             )
         if not detections:
             summary["status"] = "no_faces_detected"
+            return image, summary
+        if not selected_detections:
+            summary["status"] = "no_faces_selected"
             return image, summary
         if not targets:
             summary["status"] = "no_regional_lora_faces"
