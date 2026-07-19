@@ -38,6 +38,7 @@ class ProjectStateTests(unittest.TestCase):
             face_detail_blend=0.4,
             face_detail_lora_scale=1.2,
             face_detail_detector_threshold=0.35,
+            face_detail_detector_provider="cpu",
             projector_identity_protection=0.65,
             prompt_emphases=(
                 PromptEmphasis(GLOBAL_EMPHASIS_SCOPE, "two distinct people", 0.5),
@@ -68,6 +69,7 @@ class ProjectStateTests(unittest.TestCase):
         self.assertEqual(restored.face_detail_blend, 0.4)
         self.assertEqual(restored.face_detail_lora_scale, 1.2)
         self.assertEqual(restored.face_detail_detector_threshold, 0.35)
+        self.assertEqual(restored.face_detail_detector_provider, "cpu")
         self.assertEqual(restored.projector_identity_protection, 0.65)
 
     def test_character_identity_lora_routing_round_trips(self) -> None:

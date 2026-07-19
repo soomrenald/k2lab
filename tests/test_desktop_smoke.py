@@ -581,6 +581,9 @@ class DesktopSmokeTests(unittest.TestCase):
             window.face_detail_blend_input.setValue(0.4)
             window.face_detail_lora_scale_input.setValue(1.2)
             window.face_detail_detector_threshold_input.setValue(0.35)
+            window.face_detail_detector_provider_input.setCurrentIndex(
+                window.face_detail_detector_provider_input.findData("cuda")
+            )
             upscale_path = root / "4x-upscaler.pth"
             upscale_path.write_bytes(b"test upscaler placeholder")
             window.post_upscale_input.setChecked(True)
@@ -653,6 +656,9 @@ class DesktopSmokeTests(unittest.TestCase):
             self.assertEqual(restored.face_detail_blend_input.value(), 0.4)
             self.assertEqual(restored.face_detail_lora_scale_input.value(), 1.2)
             self.assertEqual(restored.face_detail_detector_threshold_input.value(), 0.35)
+            self.assertEqual(
+                restored.face_detail_detector_provider_input.currentData(), "cuda"
+            )
             self.assertTrue(restored.post_upscale_input.isChecked())
             self.assertEqual(restored.upscale_scale_input.currentData(), 4)
             self.assertEqual(restored.upscale_method_input.currentData(), "model")

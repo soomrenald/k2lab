@@ -296,6 +296,7 @@ def main() -> int:
                     detector_threshold=float(
                         payload.get("detector_threshold", 0.15)
                     ),
+                    detector_provider=str(payload.get("detector_provider", "auto")),
                     selected_face_indices=(
                         tuple(int(index) for index in payload["selected_face_indices"])
                         if payload.get("selected_face_indices") is not None

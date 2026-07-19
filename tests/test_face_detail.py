@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import sys
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -75,6 +76,67 @@ class FaceDetailGeometryTests(unittest.TestCase):
         self.assertGreater(scale, 0)
         self.assertGreaterEqual(offset_x, 0)
         self.assertGreaterEqual(offset_y, 0)
+
+    def test_auto_detector_provider_prefers_cuda_when_available(self) -> None:
+        session = Mock()
+        session.get_providers.return_value = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+        runtime = Mock()
+        runtime.get_available_providers.return_value = [
+            "CUDAExecutionProvider",
+            "CPUExecutionProvider",
+        ]
+        runtime.InferenceSession.return_value = session
+        detector = OnnxNanoFaceDetector(Path("/unused/model.onnx"), provider="auto")
+
+        with patch.dict(sys.modules, {"onnxruntime": runtime}):
+            detector._load_session()
+
+        self.assertEqual(
+            runtime.InferenceSession.call_args.kwargs["providers"],
+            ["CUDAExecutionProvider", "CPUExecutionProvider"],
+        )
+        self.assertEqual(detector.execution_provider, "CUDAExecutionProvider")
+
+    def test_cpu_detector_provider_never_requests_cuda(self) -> None:
+        session = Mock()
+        session.get_providers.return_value = ["CPUExecutionProvider"]
+        runtime = Mock()
+        runtime.get_available_providers.return_value = [
+            "CUDAExecutionProvider",
+            "CPUExecutionProvider",
+        ]
+        runtime.InferenceSession.return_value = session
+        detector = OnnxNanoFaceDetector(Path("/unused/model.onnx"), provider="cpu")
+
+        with patch.dict(sys.modules, {"onnxruntime": runtime}):
+            detector._load_session()
+
+        self.assertEqual(
+            runtime.InferenceSession.call_args.kwargs["providers"],
+            ["CPUExecutionProvider"],
+        )
+        self.assertEqual(detector.execution_provider, "CPUExecutionProvider")
+
+    def test_auto_detector_provider_falls_back_when_cuda_session_fails(self) -> None:
+        session = Mock()
+        session.get_providers.return_value = ["CPUExecutionProvider"]
+        runtime = Mock()
+        runtime.get_available_providers.return_value = [
+            "CUDAExecutionProvider",
+            "CPUExecutionProvider",
+        ]
+        runtime.InferenceSession.side_effect = [RuntimeError("broken CUDA"), session]
+        detector = OnnxNanoFaceDetector(Path("/unused/model.onnx"), provider="auto")
+
+        with patch.dict(sys.modules, {"onnxruntime": runtime}):
+            detector._load_session()
+
+        self.assertEqual(runtime.InferenceSession.call_count, 2)
+        self.assertEqual(
+            runtime.InferenceSession.call_args.kwargs["providers"],
+            ["CPUExecutionProvider"],
+        )
+        self.assertEqual(detector.execution_provider, "CPUExecutionProvider")
 
 
 class FaceDetailRuntimeTests(unittest.TestCase):

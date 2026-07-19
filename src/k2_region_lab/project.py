@@ -31,7 +31,7 @@ from k2_region_lab.sampling import (
 
 
 PROJECT_SCHEMA = "k2-region-lab-project"
-PROJECT_VERSION = 15
+PROJECT_VERSION = 16
 SUPPORTED_PROJECT_VERSIONS = {
     1,
     2,
@@ -46,6 +46,7 @@ SUPPORTED_PROJECT_VERSIONS = {
     11,
     12,
     14,
+    15,
     PROJECT_VERSION,
 }
 
@@ -105,6 +106,7 @@ class ProjectState:
     face_detail_blend: float = 0.5
     face_detail_lora_scale: float = 0.5
     face_detail_detector_threshold: float = 0.15
+    face_detail_detector_provider: str = "auto"
     post_upscale: bool = False
     upscale_scale: int = 2
     upscale_method: str = "lanczos"
@@ -163,6 +165,8 @@ class ProjectState:
             raise ValueError("face-detail LoRA scale must be between zero and four")
         if not 0.0 < self.face_detail_detector_threshold < 1.0:
             raise ValueError("face detector threshold must be in (0, 1)")
+        if self.face_detail_detector_provider not in {"auto", "cpu", "cuda"}:
+            raise ValueError("face detector provider must be auto, cpu, or cuda")
         if self.upscale_scale not in {2, 4}:
             raise ValueError("post-upscale scale must be 2 or 4")
         if self.upscale_method not in {"lanczos", "model"}:
@@ -246,6 +250,7 @@ def project_document(state: ProjectState) -> dict[str, Any]:
             "face_detail_blend": state.face_detail_blend,
             "face_detail_lora_scale": state.face_detail_lora_scale,
             "face_detail_detector_threshold": state.face_detail_detector_threshold,
+            "face_detail_detector_provider": state.face_detail_detector_provider,
             "post_upscale": state.post_upscale,
             "upscale_scale": state.upscale_scale,
             "upscale_method": state.upscale_method,
@@ -382,6 +387,9 @@ def project_state(document: dict[str, Any]) -> ProjectState:
         face_detail_lora_scale=float(generation.get("face_detail_lora_scale", 0.5)),
         face_detail_detector_threshold=float(
             generation.get("face_detail_detector_threshold", 0.15)
+        ),
+        face_detail_detector_provider=str(
+            generation.get("face_detail_detector_provider", "auto")
         ),
         post_upscale=bool(generation.get("post_upscale", False)),
         upscale_scale=int(generation.get("upscale_scale", 2)),

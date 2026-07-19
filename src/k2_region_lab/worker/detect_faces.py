@@ -14,6 +14,9 @@ def main() -> int:
     parser.add_argument("--image", required=True, type=Path)
     parser.add_argument("--comfyui-root", required=True, type=Path)
     parser.add_argument("--threshold", required=True, type=float)
+    parser.add_argument(
+        "--provider", choices=("auto", "cpu", "cuda"), default="auto"
+    )
     arguments = parser.parse_args()
 
     detector_path = discover_face_detector(arguments.comfyui_root)
@@ -21,15 +24,18 @@ def main() -> int:
         raise RuntimeError("face_det.onnx was not found under the configured ComfyUI root")
     with Image.open(arguments.image.expanduser().resolve()) as source:
         image = source.convert("RGB")
-    faces = OnnxNanoFaceDetector(
+    detector = OnnxNanoFaceDetector(
         detector_path,
         threshold=arguments.threshold,
-    ).detect(image)
+        provider=arguments.provider,
+    )
+    faces = detector.detect(image)
     print(
         json.dumps(
             {
                 "width": image.width,
                 "height": image.height,
+                "execution_provider": detector.execution_provider,
                 "faces": [
                     {
                         "box": [face.box.x0, face.box.y0, face.box.x1, face.box.y1],

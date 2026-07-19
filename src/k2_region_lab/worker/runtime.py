@@ -1706,6 +1706,7 @@ class ComfyBaselineRuntime:
         blend: float = 0.5,
         lora_scale: float = 0.5,
         detector_threshold: float = 0.15,
+        detector_provider: str = "auto",
         selected_face_indices: tuple[int, ...] | None = None,
         project_json: dict[str, Any] | None = None,
         output_directory: Path | None = None,
@@ -1726,6 +1727,7 @@ class ComfyBaselineRuntime:
             blend=blend,
             lora_scale=lora_scale,
             detector_threshold=detector_threshold,
+            detector_provider=detector_provider,
         )
 
         from PIL import Image, PngImagePlugin
@@ -1808,6 +1810,7 @@ class ComfyBaselineRuntime:
                 "blend": settings.blend,
                 "lora_scale": settings.lora_scale,
                 "detector_threshold": settings.detector_threshold,
+                "detector_provider": settings.detector_provider,
             },
             "faces": [],
             "detections": [],
@@ -1823,9 +1826,12 @@ class ComfyBaselineRuntime:
             )
         summary["detector"] = str(detector_path)
         detector = OnnxNanoFaceDetector(
-            detector_path, threshold=settings.detector_threshold
+            detector_path,
+            threshold=settings.detector_threshold,
+            provider=settings.detector_provider,
         )
         detections = detector.detect(image)
+        summary["detector_execution_provider"] = detector.execution_provider
         summary["detection_count"] = len(detections)
         summary["detections"] = [
             {

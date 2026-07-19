@@ -565,6 +565,19 @@ class MainWindow(QMainWindow):
         self.face_detail_detector_threshold_input.valueChanged.connect(
             self._face_detection_settings_changed
         )
+        self.face_detail_detector_provider_input = QComboBox()
+        self.face_detail_detector_provider_input.addItem(
+            "Auto (CUDA when available)", "auto"
+        )
+        self.face_detail_detector_provider_input.addItem("CPU", "cpu")
+        self.face_detail_detector_provider_input.addItem("NVIDIA CUDA", "cuda")
+        self.face_detail_detector_provider_input.setToolTip(
+            "Auto prefers ONNX Runtime's CUDA provider on NVIDIA and otherwise "
+            "uses CPU. AMD/ROCm users should use Auto or CPU."
+        )
+        self.face_detail_detector_provider_input.currentIndexChanged.connect(
+            self._face_detection_settings_changed
+        )
 
         control_items = (
             ("Seed", self.face_detail_seed_input),
@@ -576,6 +589,7 @@ class MainWindow(QMainWindow):
             ("Refined-pixel blend", self.face_detail_blend_input),
             ("Regional LoRA scale", self.face_detail_lora_scale_input),
             ("Detector threshold", self.face_detail_detector_threshold_input),
+            ("Detector device", self.face_detail_detector_provider_input),
         )
         for index, (label, control) in enumerate(control_items):
             row = index // 3
@@ -1448,6 +1462,8 @@ class MainWindow(QMainWindow):
                     str(self.settings.comfyui_root),
                     "--threshold",
                     str(self.face_detail_detector_threshold_input.value()),
+                    "--provider",
+                    str(self.face_detail_detector_provider_input.currentData()),
                 ),
                 cwd=project_root,
                 env=environment,
@@ -1459,6 +1475,9 @@ class MainWindow(QMainWindow):
             detection_report = json.loads(completed.stdout)
             image_width = int(detection_report["width"])
             image_height = int(detection_report["height"])
+            execution_provider = str(
+                detection_report.get("execution_provider", "unknown provider")
+            )
             detections = tuple(
                 DetectedFace(
                     PixelBox(*map(float, item["box"])),
@@ -1475,9 +1494,10 @@ class MainWindow(QMainWindow):
             ValueError,
         ) as error:
             logging.getLogger(__name__).exception("face detection failed")
+            error_stderr = getattr(error, "stderr", None)
             details = (
-                completed.stderr.strip()
-                if "completed" in locals() and completed.stderr.strip()
+                error_stderr.strip()
+                if isinstance(error_stderr, str) and error_stderr.strip()
                 else str(error)
             )
             QMessageBox.warning(self, "Face detection failed", details)
@@ -1532,7 +1552,7 @@ class MainWindow(QMainWindow):
             self.events.addItem(
                 f"Detected {len(detections)} face(s) at threshold "
                 f"{self.face_detail_detector_threshold_input.value():.2f}; "
-                f"{len(targets)} matched regional LoRAs"
+                f"{len(targets)} matched regional LoRAs; {execution_provider}"
             )
         else:
             self.events.addItem(
@@ -1678,6 +1698,9 @@ class MainWindow(QMainWindow):
                 "lora_scale": self.face_detail_lora_scale_input.value(),
                 "detector_threshold": (
                     self.face_detail_detector_threshold_input.value()
+                ),
+                "detector_provider": str(
+                    self.face_detail_detector_provider_input.currentData()
                 ),
                 "selected_face_indices": selected_face_indices,
                 "regions": regions,
@@ -2351,6 +2374,9 @@ class MainWindow(QMainWindow):
             face_detail_detector_threshold=(
                 self.face_detail_detector_threshold_input.value()
             ),
+            face_detail_detector_provider=str(
+                self.face_detail_detector_provider_input.currentData()
+            ),
             post_upscale=self.post_upscale_input.isChecked(),
             upscale_scale=int(self.upscale_scale_input.currentData()),
             upscale_method=str(self.upscale_method_input.currentData()),
@@ -2575,6 +2601,12 @@ class MainWindow(QMainWindow):
         self.face_detail_lora_scale_input.setValue(state.face_detail_lora_scale)
         self.face_detail_detector_threshold_input.setValue(
             state.face_detail_detector_threshold
+        )
+        detector_provider_index = self.face_detail_detector_provider_input.findData(
+            state.face_detail_detector_provider
+        )
+        self.face_detail_detector_provider_input.setCurrentIndex(
+            max(0, detector_provider_index)
         )
         self.post_upscale_input.setChecked(state.post_upscale)
         scale_index = self.upscale_scale_input.findData(state.upscale_scale)

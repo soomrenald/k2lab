@@ -11,6 +11,7 @@ from k2_region_lab.regions import PixelBox, RegionDefinition
 
 
 BACKEND = "krea-face-crop-detail-v1"
+DETECTOR_PROVIDERS = ("auto", "cpu", "cuda")
 DEFAULT_DETECTOR_RELATIVE_PATH = Path(
     "custom_nodes/ComfyUI-WanVideoWrapper/fantasyportrait/models/face_det.onnx"
 )
@@ -27,6 +28,7 @@ class FaceDetailSettings:
     blend: float = 0.5
     lora_scale: float = 0.5
     detector_threshold: float = 0.15
+    detector_provider: str = "auto"
 
     def __post_init__(self) -> None:
         if not 1 <= self.steps <= 100:
@@ -45,6 +47,10 @@ class FaceDetailSettings:
             raise ValueError("face-detail LoRA scale must be between zero and four")
         if not 0.0 < self.detector_threshold < 1.0:
             raise ValueError("face detector threshold must be in (0, 1)")
+        if self.detector_provider not in DETECTOR_PROVIDERS:
+            raise ValueError(
+                f"unsupported face detector provider: {self.detector_provider!r}"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -241,9 +247,19 @@ class OnnxNanoFaceDetector:
     strides = (8, 16, 32)
     reg_max = 7
 
-    def __init__(self, model_path: Path, *, threshold: float = 0.4) -> None:
+    def __init__(
+        self,
+        model_path: Path,
+        *,
+        threshold: float = 0.4,
+        provider: str = "auto",
+    ) -> None:
         self.model_path = model_path.expanduser().resolve()
         self.threshold = float(threshold)
+        if provider not in DETECTOR_PROVIDERS:
+            raise ValueError(f"unsupported face detector provider: {provider!r}")
+        self.provider = provider
+        self.execution_provider: str | None = None
         self._session = None
 
     def _load_session(self):
@@ -251,13 +267,52 @@ class OnnxNanoFaceDetector:
             return self._session
         try:
             import onnxruntime
-        except ImportError as error:
+        except Exception as error:
             raise RuntimeError(
-                "face detailing requires onnxruntime in the configured worker environment"
+                "face detection requires a working CPU onnxruntime installation in "
+                "the configured worker environment; the installed package could not "
+                f"be imported: {error}"
             ) from error
-        self._session = onnxruntime.InferenceSession(
-            str(self.model_path), providers=["CPUExecutionProvider"]
-        )
+        available = tuple(onnxruntime.get_available_providers())
+        if self.provider == "cuda":
+            if "CUDAExecutionProvider" not in available:
+                raise RuntimeError(
+                    "CUDA face detection was selected, but this ONNX Runtime "
+                    f"installation exposes only: {', '.join(available) or 'no providers'}"
+                )
+            providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+        elif self.provider == "cpu":
+            providers = ["CPUExecutionProvider"]
+        elif "CUDAExecutionProvider" in available:
+            providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+        else:
+            providers = ["CPUExecutionProvider"]
+        try:
+            self._session = onnxruntime.InferenceSession(
+                str(self.model_path), providers=providers
+            )
+        except Exception as error:
+            if self.provider == "auto" and providers[0] == "CUDAExecutionProvider":
+                try:
+                    self._session = onnxruntime.InferenceSession(
+                        str(self.model_path), providers=["CPUExecutionProvider"]
+                    )
+                except Exception as cpu_error:
+                    raise RuntimeError(
+                        f"could not load the face detector {self.model_path} with "
+                        f"CUDA ({error}) or CPU ({cpu_error})"
+                    ) from cpu_error
+            else:
+                raise RuntimeError(
+                    f"could not load the face detector {self.model_path}: {error}"
+                ) from error
+        active = tuple(self._session.get_providers())
+        self.execution_provider = active[0] if active else providers[0]
+        if self.provider == "cuda" and self.execution_provider != "CUDAExecutionProvider":
+            raise RuntimeError(
+                "CUDA face detection was selected, but ONNX Runtime activated "
+                f"{self.execution_provider} instead"
+            )
         return self._session
 
     @staticmethod
