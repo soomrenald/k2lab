@@ -143,13 +143,15 @@ class KreaSpatialAttentionOverride:
             device=v.device,
         )
         key_transposed = k.transpose(-2, -1)
-        pair_fields, emphasis_fields, text_owners, combined_owners = self._pair_fields(q)
+        pair_fields, emphasis_fields, text_owners, image_owners = self._pair_fields(q)
         for start in range(0, q.shape[-2], self.query_chunk_size):
             end = min(q.shape[-2], start + self.query_chunk_size)
             scores = torch.matmul(q[:, :, start:end], key_transposed) * scale
             scores = scores.float()
             if main_stream:
-                self._partition_regional_stream(scores, start, end, combined_owners)
+                self._partition_regional_stream(
+                    scores, start, end, text_owners, image_owners
+                )
                 self._add_spatial_bias(scores, start, end, pair_fields, emphasis_fields)
             else:
                 self._partition_regional_text(scores, start, end, text_owners)
@@ -192,12 +194,10 @@ class KreaSpatialAttentionOverride:
         text_owners = torch.tensor(
             self.text_owners, dtype=torch.int16, device=device
         )
-        combined_owners = torch.tensor(
-            self.text_owners + self.image_owners,
-            dtype=torch.int16,
-            device=device,
+        image_owners = torch.tensor(
+            self.image_owners, dtype=torch.int16, device=device
         )
-        cached = fields, emphasis_fields, text_owners, combined_owners
+        cached = fields, emphasis_fields, text_owners, image_owners
         self._cache[key] = cached
         return cached
 
@@ -205,9 +205,47 @@ class KreaSpatialAttentionOverride:
         """Keep subject-owned keys private to that subject in both text stages."""
         self._partition_owned_keys(scores, start, end, text_owners)
 
-    def _partition_regional_stream(self, scores, start, end, combined_owners) -> None:
-        """Prevent subject text/image keys from carrying deltas to other owners."""
-        self._partition_owned_keys(scores, start, end, combined_owners)
+    def _partition_regional_stream(
+        self, scores, start, end, text_owners, image_owners
+    ) -> None:
+        """Partition cross-modal subject attention without masking image-to-image."""
+        text_count = self.plan.text_token_count
+        text_end = min(end, text_count)
+        if start < text_end:
+            query_text_owners = text_owners[start:text_end]
+            blocked_text = (text_owners.reshape(1, -1) > 0) & (
+                query_text_owners.reshape(-1, 1) != text_owners.reshape(1, -1)
+            )
+            scores[
+                :, :, : text_end - start, :text_count
+            ].masked_fill_(
+                blocked_text.reshape(1, 1, text_end - start, -1),
+                float("-inf"),
+            )
+            blocked_images = (image_owners.reshape(1, -1) > 0) & (
+                query_text_owners.reshape(-1, 1) != image_owners.reshape(1, -1)
+            )
+            scores[
+                :, :, : text_end - start, text_count:
+            ].masked_fill_(
+                blocked_images.reshape(1, 1, text_end - start, -1),
+                float("-inf"),
+            )
+
+        image_start = max(start, text_count)
+        if image_start < end:
+            query_image_owners = image_owners[
+                image_start - text_count : end - text_count
+            ]
+            blocked_text = (text_owners.reshape(1, -1) > 0) & (
+                query_image_owners.reshape(-1, 1) != text_owners.reshape(1, -1)
+            )
+            scores[
+                :, :, image_start - start : end - start, :text_count
+            ].masked_fill_(
+                blocked_text.reshape(1, 1, end - image_start, -1),
+                float("-inf"),
+            )
 
     @staticmethod
     def _partition_owned_keys(scores, start, end, owners) -> None:
@@ -293,7 +331,8 @@ class KreaSpatialAttentionOverride:
             "text_refiner_attention_calls": self.text_refiner_calls,
             "text_partition": "subject_keys_private_to_region",
             "subject_box_exclusion": True,
-            "image_partition": "subject_keys_private_to_region",
+            "cross_modal_partition": "subject_text_private_to_box",
+            "image_to_image_attention": "unmodified",
             "lora_delta_adaptation": self.lora_delta_adaptation,
             "lora_delta_adaptation_gain": self.lora_delta_adaptation_gain,
             "final_region_scales": dict(self.region_scales),

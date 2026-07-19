@@ -2033,5 +2033,6 @@ class ComfyBaselineRuntime:
             summary["lora_delta_adaptation"] = attention_override.summary()
             summary["text_partition"] = "subject_keys_private_to_region"
             summary["subject_box_exclusion"] = True
-            summary["image_partition"] = "subject_keys_private_to_region"
+            summary["cross_modal_partition"] = "subject_text_private_to_box"
+            summary["image_to_image_attention"] = "unmodified"
         return summary

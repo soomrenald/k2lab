@@ -8,7 +8,7 @@ from typing import Callable
 from k2_region_lab.regions import CanvasGeometry, PixelBox, RegionDefinition
 
 
-BACKEND = "krea-unified-spatial-attention-v5"
+BACKEND = "krea-unified-spatial-attention-v6"
 GLOBAL_EMPHASIS_SCOPE = "__global__"
 
 

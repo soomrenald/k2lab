@@ -203,7 +203,7 @@ class RegionalPromptingTests(unittest.TestCase):
         self.assertEqual(float(scores[0, 0, left.start, left.start]), 0.0)
         self.assertEqual(float(scores[0, 0, left.start, 0]), 0.0)
 
-    def test_subject_text_cannot_reach_image_tokens_outside_its_box(self) -> None:
+    def test_cross_modal_partition_preserves_image_to_image_attention(self) -> None:
         try:
             import torch
         except ModuleNotFoundError:
@@ -219,11 +219,15 @@ class RegionalPromptingTests(unittest.TestCase):
         bound = plan.bind_tokens(len, conditioning_text_token_count=len(plan.prompt))
         override = KreaSpatialAttentionOverride(bound)
         reference = torch.zeros((1, 1, bound.text_token_count + 2, 1))
-        _fields, _emphases, _owners, combined_owners = override._pair_fields(reference)
+        _fields, _emphases, text_owners, image_owners = override._pair_fields(reference)
         scores = torch.zeros((1, 1, bound.text_token_count + 2, bound.text_token_count + 2))
 
         override._partition_regional_stream(
-            scores, 0, bound.text_token_count + 2, combined_owners
+            scores,
+            0,
+            bound.text_token_count + 2,
+            text_owners,
+            image_owners,
         )
 
         left, right = bound.spans
@@ -231,8 +235,8 @@ class RegionalPromptingTests(unittest.TestCase):
         right_image = left_image + 1
         self.assertTrue(torch.isneginf(scores[0, 0, left.start, right_image]))
         self.assertTrue(torch.isneginf(scores[0, 0, right_image, left.start]))
-        self.assertTrue(torch.isneginf(scores[0, 0, left_image, right_image]))
-        self.assertTrue(torch.isneginf(scores[0, 0, right_image, left_image]))
+        self.assertEqual(float(scores[0, 0, left_image, right_image]), 0.0)
+        self.assertEqual(float(scores[0, 0, right_image, left_image]), 0.0)
         self.assertTrue(torch.isneginf(scores[0, 0, 0, left_image]))
         self.assertEqual(float(scores[0, 0, left.start, left_image]), 0.0)
         self.assertEqual(float(scores[0, 0, left_image, left.start]), 0.0)

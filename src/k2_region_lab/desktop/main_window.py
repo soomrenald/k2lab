@@ -1782,9 +1782,11 @@ class MainWindow(QMainWindow):
             "its image delta remains confined to the region box."
             if character_identity
             else "Standard routing gates text-fusion deltas to assigned regional "
-            "clauses. Subject clauses and subject-owned image keys cannot feed other "
-            "regions, while shared scene keys may still feed each subject. Main-stream "
-            "attention key/value targets remain omitted because their outputs broadcast."
+            "clauses. Image tokens outside the assigned box cannot attend those clauses, "
+            "and global or other-region text cannot read the box's image keys. "
+            "Image-to-image attention stays continuous to avoid a rectangular seam. "
+            "Main-stream attention key/value targets remain omitted because their "
+            "outputs broadcast."
         )
 
     def _lora_routing_mode_changed(self) -> None:
