@@ -546,6 +546,12 @@ class DesktopSmokeTests(unittest.TestCase):
             window.height_input.setValue(512)
             window.canvas.set_canvas_size(768, 512)
             window.steps_input.setValue(6)
+            window.sampler_input.setCurrentIndex(
+                window.sampler_input.findData("dpmpp_2m")
+            )
+            window.scheduler_input.setCurrentIndex(
+                window.scheduler_input.findData("karras")
+            )
             window.seed_input.setValue(42)
             window.seed_mode_input.setCurrentIndex(window.seed_mode_input.findData("increment"))
             window.regional_prompting_input.setChecked(True)
@@ -602,7 +608,6 @@ class DesktopSmokeTests(unittest.TestCase):
                 "personface, a specific person with an oval face"
             )
             window.region_prompt.setPlainText("a person by the water")
-            window.region_negative_prompt.setPlainText("blurry face")
             window.prompt_emphases = [PromptEmphasis("subject", "person", strength=0.4)]
             window._refresh_prompt_emphases()
             window._add_lora_path(lora_path)
@@ -618,6 +623,8 @@ class DesktopSmokeTests(unittest.TestCase):
             self.assertEqual(restored.width_input.value(), 768)
             self.assertEqual(restored.height_input.value(), 512)
             self.assertEqual(restored.steps_input.value(), 6)
+            self.assertEqual(restored.sampler_input.currentData(), "dpmpp_2m")
+            self.assertEqual(restored.scheduler_input.currentData(), "karras")
             self.assertEqual(restored.seed_input.value(), 42)
             self.assertEqual(restored.seed_mode_input.currentData(), "increment")
             self.assertTrue(restored.regional_prompting_input.isChecked())
@@ -663,7 +670,7 @@ class DesktopSmokeTests(unittest.TestCase):
                 restored.regions[0].face_identity_prompt,
                 "personface, a specific person with an oval face",
             )
-            self.assertEqual(restored.regions[0].negative_prompt, "blurry face")
+            self.assertFalse(hasattr(restored, "region_negative_prompt"))
             self.assertEqual(restored.prompt_emphases[0].phrase, "person")
             self.assertEqual(restored.prompt_emphases[0].strength, 0.4)
             self.assertEqual(restored.lora_list.count(), 1)
@@ -860,6 +867,8 @@ class DesktopSmokeTests(unittest.TestCase):
             self.assertEqual(payload["width"] % 16, 0)
             self.assertEqual(payload["height"] % 16, 0)
             self.assertEqual(payload["steps"], 8)
+            self.assertEqual(payload["sampler"], "euler")
+            self.assertEqual(payload["scheduler"], "simple")
             self.assertEqual(payload["seed"], 1234)
             self.assertEqual(payload["output_directory"], str(root / "renders"))
             self.assertEqual(payload["filename_prefix"], "teapot-test")
@@ -889,6 +898,7 @@ class DesktopSmokeTests(unittest.TestCase):
             self.assertEqual(payload["loras"][0]["strength"], 0.8)
             self.assertEqual(payload["loras"][0]["path"], str(lora_path.resolve()))
             self.assertEqual(payload["regions"][0]["prompt"], "a detailed red teapot")
+            self.assertNotIn("negative_prompt", payload["regions"][0])
             self.assertEqual(payload["regions"][0]["face_identity_prompt"], "")
             self.assertEqual(payload["project_json"]["schema"], "k2-region-lab-project")
             self.assertEqual(payload["project_json"]["generation"]["seed"], 1234)

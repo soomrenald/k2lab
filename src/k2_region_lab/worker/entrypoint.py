@@ -185,6 +185,8 @@ def main() -> int:
                     width=int(payload.get("width", 1024)),
                     height=int(payload.get("height", 1024)),
                     steps=int(payload.get("steps", 8)),
+                    sampler=str(payload.get("sampler", "euler")),
+                    scheduler=str(payload.get("scheduler", "simple")),
                     seed=int(payload.get("seed", 0)),
                     output_directory=Path(payload["output_directory"]),
                     filename_prefix=str(payload.get("filename_prefix", "baseline")),

@@ -22,10 +22,16 @@ from k2_region_lab.regional_prompting import (
     prompt_emphases_from_payload,
 )
 from k2_region_lab.regions import PixelBox, RegionDefinition
+from k2_region_lab.sampling import (
+    DEFAULT_SAMPLER,
+    DEFAULT_SCHEDULER,
+    validate_sampler,
+    validate_scheduler,
+)
 
 
 PROJECT_SCHEMA = "k2-region-lab-project"
-PROJECT_VERSION = 14
+PROJECT_VERSION = 15
 SUPPORTED_PROJECT_VERSIONS = {
     1,
     2,
@@ -39,6 +45,7 @@ SUPPORTED_PROJECT_VERSIONS = {
     10,
     11,
     12,
+    14,
     PROJECT_VERSION,
 }
 
@@ -69,6 +76,8 @@ class ProjectState:
     canvas_height: int
     global_prompt: str = ""
     steps: int = 8
+    sampler: str = DEFAULT_SAMPLER
+    scheduler: str = DEFAULT_SCHEDULER
     seed: int = 0
     seed_mode: str = "fixed"
     regional_prompting: bool = True
@@ -110,6 +119,8 @@ class ProjectState:
             raise ValueError("canvas dimensions must be between 256 and 4096 pixels")
         if not 1 <= self.steps <= 100:
             raise ValueError("steps must be between 1 and 100")
+        validate_sampler(self.sampler)
+        validate_scheduler(self.scheduler)
         if self.seed < 0:
             raise ValueError("seed must not be negative")
         if self.seed_mode not in {"fixed", "random", "increment"}:
@@ -196,6 +207,8 @@ def project_document(state: ProjectState) -> dict[str, Any]:
         "generation": {
             "global_prompt": state.global_prompt,
             "steps": state.steps,
+            "sampler": state.sampler,
+            "scheduler": state.scheduler,
             "seed": state.seed,
             "seed_mode": state.seed_mode,
             "regional_prompting": state.regional_prompting,
@@ -251,7 +264,6 @@ def project_document(state: ProjectState) -> dict[str, Any]:
                     "y1": region.box.y1,
                 },
                 "prompt": region.prompt,
-                "negative_prompt": region.negative_prompt,
                 "face_identity_prompt": region.face_identity_prompt,
                 "enabled": region.enabled,
                 "priority": region.priority,
@@ -293,7 +305,6 @@ def project_state(document: dict[str, Any]) -> ProjectState:
                 float(item["box"]["y1"]),
             ),
             prompt=str(item.get("prompt", "")),
-            negative_prompt=str(item.get("negative_prompt", "")),
             face_identity_prompt=str(item.get("face_identity_prompt", "")),
             enabled=bool(item.get("enabled", True)),
             priority=int(item.get("priority", 0)),
@@ -318,6 +329,8 @@ def project_state(document: dict[str, Any]) -> ProjectState:
         canvas_height=int(canvas["height"]),
         global_prompt=str(generation.get("global_prompt", "")),
         steps=int(generation.get("steps", 8)),
+        sampler=str(generation.get("sampler", DEFAULT_SAMPLER)),
+        scheduler=str(generation.get("scheduler", DEFAULT_SCHEDULER)),
         seed=int(generation.get("seed", 0)),
         seed_mode=str(generation.get("seed_mode", "fixed")),
         regional_prompting=bool(generation.get("regional_prompting", True)),

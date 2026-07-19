@@ -24,6 +24,8 @@ class ProjectStateTests(unittest.TestCase):
         state = ProjectState(
             canvas_width=1024,
             canvas_height=1024,
+            sampler="dpmpp_2m",
+            scheduler="karras",
             regional_late_step_scale=0.8,
             regional_lora_delta_adaptation=True,
             regional_lora_delta_adaptation_gain=0.6,
@@ -46,6 +48,8 @@ class ProjectStateTests(unittest.TestCase):
 
         self.assertEqual(document["version"], PROJECT_VERSION)
         self.assertEqual(document["generation"]["regional_late_step_scale"], 0.8)
+        self.assertEqual(document["generation"]["sampler"], "dpmpp_2m")
+        self.assertEqual(document["generation"]["scheduler"], "karras")
         self.assertEqual(project_state(document).regional_late_step_scale, 0.8)
         self.assertTrue(project_state(document).regional_lora_delta_adaptation)
         self.assertEqual(
@@ -53,6 +57,8 @@ class ProjectStateTests(unittest.TestCase):
         )
         self.assertEqual(project_state(document).prompt_emphases[0].phrase, "two distinct people")
         restored = project_state(document)
+        self.assertEqual(restored.sampler, "dpmpp_2m")
+        self.assertEqual(restored.scheduler, "karras")
         self.assertEqual(restored.face_detail_seed, 123)
         self.assertEqual(restored.face_detail_steps, 10)
         self.assertEqual(restored.face_detail_denoise, 0.25)
@@ -136,6 +142,40 @@ class ProjectStateTests(unittest.TestCase):
         self.assertEqual(restored.face_detail_seed, 0)
         self.assertEqual(restored.face_detail_denoise, 0.15)
         self.assertEqual(restored.face_detail_blend, 0.5)
+
+    def test_legacy_negative_prompt_is_discarded(self) -> None:
+        document = project_document(
+            ProjectState(
+                canvas_width=1024,
+                canvas_height=1024,
+                regions=(
+                    RegionDefinition(
+                        "person",
+                        "Person",
+                        PixelBox(0, 0, 512, 1024),
+                        "a person",
+                    ),
+                ),
+            )
+        )
+        document["version"] = 14
+        document["regions"][0]["negative_prompt"] = "legacy unused text"
+
+        restored = project_state(document)
+
+        self.assertEqual(restored.regions[0].negative_prompt, "")
+        self.assertNotIn("negative_prompt", project_document(restored)["regions"][0])
+
+    def test_legacy_project_uses_euler_simple_defaults(self) -> None:
+        document = project_document(ProjectState(canvas_width=1024, canvas_height=1024))
+        document["version"] = 14
+        document["generation"].pop("sampler")
+        document["generation"].pop("scheduler")
+
+        restored = project_state(document)
+
+        self.assertEqual(restored.sampler, "euler")
+        self.assertEqual(restored.scheduler, "simple")
 
 
 if __name__ == "__main__":

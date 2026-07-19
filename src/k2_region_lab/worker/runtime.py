@@ -59,6 +59,12 @@ from k2_region_lab.regional_prompting import (
     krea_prompt_token_count,
 )
 from k2_region_lab.regions import RegionDefinition
+from k2_region_lab.sampling import (
+    DEFAULT_SAMPLER,
+    DEFAULT_SCHEDULER,
+    validate_sampler,
+    validate_scheduler,
+)
 from k2_region_lab.spatial_attention import KreaSpatialAttentionOverride
 
 
@@ -1235,6 +1241,8 @@ class ComfyBaselineRuntime:
         width: int,
         height: int,
         steps: int,
+        sampler: str = DEFAULT_SAMPLER,
+        scheduler: str = DEFAULT_SCHEDULER,
         seed: int,
         output_directory: Path,
         filename_prefix: str = "baseline",
@@ -1269,6 +1277,8 @@ class ComfyBaselineRuntime:
             raise ValueError("baseline dimensions must be positive multiples of 16")
         if not 1 <= steps <= 100:
             raise ValueError("steps must be between 1 and 100")
+        sampler = validate_sampler(sampler)
+        scheduler = validate_scheduler(scheduler)
         if not 0.0 <= regional_lora_delta_adaptation_gain <= 1.0:
             raise ValueError("LoRA delta adaptation gain must be between zero and one")
         if not 0.0 <= projector_identity_protection <= 1.0:
@@ -1306,6 +1316,8 @@ class ComfyBaselineRuntime:
                 width=width,
                 height=height,
                 steps=steps,
+                sampler=sampler,
+                scheduler=scheduler,
                 seed=seed,
                 output_directory=output_directory,
                 filename_prefix=filename_prefix,
@@ -1349,6 +1361,8 @@ class ComfyBaselineRuntime:
             width=width,
             height=height,
             steps=steps,
+            sampler=sampler,
+            scheduler=scheduler,
             seed=seed,
             output_directory=output_directory,
             filename_prefix=filename_prefix,
@@ -1378,6 +1392,8 @@ class ComfyBaselineRuntime:
         width: int,
         height: int,
         steps: int,
+        sampler: str,
+        scheduler: str,
         seed: int,
         output_directory: Path,
         filename_prefix: str,
@@ -1404,6 +1420,16 @@ class ComfyBaselineRuntime:
         from PIL import Image, PngImagePlugin
 
         import comfy.sample
+        import comfy.samplers
+
+        if sampler not in comfy.samplers.KSampler.SAMPLERS:
+            raise ValueError(
+                f"sampler {sampler!r} is unavailable in the installed ComfyUI runtime"
+            )
+        if scheduler not in comfy.samplers.KSampler.SCHEDULERS:
+            raise ValueError(
+                f"scheduler {scheduler!r} is unavailable in the installed ComfyUI runtime"
+            )
 
         self._ensure_memory("before text encoding", event)
 
@@ -1524,8 +1550,8 @@ class ComfyBaselineRuntime:
                 noise,
                 steps,
                 1.0,
-                "euler",
-                "simple",
+                sampler,
+                scheduler,
                 positive,
                 negative,
                 latent,
@@ -1621,6 +1647,8 @@ class ComfyBaselineRuntime:
         metadata.add_text("global_prompt", prompt)
         metadata.add_text("seed", str(seed))
         metadata.add_text("steps", str(steps))
+        metadata.add_text("sampler", sampler)
+        metadata.add_text("scheduler", scheduler)
         metadata.add_text("size", f"{output_image.width}x{output_image.height}")
         metadata.add_text("base_size", f"{width}x{height}")
         metadata.add_text("filename_prefix", filename_prefix)
@@ -1653,8 +1681,8 @@ class ComfyBaselineRuntime:
             "projector": projector_summary,
             "post_upscale": upscale_summary,
             "loras": lora_reports,
-            "sampler": "euler",
-            "scheduler": "simple",
+            "sampler": sampler,
+            "scheduler": scheduler,
             "cfg": 1.0,
             "memory_policy": self.memory_policy_key,
             "reserve_vram_gb": self.reserve_vram_gb,

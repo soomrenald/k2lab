@@ -69,6 +69,8 @@ class MemoryPolicyTests(unittest.TestCase):
                 width=256,
                 height=256,
                 steps=1,
+                sampler="dpmpp_2m",
+                scheduler="karras",
                 seed=42,
                 output_directory=Path(directory),
             )
@@ -78,6 +80,14 @@ class MemoryPolicyTests(unittest.TestCase):
         self.assertEqual(
             [call.kwargs["seed"] for call in runtime._generate_once.call_args_list],
             [42, 42],
+        )
+        self.assertEqual(
+            [call.kwargs["sampler"] for call in runtime._generate_once.call_args_list],
+            ["dpmpp_2m", "dpmpp_2m"],
+        )
+        self.assertEqual(
+            [call.kwargs["scheduler"] for call in runtime._generate_once.call_args_list],
+            ["karras", "karras"],
         )
         runtime._recover_from_oom.assert_called_once()
 

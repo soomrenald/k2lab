@@ -88,6 +88,7 @@ from k2_region_lab.regional_prompting import (
 )
 from k2_region_lab.regional_lora import character_identity_triggers
 from k2_region_lab.regions import CanvasGeometry, PixelBox, RegionDefinition
+from k2_region_lab.sampling import COMFYUI_SAMPLERS, COMFYUI_SCHEDULERS
 from k2_region_lab.worker.protocol import CommandKind
 
 
@@ -462,15 +463,6 @@ class MainWindow(QMainWindow):
         self.region_prompt.setEnabled(False)
         self.region_prompt.textChanged.connect(self._region_form_edited)
         layout.addWidget(self.region_prompt)
-        layout.addWidget(QLabel("Selected region negative prompt"))
-        self.region_negative_prompt = QTextEdit()
-        self.region_negative_prompt.setMinimumHeight(70)
-        self.region_negative_prompt.setPlaceholderText(
-            "Optional content to discourage inside this box..."
-        )
-        self.region_negative_prompt.setEnabled(False)
-        self.region_negative_prompt.textChanged.connect(self._region_form_edited)
-        layout.addWidget(self.region_negative_prompt)
         dock.setWidget(self._scrollable(body))
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, dock)
         self.prompt_dock = dock
@@ -742,10 +734,30 @@ class MainWindow(QMainWindow):
         self.steps_input = QSpinBox()
         self.steps_input.setRange(1, 100)
         self.steps_input.setValue(8)
+        self.sampler_input = QComboBox()
+        for sampler in COMFYUI_SAMPLERS:
+            self.sampler_input.addItem(sampler, sampler)
+        self.sampler_input.setCurrentIndex(self.sampler_input.findData("euler"))
+        self.sampler_input.setToolTip(
+            "Sampling algorithm passed directly to ComfyUI KSampler. Euler is the "
+            "Krea 2 Turbo default."
+        )
+        self.scheduler_input = QComboBox()
+        for scheduler in COMFYUI_SCHEDULERS:
+            self.scheduler_input.addItem(scheduler, scheduler)
+        self.scheduler_input.setCurrentIndex(
+            self.scheduler_input.findData("simple")
+        )
+        self.scheduler_input.setToolTip(
+            "Noise schedule passed directly to ComfyUI KSampler. Simple is the "
+            "Krea 2 Turbo default."
+        )
         self.seed_input = QSpinBox()
         self.seed_input.setRange(0, 2_147_483_647)
         self.seed_input.setValue(0)
         layout.addRow("Turbo steps", self.steps_input)
+        layout.addRow("Sampler", self.sampler_input)
+        layout.addRow("Scheduler", self.scheduler_input)
         layout.addRow("Seed", self.seed_input)
         self.seed_mode_input = QComboBox()
         self.seed_mode_input.addItem("Fixed", "fixed")
@@ -1644,7 +1656,6 @@ class MainWindow(QMainWindow):
                     "y1": region.box.y1 * scale_y,
                 },
                 "prompt": region.prompt,
-                "negative_prompt": region.negative_prompt,
                 "face_identity_prompt": region.face_identity_prompt,
                 "enabled": region.enabled,
                 "priority": region.priority,
@@ -1880,7 +1891,6 @@ class MainWindow(QMainWindow):
         self.region_role.setEnabled(selected)
         self.region_prompt.setEnabled(selected)
         self.region_face_identity_prompt.setEnabled(selected)
-        self.region_negative_prompt.setEnabled(selected)
         self._loading_region_form = True
         try:
             if selected:
@@ -1892,14 +1902,12 @@ class MainWindow(QMainWindow):
                 self.region_face_identity_prompt.setPlainText(
                     region.face_identity_prompt
                 )
-                self.region_negative_prompt.setPlainText(region.negative_prompt)
                 self.canvas.select_region(region.region_id)
             else:
                 self.region_name.clear()
                 self.region_role.setCurrentIndex(0)
                 self.region_prompt.clear()
                 self.region_face_identity_prompt.clear()
-                self.region_negative_prompt.clear()
         finally:
             self._loading_region_form = False
 
@@ -1959,7 +1967,6 @@ class MainWindow(QMainWindow):
             self.regions[row],
             prompt=self.region_prompt.toPlainText(),
             face_identity_prompt=self.region_face_identity_prompt.toPlainText(),
-            negative_prompt=self.region_negative_prompt.toPlainText(),
         )
 
     def _canvas_dimensions_changed(self) -> None:
@@ -2305,6 +2312,8 @@ class MainWindow(QMainWindow):
             canvas_height=self.height_input.value(),
             global_prompt=self.global_prompt.toPlainText(),
             steps=self.steps_input.value(),
+            sampler=str(self.sampler_input.currentData()),
+            scheduler=str(self.scheduler_input.currentData()),
             seed=self.seed_input.value(),
             seed_mode=str(self.seed_mode_input.currentData()),
             regional_prompting=self.regional_prompting_input.isChecked(),
@@ -2521,6 +2530,10 @@ class MainWindow(QMainWindow):
         self.canvas.set_canvas_size(state.canvas_width, state.canvas_height)
         self.global_prompt.setPlainText(state.global_prompt)
         self.steps_input.setValue(state.steps)
+        sampler_index = self.sampler_input.findData(state.sampler)
+        self.sampler_input.setCurrentIndex(max(0, sampler_index))
+        scheduler_index = self.scheduler_input.findData(state.scheduler)
+        self.scheduler_input.setCurrentIndex(max(0, scheduler_index))
         self.seed_input.setValue(state.seed)
         seed_mode_index = self.seed_mode_input.findData(state.seed_mode)
         self.seed_mode_input.setCurrentIndex(max(0, seed_mode_index))
@@ -2876,6 +2889,8 @@ class MainWindow(QMainWindow):
                 "width": geometry.aligned_width,
                 "height": geometry.aligned_height,
                 "steps": self.steps_input.value(),
+                "sampler": str(self.sampler_input.currentData()),
+                "scheduler": str(self.scheduler_input.currentData()),
                 "seed": seed,
                 "seed_mode": seed_mode,
                 "output_directory": str(self._output_directory),
@@ -2938,7 +2953,6 @@ class MainWindow(QMainWindow):
                             "y1": region.box.y1,
                         },
                         "prompt": region.prompt,
-                        "negative_prompt": region.negative_prompt,
                         "face_identity_prompt": region.face_identity_prompt,
                         "enabled": region.enabled,
                         "priority": region.priority,
