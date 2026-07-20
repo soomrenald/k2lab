@@ -3353,7 +3353,6 @@ class MainWindow(QMainWindow):
             state.regional_lora_delta_adaptation_gain
         )
         self.prompt_emphases = list(state.prompt_emphases)
-        self._refresh_prompt_emphases()
         self._set_projector_controls(
             enabled=state.projector_enabled,
             preset=state.projector_preset,
@@ -3427,6 +3426,7 @@ class MainWindow(QMainWindow):
                 region.name,
             )
         self._sync_canvas_region_stack()
+        self._refresh_prompt_emphases()
 
         self.lora_library = LoraLibrary()
         self.lora_list.clear()
