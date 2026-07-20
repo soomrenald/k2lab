@@ -16,9 +16,10 @@ ApplicationWindow {
     color: "#090c13"
 
     property bool inspectorVisible: true
+    property real compareValue: 0.5
     readonly property QtObject studio: controller
     property real comparisonPosition: resultMode.currentIndex === 0 ? 0
-                                      : (resultMode.currentIndex === 1 ? 1 : compareSlider.value)
+                                      : (resultMode.currentIndex === 1 ? 1 : compareValue)
     readonly property color accent: "#7c8cff"
 
     component StudioButton: Button {
@@ -348,13 +349,15 @@ ApplicationWindow {
                                     currentIndex: 1
                                     implicitWidth: 92
                                 }
-                                Slider {
-                                    id: compareSlider
+                                ValueSlider {
                                     visible: resultMode.currentIndex === 2
                                     from: 0
                                     to: 1
-                                    value: 0.5
-                                    implicitWidth: 130
+                                    value: window.compareValue
+                                    stepSize: 0.01
+                                    decimals: 2
+                                    Layout.preferredWidth: 205
+                                    onValueEdited: value => window.compareValue = value
                                 }
                             }
                         }

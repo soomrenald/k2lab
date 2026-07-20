@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
+import struct
 import tempfile
 import unittest
 from pathlib import Path
@@ -82,6 +84,41 @@ class QmlWorkspaceTests(unittest.TestCase):
             self.assertEqual(len(engine.rootObjects()), 1)
             self.assertEqual(engine.rootObjects()[0].property("title"), "K2 Region Lab")
             engine.rootObjects()[0].close()
+            backend.close()
+
+    def test_lora_can_be_deactivated_reactivated_and_removed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            lora_path = root / "wardrobe.safetensors"
+            header = {
+                "blocks.0.attn.wq.lora_A.weight": {
+                    "dtype": "BF16",
+                    "shape": [4, 8],
+                    "data_offsets": [0, 64],
+                },
+                "blocks.0.attn.wq.lora_B.weight": {
+                    "dtype": "BF16",
+                    "shape": [8, 4],
+                    "data_offsets": [64, 128],
+                },
+            }
+            encoded = json.dumps(header, separators=(",", ":")).encode("utf-8")
+            lora_path.write_bytes(struct.pack("<Q", len(encoded)) + encoded)
+            backend = self.make_window(root)
+            self.assertTrue(backend._add_lora_path(lora_path))
+            lora_id = backend.lora_library.entries()[0].lora_id
+            controller = QmlWorkspaceController(backend)
+
+            controller.setLoraStrength(lora_id, 1.25)
+            controller.setLoraActive(lora_id, False)
+            self.assertEqual(backend.lora_library.binding_for(lora_id).strength, 0.0)
+            controller.setLoraActive(lora_id, True)
+            self.assertEqual(backend.lora_library.binding_for(lora_id).strength, 1.25)
+
+            controller.removeLora(lora_id)
+            self.assertEqual(backend.lora_library.entries(), ())
+            self.assertEqual(backend.lora_list.count(), 0)
+            controller.deleteLater()
             backend.close()
 
 

@@ -483,10 +483,11 @@ Rectangle {
                             required property string scope
                             required property real strength
                             required property string routingMode
+                            required property bool active
                             Layout.fillWidth: true
                             Layout.leftMargin: 14
                             Layout.rightMargin: 14
-                            implicitHeight: 112
+                            implicitHeight: 148
                             radius: 8
                             color: "#171d29"
                             border.color: "#293143"
@@ -497,6 +498,12 @@ Rectangle {
                                 spacing: 5
                                 RowLayout {
                                     Layout.fillWidth: true
+                                    Switch {
+                                        checked: loraCard.active
+                                        text: checked ? "Active" : "Inactive"
+                                        onToggled: controller.setLoraActive(
+                                                       loraCard.loraId, checked)
+                                    }
                                     Text {
                                         text: loraCard.name
                                         color: "#edf0f7"
@@ -518,13 +525,15 @@ Rectangle {
                                     elide: Text.ElideRight
                                     Layout.fillWidth: true
                                 }
-                                Slider {
+                                ValueSlider {
                                     Layout.fillWidth: true
                                     from: -4
                                     to: 4
                                     stepSize: 0.05
                                     value: loraCard.strength
-                                    onMoved: controller.setLoraStrength(loraCard.loraId, value)
+                                    decimals: 2
+                                    onValueEdited: value => controller.setLoraStrength(
+                                                       loraCard.loraId, value)
                                 }
                                 RowLayout {
                                     Layout.fillWidth: true
@@ -539,10 +548,15 @@ Rectangle {
                                         enabled: controller.selectedRegionId.length > 0
                                         onClicked: controller.assignLoraToSelectedRegion(loraCard.loraId)
                                     }
+                                    MiniButton {
+                                        text: "Remove"
+                                        onClicked: controller.removeLora(loraCard.loraId)
+                                    }
                                 }
                             }
                         }
                     }
+                    Item { implicitHeight: 28 }
                 }
             }
 

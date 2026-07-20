@@ -120,6 +120,7 @@ class LoraListModel(QAbstractListModel):
     ScopeRole = StrengthRole + 1
     RoutingRole = ScopeRole + 1
     TriggerRole = RoutingRole + 1
+    ActiveRole = TriggerRole + 1
 
     _ROLES = {
         LoraIdRole: b"loraId",
@@ -129,6 +130,7 @@ class LoraListModel(QAbstractListModel):
         ScopeRole: b"scope",
         RoutingRole: b"routingMode",
         TriggerRole: b"triggerPhrase",
+        ActiveRole: b"active",
     }
 
     def __init__(self, parent: QObject | None = None) -> None:
@@ -153,6 +155,7 @@ class LoraListModel(QAbstractListModel):
             self.ScopeRole: item["scope"],
             self.RoutingRole: item["routingMode"],
             self.TriggerRole: item["triggerPhrase"],
+            self.ActiveRole: item["active"],
             Qt.ItemDataRole.DisplayRole: item["name"],
         }
         return values.get(role)
@@ -192,6 +195,7 @@ class QmlWorkspaceController(QObject):
         self._draw_mode = False
         self._progress = 0.0
         self._last_worker_message = ""
+        self._lora_last_strength: dict[tuple[str, str, str], float] = {}
         self._state_snapshot: tuple[Any, ...] | None = None
         self._state_revision = 0
         self._generation_regions = RegionListModel(self)
@@ -610,6 +614,42 @@ class QmlWorkspaceController(QObject):
             self.backend.lora_library.set_strength(lora_id, float(strength))
         self.refresh()
 
+    @Slot(str, bool)
+    def setLoraActive(self, lora_id: str, active: bool) -> None:
+        try:
+            binding = self._active_lora_binding(lora_id)
+        except KeyError:
+            return
+        key = (self._mode, self._edit_layer, lora_id)
+        if active:
+            strength = self._lora_last_strength.get(key, 1.0)
+            if strength == 0:
+                strength = 1.0
+        else:
+            if binding.strength != 0:
+                self._lora_last_strength[key] = binding.strength
+            strength = 0.0
+        self.setLoraStrength(lora_id, strength)
+
+    @Slot(str)
+    def removeLora(self, lora_id: str) -> None:
+        try:
+            entry = self.backend.lora_library.get(lora_id)
+        except KeyError:
+            return
+        self.backend.lora_library.remove(lora_id)
+        self.backend._edit_lora_bindings.pop(lora_id, None)
+        self.backend._edit_reference_lora_bindings.pop(lora_id, None)
+        item = self.backend._lora_list_item(lora_id)
+        if item is not None:
+            self.backend.lora_list.takeItem(self.backend.lora_list.row(item))
+        self.backend._refresh_lora_scope()
+        self.backend.events.addItem(f"Removed LoRA {entry.display_name}")
+        for key in tuple(self._lora_last_strength):
+            if key[2] == lora_id:
+                self._lora_last_strength.pop(key)
+        self.refresh()
+
     @Slot(int, bool)
     def setFaceSelected(self, face_index: int, selected: bool) -> None:
         for row in range(self.backend.face_selection_list.count()):
@@ -978,6 +1018,7 @@ class QmlWorkspaceController(QObject):
                     "scope": scope,
                     "routingMode": binding.routing_mode,
                     "triggerPhrase": binding.trigger_phrase,
+                    "active": binding.strength != 0.0,
                 }
             )
         self._loras.set_items(items)
