@@ -28,6 +28,7 @@ diagnostics = [
     "zarr>=3.0",
 ]
 web = [
+    "cryptography>=44,<47",
     "fastapi>=0.115,<1",
     "httpx>=0.28,<1",
     "uvicorn[standard]>=0.34,<1",

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 from collections.abc import Sequence
 
 from fastapi import FastAPI, Request
@@ -22,6 +23,26 @@ from k2_region_lab.web.domain import (
     WorkspaceRecord,
     WorkspaceTerminateRequest,
 )
+
+
+def backend_from_environment() -> WorkspaceBackend:
+    backend_name = os.environ.get("K2LAB_WEB_BACKEND", "development").strip().lower()
+    if backend_name == "development":
+        return DevelopmentWorkspaceBackend()
+    if backend_name != "runpod":
+        raise RuntimeError("K2LAB_WEB_BACKEND must be 'development' or 'runpod'")
+
+    from k2_region_lab.web.credential_vault import EncryptedMemoryCredentialVault
+    from k2_region_lab.web.runpod_backend import RunPodPersistentPodBackend
+
+    encryption_key = os.environ.get("K2LAB_CREDENTIAL_FERNET_KEY")
+    if not encryption_key:
+        raise RuntimeError("K2LAB_CREDENTIAL_FERNET_KEY is required for the RunPod backend")
+    if not image_digest:
+    return RunPodPersistentPodBackend(
+        credential_vault=EncryptedMemoryCredentialVault(encryption_key),
+        image_digest=image_digest,
+    )
 
 
 class RunPodCredentialRequest(BaseModel):
@@ -140,7 +161,7 @@ def create_app(backend: WorkspaceBackend | None = None) -> FastAPI:
     return application
 
 
-app = create_app()
+app = create_app(backend_from_environment())
 
 
 def main(argv: Sequence[str] | None = None) -> int:

@@ -146,6 +146,7 @@ class DevelopmentWorkspaceBackend:
                 request.workspace_disk_gb * self.STORAGE_PRICE_PER_GB_MONTH
             ),
             image_digest=self.IMAGE_DIGEST,
+            provider_gpu_priority_ids=[selected.id],
             warnings=warnings,
             created_at=utc_now(),
         )

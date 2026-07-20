@@ -18,10 +18,13 @@ Implemented:
 - SVG region drawing, selection, movement, and live eight-direction resizing;
 - prompt, region, LoRA, and advanced inspector layouts;
 - responsive desktop/mobile styling with locally bundled fonts.
+- a production RunPod REST/GraphQL adapter with redacted provider errors;
+- encrypted process-local credential storage and explicit production backend selection;
+- live GPU inventory/pricing plans and persistent-Pod create/start/stop/delete requests.
 
 Not yet implemented:
 
-- the production RunPod adapter, credential vault, PostgreSQL persistence, and reaper;
+- durable PostgreSQL persistence, a KMS-backed credential repository, and the lease reaper;
 - a published CUDA workspace image or authenticated Pod agent;
 - cloud file inventory, resumable transfer, Civitai, or Hugging Face downloads;
 - remote generation/image-edit/face-refinement job submission and event streaming;
@@ -29,6 +32,23 @@ Not yet implemented:
 
 The development backend is labelled throughout the UI. Its generation buttons are
 disabled so it cannot be confused with a connected GPU worker.
+
+## Experimental RunPod backend
+
+The default remains the non-billing development backend. The RunPod backend must be
+selected explicitly and requires an immutable runtime image plus a Fernet encryption key:
+
+```bash
+export K2LAB_WEB_BACKEND=runpod
+export K2LAB_CREDENTIAL_FERNET_KEY="$(python -c \
+  'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')"
+uv run k2lab-web
+```
+
+This mode can create billable Pods. It is an integration milestone, not a deployable
+hosted control plane: workspace records and encrypted credentials are process-local until
+the PostgreSQL/KMS repository and startup reconciler are implemented. The Pod also remains
+in `starting` until the versioned workspace image and authenticated agent are available.
 
 ## Local development
 

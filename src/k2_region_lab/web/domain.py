@@ -39,6 +39,10 @@ class GpuOption(BaseModel):
     community_available: bool
     on_demand_price_per_hour: float = Field(ge=0)
     interruptible_price_per_hour: float | None = Field(default=None, ge=0)
+    secure_on_demand_price_per_hour: float | None = Field(default=None, ge=0)
+    community_on_demand_price_per_hour: float | None = Field(default=None, ge=0)
+    secure_interruptible_price_per_hour: float | None = Field(default=None, ge=0)
+    community_interruptible_price_per_hour: float | None = Field(default=None, ge=0)
     available: bool = True
 
 
@@ -74,6 +78,7 @@ class WorkspacePlan(BaseModel):
     estimated_compute_per_hour: float
     estimated_storage_per_month: float
     image_digest: str
+    provider_gpu_priority_ids: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     created_at: datetime
 
