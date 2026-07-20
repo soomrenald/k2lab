@@ -134,8 +134,6 @@ worker and write comparisons, amplified difference images, boundary crops, and e
 outside-mask metrics under `outputs/gpu-tests/`:
 
 ```bash
-K2LAB_DATA_DIR=/tmp/k2-region-lab-gpu-tests \
-PYTHONPATH=src:/opt/ComfyUI \
 /opt/ComfyUI/venv_rocm7/bin/python \
 ```
 
