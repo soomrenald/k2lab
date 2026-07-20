@@ -87,6 +87,7 @@ from k2_region_lab.project import (
     ProjectState,
     SavedLora,
     load_project,
+    load_associated_image_project,
     load_project_image,
     project_document,
     save_project,
@@ -377,11 +378,25 @@ class MainWindow(QMainWindow):
         self._current_project_path: Path | None = None
         self._background_image_path: Path | None = None
         self.edit_regions: list[RegionDefinition] = []
+        self.edit_reference_regions: list[RegionDefinition] = []
+        self.edit_reference_prompt_emphases: list[PromptEmphasis] = []
+        self._edit_reference_region_number = 0
+        self._edit_reference_loading_form = False
+        self._edit_associated_project_path: Path | None = None
+        self._edit_associated_lora_ids: set[str] = set()
+        self._edit_reference_projector_enabled = False
+        self._edit_reference_projector_preset = DEFAULT_PROJECTOR_PRESET
+        self._edit_reference_projector_values = PROJECTOR_PRESETS[
+            DEFAULT_PROJECTOR_PRESET
+        ]
+        self._edit_reference_projector_multiplier = 1.0
+        self._edit_reference_projector_identity_protection = 1.0
         self._edit_region_number = 0
         self._edit_loading_region_form = False
         self._edit_source_path: Path | None = None
         self._edit_result_path: Path | None = None
         self._edit_lora_bindings: dict[str, LoraBinding] = {}
+        self._edit_reference_lora_bindings: dict[str, LoraBinding] = {}
         self._face_source_path: Path | None = None
         self._face_result_path: Path | None = None
         self._face_detections: list[dict[str, object]] = []
@@ -663,8 +678,14 @@ class MainWindow(QMainWindow):
         self.edit_source_input.setPlaceholderText("Select a PNG, JPEG, or WebP image…")
         browse = QPushButton("Load image…")
         browse.clicked.connect(self._browse_edit_source)
+        self.edit_reference_status = QLabel("No associated project loaded")
+        self.edit_reference_status.setToolTip(
+            "Embedded k2lab_project metadata is preferred, followed by an exact "
+            "<image-stem>.k2lab.json sidecar."
+        )
         source_row.addWidget(QLabel("Source"))
         source_row.addWidget(self.edit_source_input, 1)
+        source_row.addWidget(self.edit_reference_status)
         source_row.addWidget(browse)
         page_layout.addLayout(source_row)
 
@@ -685,11 +706,20 @@ class MainWindow(QMainWindow):
         self.edit_denoise_input.setRange(0.05, 1.0)
         self.edit_denoise_input.setDecimals(2)
         self.edit_denoise_input.setSingleStep(0.05)
-        self.edit_denoise_input.setValue(0.35)
+        self.edit_denoise_input.setValue(0.15)
+        self.edit_latent_feather_input = QSpinBox()
+        self.edit_latent_feather_input.setRange(0, 256)
+        self.edit_latent_feather_input.setSuffix(" px")
+        self.edit_latent_feather_input.setValue(48)
         self.edit_composite_feather_input = QSpinBox()
         self.edit_composite_feather_input.setRange(0, 256)
         self.edit_composite_feather_input.setSuffix(" px")
-        self.edit_composite_feather_input.setValue(32)
+        self.edit_composite_feather_input.setValue(64)
+        self.edit_reference_retention_input = QDoubleSpinBox()
+        self.edit_reference_retention_input.setRange(0.0, 1.0)
+        self.edit_reference_retention_input.setDecimals(2)
+        self.edit_reference_retention_input.setSingleStep(0.05)
+        self.edit_reference_retention_input.setValue(0.25)
         self.edit_regional_strength_input = QDoubleSpinBox()
         self.edit_regional_strength_input.setRange(0.1, 10.0)
         self.edit_regional_strength_input.setValue(1.0)
@@ -709,17 +739,23 @@ class MainWindow(QMainWindow):
         self.edit_late_step_scale_input.setDecimals(2)
         self.edit_late_step_scale_input.setValue(0.35)
         self.edit_lora_adaptation_input = QCheckBox("Adapt from regional LoRA delta")
+        self.edit_preserve_identity_input = QCheckBox("Preserve reference identity")
+        self.edit_preserve_identity_input.setChecked(True)
+        self.edit_entire_image_input = QCheckBox("Edit entire image")
+        self.edit_entire_image_input.setChecked(False)
         self.edit_lora_adaptation_gain_input = QDoubleSpinBox()
         self.edit_lora_adaptation_gain_input.setRange(0.0, 1.0)
         self.edit_lora_adaptation_gain_input.setDecimals(2)
         self.edit_lora_adaptation_gain_input.setValue(0.35)
         edit_controls = (
-            ("Seed", self.edit_seed_input),
+            ("Seed (fixed)", self.edit_seed_input),
             ("Steps", self.edit_steps_input),
             ("Sampler", self.edit_sampler_input),
             ("Scheduler", self.edit_scheduler_input),
             ("Denoise", self.edit_denoise_input),
+            ("Latent transition", self.edit_latent_feather_input),
             ("Composite feather", self.edit_composite_feather_input),
+            ("Reference retention", self.edit_reference_retention_input),
             ("Inside boost", self.edit_regional_strength_input),
             ("Outside penalty", self.edit_outside_penalty_input),
             ("Spatial falloff", self.edit_spatial_falloff_input),
@@ -735,6 +771,8 @@ class MainWindow(QMainWindow):
         controls.addWidget(self.edit_subject_competition_input, option_row, 0, 1, 2)
         controls.addWidget(self.edit_subject_fill_input, option_row, 2, 1, 2)
         controls.addWidget(self.edit_lora_adaptation_input, option_row, 4, 1, 2)
+        controls.addWidget(self.edit_preserve_identity_input, option_row, 6, 1, 2)
+        controls.addWidget(self.edit_entire_image_input, option_row + 1, 0, 1, 2)
         controls_scroll = QScrollArea()
         controls_scroll.setWidgetResizable(True)
         controls_scroll.setWidget(controls_body)
@@ -744,13 +782,90 @@ class MainWindow(QMainWindow):
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         prompt_panel = QWidget()
-        prompt_layout = QVBoxLayout(prompt_panel)
-        prompt_layout.setContentsMargins(0, 0, 0, 0)
-        prompt_layout.addWidget(QLabel("Global edit prompt"))
+        prompt_panel_layout = QVBoxLayout(prompt_panel)
+        prompt_panel_layout.setContentsMargins(0, 0, 0, 0)
+        self.edit_layer_prompt_tabs = QTabWidget()
+        prompt_panel_layout.addWidget(self.edit_layer_prompt_tabs)
+
+        reference_prompt_page = QWidget()
+        reference_layout = QVBoxLayout(reference_prompt_page)
+        reference_layout.addWidget(QLabel("Original global prompt"))
+        self.edit_reference_global_prompt = QTextEdit()
+        self.edit_reference_global_prompt.setMinimumHeight(75)
+        self.edit_reference_global_prompt.setMaximumHeight(75)
+        self.edit_reference_global_prompt.setPlaceholderText(
+            "Loaded from the source project; editable reference conditioning…"
+        )
+        reference_layout.addWidget(self.edit_reference_global_prompt)
+        reference_actions = QHBoxLayout()
+        draw_reference = QPushButton("Draw reference region")
+        delete_reference = QPushButton("Delete selected")
+        reference_actions.addWidget(draw_reference)
+        reference_actions.addWidget(delete_reference)
+        reference_layout.addLayout(reference_actions)
+        reference_layout.addWidget(QLabel("Reference regions (front to back)"))
+        self.edit_reference_region_list = QListWidget()
+        self.edit_reference_region_list.setDragDropMode(
+            QAbstractItemView.DragDropMode.InternalMove
+        )
+        self.edit_reference_region_list.model().rowsMoved.connect(
+            self._edit_reference_region_order_changed
+        )
+        self.edit_reference_region_list.currentRowChanged.connect(
+            self._selected_edit_reference_region_changed
+        )
+        reference_layout.addWidget(self.edit_reference_region_list, 1)
+        self.edit_reference_region_name = QLineEdit()
+        self.edit_reference_region_name.setPlaceholderText("Selected reference name")
+        self.edit_reference_region_name.setEnabled(False)
+        self.edit_reference_region_name.editingFinished.connect(
+            self._edit_reference_region_name_edited
+        )
+        reference_layout.addWidget(self.edit_reference_region_name)
+        self.edit_reference_region_role = QComboBox()
+        self.edit_reference_region_role.addItem("Auto (based on box width)", "auto")
+        self.edit_reference_region_role.addItem("Subject target", "subject")
+        self.edit_reference_region_role.addItem("Background band", "background")
+        self.edit_reference_region_role.setEnabled(False)
+        self.edit_reference_region_role.currentIndexChanged.connect(
+            self._edit_reference_region_form_edited
+        )
+        reference_layout.addWidget(self.edit_reference_region_role)
+        self.edit_reference_face_prompt = QTextEdit()
+        self.edit_reference_face_prompt.setPlaceholderText(
+            "Original face identity prompt…"
+        )
+        self.edit_reference_face_prompt.setMaximumHeight(70)
+        self.edit_reference_face_prompt.setEnabled(False)
+        self.edit_reference_face_prompt.textChanged.connect(
+            self._edit_reference_region_form_edited
+        )
+        reference_layout.addWidget(self.edit_reference_face_prompt)
+        self.edit_reference_region_prompt = QTextEdit()
+        self.edit_reference_region_prompt.setPlaceholderText(
+            "Original regional description…"
+        )
+        self.edit_reference_region_prompt.setEnabled(False)
+        self.edit_reference_region_prompt.setMaximumHeight(90)
+        self.edit_reference_region_prompt.textChanged.connect(
+            self._edit_reference_region_form_edited
+        )
+        reference_layout.addWidget(self.edit_reference_region_prompt)
+        reference_prompt_scroll = QScrollArea()
+        reference_prompt_scroll.setWidgetResizable(True)
+        reference_prompt_scroll.setWidget(reference_prompt_page)
+        reference_prompt_scroll.setMinimumSize(0, 0)
+        self.edit_layer_prompt_tabs.addTab(
+            reference_prompt_scroll, "Reference layout"
+        )
+
+        edit_prompt_page = QWidget()
+        prompt_layout = QVBoxLayout(edit_prompt_page)
+        prompt_layout.addWidget(QLabel("Edit instruction / desired final appearance"))
         self.edit_global_prompt = QTextEdit()
         self.edit_global_prompt.setMinimumHeight(75)
         self.edit_global_prompt.setPlaceholderText(
-            "Optional: when non-empty the entire image may change…"
+            "Describe the desired result; boxes still control where denoising occurs…"
         )
         prompt_layout.addWidget(self.edit_global_prompt)
         region_actions = QHBoxLayout()
@@ -788,15 +903,64 @@ class MainWindow(QMainWindow):
         self.edit_region_prompt.setEnabled(False)
         self.edit_region_prompt.textChanged.connect(self._edit_region_form_edited)
         prompt_layout.addWidget(self.edit_region_prompt)
+        edit_prompt_scroll = QScrollArea()
+        edit_prompt_scroll.setWidgetResizable(True)
+        edit_prompt_scroll.setWidget(edit_prompt_page)
+        edit_prompt_scroll.setMinimumSize(0, 0)
+        self.edit_layer_prompt_tabs.addTab(edit_prompt_scroll, "Edit targets")
 
         source_panel = QWidget()
         source_layout = QVBoxLayout(source_panel)
         source_layout.setContentsMargins(0, 0, 0, 0)
-        source_layout.addWidget(QLabel("Source with editable regions"))
+        self.edit_layer_canvas_tabs = QTabWidget()
+        source_layout.addWidget(self.edit_layer_canvas_tabs, 1)
+
+        reference_canvas_page = QWidget()
+        reference_canvas_layout = QVBoxLayout(reference_canvas_page)
+        reference_canvas_layout.setContentsMargins(0, 0, 0, 0)
+        reference_canvas_layout.addWidget(QLabel("Original conditioning regions"))
+        self.edit_reference_canvas = RegionCanvas(
+            self.settings.default_width, self.settings.default_height
+        )
+        reference_canvas_layout.addWidget(self.edit_reference_canvas, 1)
+        self.edit_layer_canvas_tabs.addTab(reference_canvas_page, "Reference layout")
+
+        edit_canvas_page = QWidget()
+        edit_canvas_layout = QVBoxLayout(edit_canvas_page)
+        edit_canvas_layout.setContentsMargins(0, 0, 0, 0)
+        edit_canvas_layout.addWidget(QLabel("Edit-only denoise regions"))
         self.edit_canvas = RegionCanvas(
             self.settings.default_width, self.settings.default_height
         )
-        source_layout.addWidget(self.edit_canvas, 1)
+        edit_canvas_layout.addWidget(self.edit_canvas, 1)
+        self.edit_layer_canvas_tabs.addTab(edit_canvas_page, "Edit targets")
+        self.edit_layer_prompt_tabs.setCurrentIndex(1)
+        self.edit_layer_canvas_tabs.setCurrentIndex(1)
+        self.edit_layer_prompt_tabs.currentChanged.connect(
+            self.edit_layer_canvas_tabs.setCurrentIndex
+        )
+        self.edit_layer_canvas_tabs.currentChanged.connect(
+            self.edit_layer_prompt_tabs.setCurrentIndex
+        )
+        self.edit_layer_prompt_tabs.currentChanged.connect(
+            lambda _index: self._workspace_tab_changed(self.workspace_tabs.currentIndex())
+        )
+        draw_reference.clicked.connect(self.edit_reference_canvas.begin_region)
+        delete_reference.clicked.connect(
+            self.edit_reference_canvas.delete_selected_regions
+        )
+        self.edit_reference_canvas.region_created.connect(
+            self._edit_reference_region_created
+        )
+        self.edit_reference_canvas.region_changed.connect(
+            self._edit_reference_region_changed
+        )
+        self.edit_reference_canvas.region_deleted.connect(
+            self._edit_reference_region_deleted
+        )
+        self.edit_reference_canvas.region_selected.connect(
+            self._edit_reference_canvas_region_selected
+        )
         draw.clicked.connect(self.edit_canvas.begin_region)
         delete.clicked.connect(self.edit_canvas.delete_selected_regions)
         self.edit_canvas.region_created.connect(self._edit_region_created)
@@ -819,8 +983,8 @@ class MainWindow(QMainWindow):
         self.edit_run_button.clicked.connect(self._run_image_edit)
         result_layout.addWidget(self.edit_run_button)
         note = QLabel(
-            "Blank global prompt preserves source pixels outside the feathered box union. "
-            "A global prompt permits whole-image changes."
+            "Edit boxes control the denoise mask. Pixels outside their feathered union "
+            "are restored exactly from the source unless Edit entire image is enabled."
         )
         note.setWordWrap(True)
         result_layout.addWidget(note)
@@ -2236,6 +2400,20 @@ class MainWindow(QMainWindow):
     def _editing_scope_active(self) -> bool:
         return self.workspace_tabs.currentIndex() == 1
 
+    def _image_edit_scope_layer(self) -> str | None:
+        if not self._editing_scope_active():
+            return None
+        tabs = getattr(self, "edit_layer_prompt_tabs", None)
+        return "reference" if tabs is not None and tabs.currentIndex() == 0 else "edit"
+
+    def _set_active_edit_lora_binding(
+        self, lora_id: str, binding: LoraBinding
+    ) -> None:
+        if self._image_edit_scope_layer() == "reference":
+            self._edit_reference_lora_bindings[lora_id] = binding
+        else:
+            self._edit_lora_bindings[lora_id] = binding
+
     def _browse_edit_source(self) -> None:
         start = (
             self._edit_source_path.parent
@@ -2276,13 +2454,30 @@ class MainWindow(QMainWindow):
         if dimensions_changed:
             self._clear_edit_regions()
         self.edit_canvas.set_canvas_size(image.width, image.height)
+        self.edit_reference_canvas.set_canvas_size(image.width, image.height)
         if not self.edit_canvas.set_image(str(path)):
+            return False
+        if not self.edit_reference_canvas.set_image(str(path)):
             return False
         self._edit_source_path = path.expanduser().resolve()
         self.edit_source_input.setText(str(self._edit_source_path))
         self._edit_result_path = None
         self.edit_result_input.clear()
         self.edit_result_preview.clear_image("Run an edit to compare the result")
+        try:
+            associated = load_associated_image_project(path)
+        except (OSError, ValueError, json.JSONDecodeError) as error:
+            associated = None
+            self.events.addItem(f"Associated image project could not be loaded: {error}")
+            self.edit_reference_status.setText("Associated project is invalid")
+        if associated is None:
+            self._clear_edit_reference_project()
+            self.edit_reference_status.setText("No associated project loaded")
+        else:
+            state, provenance = associated
+            self._apply_edit_reference_project(
+                state, provenance, image.width, image.height
+            )
         self.edit_run_button.setEnabled(
             bool(not self._generation_active and self.artifacts and self.artifacts.complete)
         )
@@ -2292,6 +2487,158 @@ class MainWindow(QMainWindow):
         )
         return True
 
+    def _clear_edit_reference_project(self) -> None:
+        for lora_id in tuple(self._edit_associated_lora_ids):
+            item = self._lora_list_item(lora_id)
+            if item is not None:
+                self.lora_list.takeItem(self.lora_list.row(item))
+            try:
+                self.lora_library.remove(lora_id)
+            except KeyError:
+                pass
+            self._edit_lora_bindings.pop(lora_id, None)
+            self._edit_reference_lora_bindings.pop(lora_id, None)
+        self._edit_associated_lora_ids.clear()
+        self._edit_associated_project_path = None
+        self.edit_reference_global_prompt.clear()
+        self.edit_reference_prompt_emphases = []
+        self._clear_edit_reference_regions()
+        self._edit_reference_projector_enabled = False
+        self._edit_reference_projector_preset = DEFAULT_PROJECTOR_PRESET
+        self._edit_reference_projector_values = PROJECTOR_PRESETS[
+            DEFAULT_PROJECTOR_PRESET
+        ]
+        self._edit_reference_projector_multiplier = 1.0
+        self._edit_reference_projector_identity_protection = 1.0
+
+    @staticmethod
+    def _scaled_regions_for_image(
+        regions: tuple[RegionDefinition, ...],
+        source_width: int,
+        source_height: int,
+        image_width: int,
+        image_height: int,
+    ) -> list[RegionDefinition]:
+        scale_x = image_width / max(1, source_width)
+        scale_y = image_height / max(1, source_height)
+        return [
+            replace(
+                region,
+                box=PixelBox(
+                    region.box.x0 * scale_x,
+                    region.box.y0 * scale_y,
+                    region.box.x1 * scale_x,
+                    region.box.y1 * scale_y,
+                ),
+            )
+            for region in regions
+        ]
+
+    def _apply_edit_reference_project(
+        self,
+        state: ProjectState,
+        provenance: Path,
+        image_width: int,
+        image_height: int,
+    ) -> None:
+        self._clear_edit_reference_project()
+        self._edit_associated_project_path = provenance.expanduser().resolve()
+        self.edit_reference_global_prompt.setPlainText(state.global_prompt)
+        self.edit_reference_prompt_emphases = list(state.prompt_emphases)
+        self.edit_reference_regions = self._scaled_regions_for_image(
+            state.regions,
+            state.canvas_width,
+            state.canvas_height,
+            image_width,
+            image_height,
+        )
+        self._normalize_edit_reference_region_priorities()
+        self._edit_reference_region_number = len(self.edit_reference_regions)
+        for region in self.edit_reference_regions:
+            item = QListWidgetItem(self._region_label(region))
+            item.setData(Qt.ItemDataRole.UserRole, region.region_id)
+            self.edit_reference_region_list.addItem(item)
+            self.edit_reference_canvas.add_region_box(
+                region.region_id,
+                QRectF(
+                    region.box.x0,
+                    region.box.y0,
+                    region.box.width,
+                    region.box.height,
+                ),
+                region.name,
+            )
+        self._sync_edit_reference_canvas_stack()
+        self._edit_reference_projector_enabled = state.projector_enabled
+        self._edit_reference_projector_preset = state.projector_preset
+        self._edit_reference_projector_values = state.projector_values
+        self._edit_reference_projector_multiplier = state.projector_multiplier
+        self._edit_reference_projector_identity_protection = (
+            state.projector_identity_protection
+        )
+
+        self.edit_seed_input.setValue(state.seed)
+        self.edit_steps_input.setValue(state.steps)
+        self.edit_sampler_input.setCurrentIndex(
+            max(0, self.edit_sampler_input.findData(state.sampler))
+        )
+        self.edit_scheduler_input.setCurrentIndex(
+            max(0, self.edit_scheduler_input.findData(state.scheduler))
+        )
+        self.edit_regional_strength_input.setValue(state.regional_prompt_strength)
+        self.edit_outside_penalty_input.setValue(state.regional_outside_penalty)
+        self.edit_spatial_falloff_input.setValue(state.regional_feather_pixels)
+        self.edit_subject_competition_input.setChecked(
+            state.regional_subject_competition
+        )
+        self.edit_subject_fill_input.setChecked(state.regional_subject_fill)
+        self.edit_late_step_scale_input.setValue(state.regional_late_step_scale)
+        self.edit_lora_adaptation_input.setChecked(
+            state.regional_lora_delta_adaptation
+        )
+        self.edit_lora_adaptation_gain_input.setValue(
+            state.regional_lora_delta_adaptation_gain
+        )
+
+        missing_loras = 0
+        for saved_lora in state.loras:
+            if not self._add_lora_path(saved_lora.path):
+                missing_loras += 1
+                continue
+            item = self.lora_list.currentItem()
+            if item is None:
+                continue
+            lora_id = str(item.data(Qt.ItemDataRole.UserRole))
+            self._edit_associated_lora_ids.add(lora_id)
+            self.lora_library.set_strength(lora_id, saved_lora.strength)
+            self._edit_reference_lora_bindings[lora_id] = LoraBinding(
+                lora_id=lora_id,
+                global_scope=saved_lora.global_scope,
+                region_ids=saved_lora.region_ids,
+                strength=saved_lora.strength,
+                routing_mode=saved_lora.routing_mode,
+                trigger_phrase=saved_lora.trigger_phrase or saved_lora.path.stem,
+            )
+            list_item = self._lora_list_item(lora_id)
+            if list_item is not None:
+                list_item.setText(self._lora_label(lora_id))
+
+        label = f"Reference: {provenance.name}"
+        if missing_loras:
+            label += f" ({missing_loras} LoRA file(s) missing)"
+        self.edit_reference_status.setText(label)
+        self.edit_reference_status.setToolTip(str(provenance))
+        if self.edit_reference_region_list.count():
+            self.edit_reference_region_list.setCurrentRow(0)
+        else:
+            self._selected_edit_reference_region_changed(-1)
+        self._refresh_lora_scope()
+        self.events.addItem(
+            f"Loaded source reference conditioning from {provenance.name}: "
+            f"fixed seed {state.seed}, {len(self.edit_reference_regions)} region(s), "
+            f"{len(state.loras) - missing_loras} LoRA(s)"
+        )
+
     def _next_edit_region_name(self) -> str:
         existing = {region.name.casefold() for region in self.edit_regions}
         while True:
@@ -2299,6 +2646,197 @@ class MainWindow(QMainWindow):
             candidate = f"Edit region {self._edit_region_number}"
             if candidate.casefold() not in existing:
                 return candidate
+
+    def _next_edit_reference_region_name(self) -> str:
+        existing = {region.name.casefold() for region in self.edit_reference_regions}
+        while True:
+            self._edit_reference_region_number += 1
+            candidate = f"Reference region {self._edit_reference_region_number}"
+            if candidate.casefold() not in existing:
+                return candidate
+
+    def _edit_reference_region_created(
+        self, region_id: str, x0: float, y0: float, x1: float, y1: float
+    ) -> None:
+        region = RegionDefinition(
+            region_id=region_id,
+            name=self._next_edit_reference_region_name(),
+            box=PixelBox(x0, y0, x1, y1),
+        )
+        self.edit_reference_regions.append(region)
+        self._normalize_edit_reference_region_priorities()
+        item = QListWidgetItem(self._region_label(region))
+        item.setData(Qt.ItemDataRole.UserRole, region_id)
+        self.edit_reference_region_list.addItem(item)
+        self.edit_reference_canvas.add_region_box(
+            region_id, QRectF(x0, y0, x1 - x0, y1 - y0), region.name
+        )
+        self._sync_edit_reference_canvas_stack()
+        self.edit_reference_region_list.setCurrentItem(item)
+        self._refresh_lora_scope()
+
+    def _edit_reference_region_changed(
+        self, region_id: str, x0: float, y0: float, x1: float, y1: float
+    ) -> None:
+        index = self._edit_reference_region_index(region_id)
+        self.edit_reference_regions[index] = replace(
+            self.edit_reference_regions[index], box=PixelBox(x0, y0, x1, y1)
+        )
+        item = self._edit_reference_region_list_item(region_id)
+        if item is not None:
+            item.setText(self._region_label(self.edit_reference_regions[index]))
+
+    def _edit_reference_region_deleted(self, region_id: str) -> None:
+        try:
+            index = self._edit_reference_region_index(region_id)
+        except KeyError:
+            return
+        self.edit_reference_regions.pop(index)
+        item = self._edit_reference_region_list_item(region_id)
+        if item is not None:
+            self.edit_reference_region_list.takeItem(
+                self.edit_reference_region_list.row(item)
+            )
+        for lora_id, binding in tuple(self._edit_reference_lora_bindings.items()):
+            remaining = tuple(item for item in binding.region_ids if item != region_id)
+            if remaining != binding.region_ids:
+                self._edit_reference_lora_bindings[lora_id] = replace(
+                    binding, global_scope=False, region_ids=remaining
+                )
+        self._normalize_edit_reference_region_priorities()
+        self._sync_edit_reference_canvas_stack()
+        self._refresh_lora_scope()
+
+    def _clear_edit_reference_regions(self) -> None:
+        self.edit_reference_canvas.clear_regions()
+        self.edit_reference_region_list.clear()
+        self.edit_reference_regions = []
+        self._edit_reference_lora_bindings = {
+            lora_id: replace(binding, global_scope=False, region_ids=())
+            for lora_id, binding in self._edit_reference_lora_bindings.items()
+        }
+        self._selected_edit_reference_region_changed(-1)
+
+    def _edit_reference_region_index(self, region_id: str) -> int:
+        for index, region in enumerate(self.edit_reference_regions):
+            if region.region_id == region_id:
+                return index
+        raise KeyError(region_id)
+
+    def _edit_reference_region_list_item(
+        self, region_id: str
+    ) -> QListWidgetItem | None:
+        for row in range(self.edit_reference_region_list.count()):
+            item = self.edit_reference_region_list.item(row)
+            if item.data(Qt.ItemDataRole.UserRole) == region_id:
+                return item
+        return None
+
+    def _normalize_edit_reference_region_priorities(self) -> None:
+        count = len(self.edit_reference_regions)
+        self.edit_reference_regions = [
+            replace(region, priority=count - index)
+            for index, region in enumerate(self.edit_reference_regions)
+        ]
+
+    def _sync_edit_reference_canvas_stack(self) -> None:
+        self.edit_reference_canvas.set_region_stack_order(
+            tuple(region.region_id for region in self.edit_reference_regions)
+        )
+
+    def _edit_reference_region_order_changed(self, *_args) -> None:
+        by_id = {region.region_id: region for region in self.edit_reference_regions}
+        ordered_ids = [
+            str(
+                self.edit_reference_region_list.item(row).data(
+                    Qt.ItemDataRole.UserRole
+                )
+            )
+            for row in range(self.edit_reference_region_list.count())
+        ]
+        if set(ordered_ids) != set(by_id):
+            return
+        self.edit_reference_regions = [by_id[region_id] for region_id in ordered_ids]
+        self._normalize_edit_reference_region_priorities()
+        self._sync_edit_reference_canvas_stack()
+        self._selected_edit_reference_region_changed(
+            self.edit_reference_region_list.currentRow()
+        )
+
+    def _edit_reference_canvas_region_selected(self, region_id: str) -> None:
+        item = self._edit_reference_region_list_item(region_id)
+        if item is not None and self.edit_reference_region_list.currentItem() is not item:
+            self.edit_reference_region_list.setCurrentItem(item)
+
+    def _selected_edit_reference_region_changed(self, row: int) -> None:
+        selected = 0 <= row < len(self.edit_reference_regions)
+        for control in (
+            self.edit_reference_region_name,
+            self.edit_reference_region_role,
+            self.edit_reference_face_prompt,
+            self.edit_reference_region_prompt,
+        ):
+            control.setEnabled(selected)
+        self._edit_reference_loading_form = True
+        try:
+            if selected:
+                region = self.edit_reference_regions[row]
+                self.edit_reference_region_name.setText(region.name)
+                self.edit_reference_region_role.setCurrentIndex(
+                    max(0, self.edit_reference_region_role.findData(region.spatial_role))
+                )
+                self.edit_reference_face_prompt.setPlainText(
+                    region.face_identity_prompt
+                )
+                self.edit_reference_region_prompt.setPlainText(region.prompt)
+                self.edit_reference_canvas.select_region(region.region_id)
+            else:
+                self.edit_reference_region_name.clear()
+                self.edit_reference_region_role.setCurrentIndex(0)
+                self.edit_reference_face_prompt.clear()
+                self.edit_reference_region_prompt.clear()
+        finally:
+            self._edit_reference_loading_form = False
+
+    def _edit_reference_region_name_edited(self) -> None:
+        if self._edit_reference_loading_form:
+            return
+        row = self.edit_reference_region_list.currentRow()
+        if not 0 <= row < len(self.edit_reference_regions):
+            return
+        region = self.edit_reference_regions[row]
+        name = self.edit_reference_region_name.text().strip()
+        duplicate = any(
+            index != row and candidate.name.casefold() == name.casefold()
+            for index, candidate in enumerate(self.edit_reference_regions)
+        )
+        if not name or duplicate:
+            self.edit_reference_region_name.setText(region.name)
+            return
+        self.edit_reference_regions[row] = replace(region, name=name)
+        item = self._edit_reference_region_list_item(region.region_id)
+        if item is not None:
+            item.setText(self._region_label(self.edit_reference_regions[row]))
+        self.edit_reference_canvas.set_region_name(region.region_id, name)
+        self._refresh_lora_scope()
+
+    def _edit_reference_region_form_edited(self, *_args) -> None:
+        if self._edit_reference_loading_form:
+            return
+        row = self.edit_reference_region_list.currentRow()
+        if not 0 <= row < len(self.edit_reference_regions):
+            return
+        self.edit_reference_regions[row] = replace(
+            self.edit_reference_regions[row],
+            spatial_role=str(self.edit_reference_region_role.currentData()),
+            face_identity_prompt=self.edit_reference_face_prompt.toPlainText(),
+            prompt=self.edit_reference_region_prompt.toPlainText(),
+        )
+        item = self._edit_reference_region_list_item(
+            self.edit_reference_regions[row].region_id
+        )
+        if item is not None:
+            item.setText(self._region_label(self.edit_reference_regions[row]))
 
     def _edit_region_created(
         self, region_id: str, x0: float, y0: float, x1: float, y1: float
@@ -2515,6 +3053,13 @@ class MainWindow(QMainWindow):
                 "With a blank global prompt, add at least one box with a regional prompt.",
             )
             return
+        if not self.edit_entire_image_input.isChecked() and not active_regions:
+            QMessageBox.warning(
+                self,
+                "Edit region required",
+                "Draw at least one prompted edit box, or explicitly enable Edit entire image.",
+            )
+            return
         active_ids = {region.region_id for region in active_regions}
         invalid_lora = next(
             (
@@ -2543,8 +3088,14 @@ class MainWindow(QMainWindow):
                 "sampler": str(self.edit_sampler_input.currentData()),
                 "scheduler": str(self.edit_scheduler_input.currentData()),
                 "denoise": self.edit_denoise_input.value(),
+                "latent_feather_pixels": self.edit_latent_feather_input.value(),
                 "composite_feather_pixels": (
                     self.edit_composite_feather_input.value()
+                ),
+                "edit_entire_image": self.edit_entire_image_input.isChecked(),
+                "preserve_identity": self.edit_preserve_identity_input.isChecked(),
+                "reference_description_retention": (
+                    self.edit_reference_retention_input.value()
                 ),
                 "regional_prompt_strength": self.edit_regional_strength_input.value(),
                 "regional_outside_penalty": self.edit_outside_penalty_input.value(),
@@ -2561,7 +3112,31 @@ class MainWindow(QMainWindow):
                     self.edit_lora_adaptation_gain_input.value()
                 ),
                 "regions": [self._region_payload(region) for region in self.edit_regions],
-                "loras": self._edit_lora_payload(),
+                "reference_prompt": self.edit_reference_global_prompt.toPlainText(),
+                "reference_regions": [
+                    self._region_payload(region)
+                    for region in self.edit_reference_regions
+                ],
+                "prompt_emphases": [
+                    {
+                        "scope_id": emphasis.scope_id,
+                        "phrase": emphasis.phrase,
+                        "strength": emphasis.strength,
+                        "occurrence": emphasis.occurrence,
+                    }
+                    for emphasis in self.edit_reference_prompt_emphases
+                ],
+                "projector_enabled": self._edit_reference_projector_enabled,
+                "projector_preset": self._edit_reference_projector_preset,
+                "projector_values": list(self._edit_reference_projector_values),
+                "projector_multiplier": self._edit_reference_projector_multiplier,
+                "projector_identity_protection": (
+                    self._edit_reference_projector_identity_protection
+                ),
+                "loras": [
+                    *self._edit_reference_lora_payload(),
+                    *self._edit_lora_payload(),
+                ],
                 "project_json": project_document(self._project_state()),
             }
         )
@@ -3239,6 +3814,13 @@ class MainWindow(QMainWindow):
             strength=self.lora_library.binding_for(entry.lora_id).strength,
             trigger_phrase=entry.path.stem,
         )
+        self._edit_reference_lora_bindings[entry.lora_id] = LoraBinding(
+            lora_id=entry.lora_id,
+            global_scope=False,
+            region_ids=(),
+            strength=self.lora_library.binding_for(entry.lora_id).strength,
+            trigger_phrase=entry.path.stem,
+        )
         if existing is None:
             existing = QListWidgetItem(self._lora_label(entry.lora_id))
             existing.setData(Qt.ItemDataRole.UserRole, entry.lora_id)
@@ -3266,6 +3848,7 @@ class MainWindow(QMainWindow):
         entry = self.lora_library.get(lora_id)
         self.lora_library.remove(lora_id)
         self._edit_lora_bindings.pop(lora_id, None)
+        self._edit_reference_lora_bindings.pop(lora_id, None)
         self.lora_list.takeItem(self.lora_list.row(item))
         self._refresh_lora_scope()
         self.events.addItem(f"Removed LoRA {entry.display_name}")
@@ -3333,6 +3916,8 @@ class MainWindow(QMainWindow):
         self.events.addItem(f"Set {entry.display_name} strength to {strength:.2f}")
 
     def _active_lora_binding(self, lora_id: str) -> LoraBinding:
+        if self._image_edit_scope_layer() == "reference":
+            return self._edit_reference_lora_bindings[lora_id]
         if self._editing_scope_active():
             return self._edit_lora_bindings[lora_id]
         return self.lora_library.binding_for(lora_id)
@@ -3383,8 +3968,8 @@ class MainWindow(QMainWindow):
             self._refresh_lora_routing_controls()
             return
         if self._editing_scope_active():
-            self._edit_lora_bindings[lora_id] = replace(
-                binding, routing_mode=routing_mode
+            self._set_active_edit_lora_binding(
+                lora_id, replace(binding, routing_mode=routing_mode)
             )
         else:
             self.lora_library.set_routing_mode(lora_id, routing_mode)
@@ -3412,8 +3997,8 @@ class MainWindow(QMainWindow):
             self.events.addItem("Character identity trigger cannot be empty")
             return
         if self._editing_scope_active():
-            self._edit_lora_bindings[lora_id] = replace(
-                binding, trigger_phrase=phrase
+            self._set_active_edit_lora_binding(
+                lora_id, replace(binding, trigger_phrase=phrase)
             )
         else:
             self.lora_library.set_trigger_phrase(lora_id, phrase)
@@ -3452,7 +4037,27 @@ class MainWindow(QMainWindow):
                 continue
             payload.append(
                 {
-                    "id": entry.lora_id,
+                    "id": f"edit:{entry.lora_id}",
+                    "name": entry.display_name,
+                    "path": str(entry.path),
+                    "strength": self.lora_library.binding_for(entry.lora_id).strength,
+                    "global": binding.global_scope,
+                    "region_ids": list(binding.region_ids),
+                    "routing_mode": binding.routing_mode,
+                    "trigger_phrase": binding.trigger_phrase,
+                }
+            )
+        return payload
+
+    def _edit_reference_lora_payload(self) -> list[dict[str, object]]:
+        payload = []
+        for entry in self.lora_library.entries():
+            binding = self._edit_reference_lora_bindings.get(entry.lora_id)
+            if binding is None or (not binding.global_scope and not binding.region_ids):
+                continue
+            payload.append(
+                {
+                    "id": f"reference:{entry.lora_id}",
                     "name": entry.display_name,
                     "path": str(entry.path),
                     "strength": self.lora_library.binding_for(entry.lora_id).strength,
@@ -3482,8 +4087,13 @@ class MainWindow(QMainWindow):
         try:
             self.lora_scope_list.clear()
             editing = self._editing_scope_active()
+            edit_layer = self._image_edit_scope_layer()
             self.lora_scope_context_label.setText(
-                "Image-edit scope: Disabled, Global, or one or more edit regions"
+                (
+                    "Image-edit reference scope: original Global/region assignments"
+                    if edit_layer == "reference"
+                    else "Image-edit target scope: Disabled, Global, or edit boxes"
+                )
                 if editing
                 else "Generation scope: choose Global or one or more named regions"
             )
@@ -3500,7 +4110,11 @@ class MainWindow(QMainWindow):
                 )
             global_item = self._scope_item("Global", GLOBAL_SCOPE_ID, binding.global_scope)
             self.lora_scope_list.addItem(global_item)
-            regions = self.edit_regions if editing else self.regions
+            regions = (
+                self.edit_reference_regions
+                if edit_layer == "reference"
+                else (self.edit_regions if editing else self.regions)
+            )
             for region in regions:
                 item = self._scope_item(
                     region.name, region.region_id, region.region_id in binding.region_ids
@@ -3534,11 +4148,11 @@ class MainWindow(QMainWindow):
             and changed_item.checkState() == Qt.CheckState.Checked
         ):
             binding = replace(current, global_scope=False, region_ids=())
-            self._edit_lora_bindings[lora_id] = binding
+            self._set_active_edit_lora_binding(lora_id, binding)
         elif scope_id == GLOBAL_SCOPE_ID and changed_item.checkState() == Qt.CheckState.Checked:
             binding = replace(current, global_scope=True, region_ids=())
             if editing:
-                self._edit_lora_bindings[lora_id] = binding
+                self._set_active_edit_lora_binding(lora_id, binding)
             else:
                 binding = self.lora_library.assign_global(lora_id)
         else:
@@ -3553,7 +4167,7 @@ class MainWindow(QMainWindow):
                 binding = replace(
                     current, global_scope=False, region_ids=selected_regions
                 )
-                self._edit_lora_bindings[lora_id] = binding
+                self._set_active_edit_lora_binding(lora_id, binding)
             else:
                 binding = self.lora_library.assign_regions(lora_id, selected_regions)
         if (
@@ -3562,7 +4176,7 @@ class MainWindow(QMainWindow):
         ):
             if editing:
                 binding = replace(binding, routing_mode=STANDARD_LORA_ROUTING)
-                self._edit_lora_bindings[lora_id] = binding
+                self._set_active_edit_lora_binding(lora_id, binding)
             else:
                 binding = self.lora_library.set_routing_mode(
                     lora_id, STANDARD_LORA_ROUTING
@@ -3573,7 +4187,12 @@ class MainWindow(QMainWindow):
         self._refresh_lora_scope()
         self._selected_lora_changed(self.lora_list.currentItem(), None)
         entry = self.lora_library.get(lora_id)
-        regions = self.edit_regions if editing else self.regions
+        edit_layer = self._image_edit_scope_layer()
+        regions = (
+            self.edit_reference_regions
+            if edit_layer == "reference"
+            else (self.edit_regions if editing else self.regions)
+        )
         names = {
             region.region_id: region.name
             for region in regions
@@ -3638,6 +4257,18 @@ class MainWindow(QMainWindow):
                 edit_region_ids=edit_binding.region_ids,
                 edit_routing_mode=edit_binding.routing_mode,
                 edit_trigger_phrase=edit_binding.trigger_phrase,
+                reference_enabled=bool(
+                    (
+                        reference_binding := self._edit_reference_lora_bindings[
+                            entry.lora_id
+                        ]
+                    ).global_scope
+                    or reference_binding.region_ids
+                ),
+                reference_global_scope=reference_binding.global_scope,
+                reference_region_ids=reference_binding.region_ids,
+                reference_routing_mode=reference_binding.routing_mode,
+                reference_trigger_phrase=reference_binding.trigger_phrase,
             )
             for entry in self.lora_library.entries()
         )
@@ -3700,15 +4331,36 @@ class MainWindow(QMainWindow):
             background_image=self._background_image_path,
             image_edit=ImageEditState(
                 source_image=self._edit_source_path,
+                associated_project=self._edit_associated_project_path,
                 width=(self.edit_canvas.canvas_width if self._edit_source_path else 0),
                 height=(self.edit_canvas.canvas_height if self._edit_source_path else 0),
+                reference_global_prompt=self.edit_reference_global_prompt.toPlainText(),
+                reference_regions=tuple(self.edit_reference_regions),
+                reference_prompt_emphases=tuple(
+                    self.edit_reference_prompt_emphases
+                ),
+                reference_projector_enabled=self._edit_reference_projector_enabled,
+                reference_projector_preset=self._edit_reference_projector_preset,
+                reference_projector_values=self._edit_reference_projector_values,
+                reference_projector_multiplier=(
+                    self._edit_reference_projector_multiplier
+                ),
+                reference_projector_identity_protection=(
+                    self._edit_reference_projector_identity_protection
+                ),
                 global_prompt=self.edit_global_prompt.toPlainText(),
                 steps=self.edit_steps_input.value(),
                 sampler=str(self.edit_sampler_input.currentData()),
                 scheduler=str(self.edit_scheduler_input.currentData()),
                 seed=self.edit_seed_input.value(),
                 denoise=self.edit_denoise_input.value(),
+                latent_feather_pixels=self.edit_latent_feather_input.value(),
                 composite_feather_pixels=self.edit_composite_feather_input.value(),
+                edit_entire_image=self.edit_entire_image_input.isChecked(),
+                preserve_identity=self.edit_preserve_identity_input.isChecked(),
+                reference_description_retention=(
+                    self.edit_reference_retention_input.value()
+                ),
                 regional_prompt_strength=self.edit_regional_strength_input.value(),
                 regional_outside_penalty=self.edit_outside_penalty_input.value(),
                 regional_feather_pixels=self.edit_spatial_falloff_input.value(),
@@ -4078,6 +4730,29 @@ class MainWindow(QMainWindow):
         self._refresh_prompt_emphases()
 
         edit_state = state.image_edit
+        self._edit_associated_project_path = edit_state.associated_project
+        self.edit_reference_status.setText(
+            f"Reference: {edit_state.associated_project.name}"
+            if edit_state.associated_project
+            else "No associated project loaded"
+        )
+        self.edit_reference_global_prompt.setPlainText(
+            edit_state.reference_global_prompt
+        )
+        self.edit_reference_prompt_emphases = list(
+            edit_state.reference_prompt_emphases
+        )
+        self._edit_reference_projector_enabled = (
+            edit_state.reference_projector_enabled
+        )
+        self._edit_reference_projector_preset = edit_state.reference_projector_preset
+        self._edit_reference_projector_values = edit_state.reference_projector_values
+        self._edit_reference_projector_multiplier = (
+            edit_state.reference_projector_multiplier
+        )
+        self._edit_reference_projector_identity_protection = (
+            edit_state.reference_projector_identity_protection
+        )
         self.edit_global_prompt.setPlainText(edit_state.global_prompt)
         self.edit_steps_input.setValue(edit_state.steps)
         self.edit_sampler_input.setCurrentIndex(
@@ -4088,8 +4763,14 @@ class MainWindow(QMainWindow):
         )
         self.edit_seed_input.setValue(edit_state.seed)
         self.edit_denoise_input.setValue(edit_state.denoise)
+        self.edit_latent_feather_input.setValue(edit_state.latent_feather_pixels)
         self.edit_composite_feather_input.setValue(
             edit_state.composite_feather_pixels
+        )
+        self.edit_entire_image_input.setChecked(edit_state.edit_entire_image)
+        self.edit_preserve_identity_input.setChecked(edit_state.preserve_identity)
+        self.edit_reference_retention_input.setValue(
+            edit_state.reference_description_retention
         )
         self.edit_regional_strength_input.setValue(
             edit_state.regional_prompt_strength
@@ -4111,11 +4792,19 @@ class MainWindow(QMainWindow):
         )
         self.edit_canvas.clear_regions()
         self.edit_canvas.clear_image()
+        self.edit_reference_canvas.clear_regions()
+        self.edit_reference_canvas.clear_image()
         self.edit_region_list.clear()
+        self.edit_reference_region_list.clear()
         self.edit_regions = list(edit_state.regions)
+        self.edit_reference_regions = list(edit_state.reference_regions)
         if edit_state.width and edit_state.height:
             self.edit_canvas.set_canvas_size(edit_state.width, edit_state.height)
+            self.edit_reference_canvas.set_canvas_size(
+                edit_state.width, edit_state.height
+            )
         self._normalize_edit_region_priorities()
+        self._normalize_edit_reference_region_priorities()
         self._edit_region_number = max(
             (
                 int(match.group(1))
@@ -4134,7 +4823,26 @@ class MainWindow(QMainWindow):
                 QRectF(box.x0, box.y0, box.width, box.height),
                 region.name,
             )
+        self._edit_reference_region_number = max(
+            (
+                int(match.group(1))
+                for region in self.edit_reference_regions
+                if (match := re.fullmatch(r"Reference region (\d+)", region.name))
+            ),
+            default=len(self.edit_reference_regions),
+        )
+        for region in self.edit_reference_regions:
+            item = QListWidgetItem(self._region_label(region))
+            item.setData(Qt.ItemDataRole.UserRole, region.region_id)
+            self.edit_reference_region_list.addItem(item)
+            box = region.box
+            self.edit_reference_canvas.add_region_box(
+                region.region_id,
+                QRectF(box.x0, box.y0, box.width, box.height),
+                region.name,
+            )
         self._sync_edit_canvas_stack()
+        self._sync_edit_reference_canvas_stack()
         self._edit_source_path = None
         self._edit_result_path = None
         self.edit_source_input.clear()
@@ -4149,9 +4857,12 @@ class MainWindow(QMainWindow):
             )
             if self._edit_source_path.is_file():
                 self.edit_canvas.set_image(str(self._edit_source_path))
+                self.edit_reference_canvas.set_image(str(self._edit_source_path))
 
         self.lora_library = LoraLibrary()
         self._edit_lora_bindings = {}
+        self._edit_reference_lora_bindings = {}
+        self._edit_associated_lora_ids = set()
         self.lora_list.clear()
         for saved_lora in state.loras:
             if not self._add_lora_path(saved_lora.path):
@@ -4177,6 +4888,24 @@ class MainWindow(QMainWindow):
                 routing_mode=saved_lora.edit_routing_mode,
                 trigger_phrase=(
                     saved_lora.edit_trigger_phrase or saved_lora.path.stem
+                ),
+            )
+            self._edit_reference_lora_bindings[lora_id] = LoraBinding(
+                lora_id=lora_id,
+                global_scope=(
+                    saved_lora.reference_global_scope
+                    if saved_lora.reference_enabled
+                    else False
+                ),
+                region_ids=(
+                    saved_lora.reference_region_ids
+                    if saved_lora.reference_enabled
+                    else ()
+                ),
+                strength=saved_lora.strength,
+                routing_mode=saved_lora.reference_routing_mode,
+                trigger_phrase=(
+                    saved_lora.reference_trigger_phrase or saved_lora.path.stem
                 ),
             )
             item = self._lora_list_item(lora_id)
@@ -4220,6 +4949,10 @@ class MainWindow(QMainWindow):
             self.edit_region_list.setCurrentRow(0)
         else:
             self._selected_edit_region_changed(-1)
+        if self.edit_reference_region_list.count():
+            self.edit_reference_region_list.setCurrentRow(0)
+        else:
+            self._selected_edit_reference_region_changed(-1)
         self.discover_models()
 
     def _worker_payload(self) -> dict[str, object]:

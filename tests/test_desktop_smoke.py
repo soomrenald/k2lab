@@ -31,8 +31,9 @@ if PYSIDE_AVAILABLE:
     from k2_region_lab.desktop.main_window import GLOBAL_SCOPE_ID, MainWindow
     from k2_region_lab.lora import CHARACTER_IDENTITY_LORA_ROUTING
     from k2_region_lab.processes import WorkerProcess
-    from k2_region_lab.project import ProjectState, project_document
+    from k2_region_lab.project import ProjectState, SavedLora, project_document
     from k2_region_lab.regional_prompting import PromptEmphasis
+    from k2_region_lab.regions import PixelBox, RegionDefinition
     from k2_region_lab.worker.protocol import CommandKind
 
 
@@ -193,6 +194,73 @@ class DesktopSmokeTests(unittest.TestCase):
             saved = window._project_state().loras[0]
             self.assertTrue(saved.edit_enabled)
             self.assertEqual(saved.edit_region_ids, ("edit-region",))
+            window.close()
+
+    def test_image_edit_loads_embedded_reference_layer_and_fixed_parameters(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "generated.png"
+            lora_path = root / "identity.safetensors"
+            write_lora(lora_path)
+            reference_region = RegionDefinition(
+                region_id="person",
+                name="Person",
+                box=PixelBox(40, 20, 200, 300),
+                prompt="a woman in a blue coat",
+                face_identity_prompt="same woman and face",
+                spatial_role="subject",
+            )
+            document = project_document(
+                ProjectState(
+                    canvas_width=320,
+                    canvas_height=320,
+                    global_prompt="a portrait in a city",
+                    seed=934,
+                    steps=12,
+                    sampler="euler_ancestral",
+                    scheduler="normal",
+                    regions=(reference_region,),
+                    loras=(
+                        SavedLora(
+                            path=lora_path,
+                            global_scope=False,
+                            region_ids=("person",),
+                            strength=0.7,
+                        ),
+                    ),
+                )
+            )
+            metadata = PngImagePlugin.PngInfo()
+            metadata.add_text("k2lab_project", json.dumps(document))
+            Image.new("RGB", (640, 320), "navy").save(source, pnginfo=metadata)
+            window = self.make_window(root)
+
+            self.assertTrue(window._set_edit_source(source, confirm_reset=False))
+
+            self.assertEqual(window.edit_reference_global_prompt.toPlainText(), "a portrait in a city")
+            self.assertEqual(window.edit_seed_input.value(), 934)
+            self.assertEqual(window.edit_steps_input.value(), 12)
+            self.assertEqual(window.edit_sampler_input.currentData(), "euler_ancestral")
+            self.assertEqual(len(window.edit_reference_regions), 1)
+            self.assertEqual(window.edit_reference_regions[0].box, PixelBox(80, 20, 400, 300))
+            self.assertEqual(window.edit_regions, [])
+            self.assertIsNotNone(window.edit_reference_canvas.region_item("person"))
+            with self.assertRaises(KeyError):
+                window.edit_canvas.region_item("person")
+            lora_id = window._current_lora_id()
+            self.assertEqual(
+                window._edit_reference_lora_bindings[lora_id].region_ids,
+                ("person",),
+            )
+            self.assertEqual(window.lora_library.binding_for(lora_id).strength, 0.7)
+
+            window.edit_reference_region_list.setCurrentRow(0)
+            window.edit_reference_region_prompt.setPlainText("modified reference")
+            window.edit_canvas.region_created.emit("edit", 200, 80, 500, 260)
+            self.application.processEvents()
+            state = window._project_state().image_edit
+            self.assertEqual(state.reference_regions[0].prompt, "modified reference")
+            self.assertEqual(state.regions[0].region_id, "edit")
             window.close()
 
     def test_file_menu_imports_embedded_project_from_generated_png(self) -> None:
