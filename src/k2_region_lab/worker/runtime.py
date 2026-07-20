@@ -16,6 +16,8 @@ from k2_region_lab.image_edit import (
     composite_regional_edit,
     edge_pad_to_krea,
     load_source_image,
+    regional_composite_mask,
+    regional_edit_conditioning,
 )
 from k2_region_lab.face_detail import (
     BACKEND as FACE_DETAIL_BACKEND,
@@ -1759,12 +1761,19 @@ class ComfyBaselineRuntime:
         prompt: str,
         regions: tuple[RegionDefinition, ...],
         loras: list[dict[str, Any]],
+        reference_prompt: str = "",
+        reference_regions: tuple[RegionDefinition, ...] = (),
+        prompt_emphases: tuple[PromptEmphasis, ...] = (),
         seed: int = 0,
         steps: int = 8,
         sampler: str = DEFAULT_SAMPLER,
         scheduler: str = DEFAULT_SCHEDULER,
-        denoise: float = 0.35,
-        composite_feather_pixels: int = 32,
+        denoise: float = 0.15,
+        latent_feather_pixels: int = 64,
+        composite_feather_pixels: int = 48,
+        edit_entire_image: bool = False,
+        preserve_identity: bool = True,
+        reference_description_retention: float = 1.0,
         regional_prompt_strength: float = 1.0,
         regional_outside_penalty: float = 1.0,
         regional_feather_pixels: float = 128.0,
@@ -1773,6 +1782,11 @@ class ComfyBaselineRuntime:
         regional_late_step_scale: float = 0.35,
         regional_lora_delta_adaptation: bool = False,
         regional_lora_delta_adaptation_gain: float = 0.35,
+        projector_enabled: bool = False,
+        projector_preset: str = DEFAULT_PROJECTOR_PRESET,
+        projector_values: tuple[float, ...] | list[float] | None = None,
+        projector_multiplier: float = 1.0,
+        projector_identity_protection: float = 1.0,
         project_json: dict[str, Any] | None = None,
         output_directory: Path | None = None,
         progress: Callable[[int, int, dict[str, Any]], None] | None = None,
@@ -1786,8 +1800,12 @@ class ComfyBaselineRuntime:
             raise ValueError("image-edit steps must be between 1 and 100")
         if not 0.0 < denoise <= 1.0:
             raise ValueError("image-edit denoise must be in (0, 1]")
+        if not 0 <= latent_feather_pixels <= 256:
+            raise ValueError("image-edit latent feather must be between 0 and 256 pixels")
         if not 0 <= composite_feather_pixels <= 256:
             raise ValueError("image-edit composite feather must be between 0 and 256 pixels")
+        if not 0.0 <= reference_description_retention <= 1.0:
+            raise ValueError("reference description retention must be between zero and one")
         sampler = validate_sampler(sampler)
         scheduler = validate_scheduler(scheduler)
 
@@ -1811,38 +1829,64 @@ class ComfyBaselineRuntime:
         source_path = image_path.expanduser().resolve()
         source_image, source_metadata = load_source_image(source_path)
         padded_source, geometry = edge_pad_to_krea(source_image)
-        active_regions = tuple(
-            region
-            for region in regions
-            if region.enabled
-            and (region.prompt.strip() or region.face_identity_prompt.strip())
+        target_regions = tuple(region for region in regions if region.enabled)
+        filtered_loras = [
+            lora
+            for lora in loras
+            if preserve_identity
+            or not (
+                str(lora.get("id", "")).startswith("reference:")
+                and str(lora.get("routing_mode", "")) == "character_identity"
+            )
+        ]
+        conditioning_regions = regional_edit_conditioning(
+            reference_regions,
+            target_regions,
+            prompt,
+            preserve_identity=preserve_identity,
         )
-        if not prompt.strip() and not active_regions:
+        active_edit_regions = tuple(
+            region for region in conditioning_regions if region.spatial_role == "edit"
+        )
+        if not edit_entire_image and not target_regions:
+            raise ValueError(
+                "regional image editing requires an edit box or Edit entire image"
+            )
+        if not prompt.strip() and not active_edit_regions:
             raise ValueError(
                 "a blank image-edit global prompt requires at least one active regional prompt"
+            )
+
+        conditioned_global_prompt = reference_prompt.strip()
+        if edit_entire_image:
+            conditioned_global_prompt = ". ".join(
+                part.strip().rstrip(".!? ")
+                for part in (reference_prompt, prompt)
+                if part.strip()
             )
 
         regional_plan = (
             compile_regional_prompt_plan(
                 source_image.width,
                 source_image.height,
-                prompt,
-                regions,
+                conditioned_global_prompt,
+                conditioning_regions,
                 strength=regional_prompt_strength,
                 outside_penalty=regional_outside_penalty,
                 falloff_pixels=regional_feather_pixels,
                 subject_competition=regional_subject_competition,
                 subject_fill=regional_subject_fill,
                 late_step_scale=regional_late_step_scale,
-                character_identity_triggers=character_identity_triggers(loras),
+                emphases=prompt_emphases,
+                character_identity_triggers=character_identity_triggers(filtered_loras),
             )
-            if regions
+            if conditioning_regions
             else None
         )
         conditioned_prompt = (
             regional_plan.prompt
             if regional_plan is not None and regional_plan.regions
-            else prompt.strip()
+            else conditioned_global_prompt
         )
         if not conditioned_prompt:
             raise ValueError("image editing requires prompt text")
@@ -1876,9 +1920,33 @@ class ComfyBaselineRuntime:
             self.model, latent, downscale_ratio_spacial=8
         )
         noise = comfy.sample.prepare_noise(latent, seed)
+        if edit_entire_image:
+            denoise_mask = torch.ones(
+                (1, latent.shape[-2], latent.shape[-1]),
+                dtype=torch.float32,
+                device="cpu",
+            )
+        else:
+            pixel_mask = regional_composite_mask(
+                padded_source.size,
+                target_regions,
+                latent_feather_pixels,
+            )
+            denoise_mask = torch.from_numpy(
+                np.asarray(pixel_mask, dtype=np.float32).copy() / 255.0
+            ).unsqueeze(0)
+        generation_model, projector_summary = self._apply_global_projector_vector(
+            enabled=projector_enabled,
+            preset=projector_preset,
+            values=projector_values,
+            multiplier=projector_multiplier,
+            identity_protection=projector_identity_protection,
+            bound_plan=bound_plan,
+            event=event,
+        )
         generation_model, lora_reports, lora_statistics = self._apply_routed_loras(
-            loras,
-            base_model=self.model,
+            filtered_loras,
+            base_model=generation_model,
             width=geometry.aligned_width,
             height=geometry.aligned_height,
             text_token_count=text_token_count,
@@ -1895,6 +1963,14 @@ class ComfyBaselineRuntime:
             if bound_plan is not None and bound_plan.spans
             else None
         )
+        if attention_override is not None:
+            reference_ids = {region.region_id for region in reference_regions}
+            attention_override.region_scales.update(
+                {
+                    region_id: reference_description_retention
+                    for region_id in reference_ids
+                }
+            )
 
         def callback(step: int, denoised, current, total: int) -> None:
             del denoised, current
@@ -1905,6 +1981,12 @@ class ComfyBaselineRuntime:
                         lora_statistics.regional_attention_scales(
                             regional_lora_delta_adaptation_gain
                         )
+                    )
+                    attention_override.region_scales.update(
+                        {
+                            region.region_id: reference_description_retention
+                            for region in reference_regions
+                        }
                     )
                     lora_statistics.reset_step_measurements()
             snapshot = self.memory_snapshot(f"image-edit step {step + 1}/{total}")
@@ -1938,6 +2020,7 @@ class ComfyBaselineRuntime:
                 negative,
                 latent,
                 denoise=denoise,
+                noise_mask=denoise_mask,
                 callback=callback,
                 disable_pbar=True,
                 seed=seed,
@@ -1980,13 +2063,16 @@ class ComfyBaselineRuntime:
         candidate = Image.fromarray(array).crop(
             (0, 0, source_image.width, source_image.height)
         )
-        preserve_outside = not prompt.strip()
+        preserve_outside = not edit_entire_image
+        effective_composite_feather = min(
+            composite_feather_pixels, latent_feather_pixels
+        )
         if preserve_outside:
             output_image, mask = composite_regional_edit(
                 source_image,
                 candidate,
-                active_regions,
-                composite_feather_pixels,
+                target_regions,
+                effective_composite_feather,
             )
             changed_bounds = mask.getbbox()
         else:
@@ -2009,10 +2095,16 @@ class ComfyBaselineRuntime:
             "sampler": sampler,
             "scheduler": scheduler,
             "denoise": denoise,
+            "latent_feather_pixels": latent_feather_pixels,
             "preserve_outside_regions": preserve_outside,
             "composite_feather_pixels": composite_feather_pixels,
+            "effective_composite_feather_pixels": effective_composite_feather,
+            "edit_entire_image": edit_entire_image,
+            "preserve_identity": preserve_identity,
+            "reference_description_retention": reference_description_retention,
             "composite_bounds": list(changed_bounds) if changed_bounds else None,
             "regional_prompting": regional_summary,
+            "projector": projector_summary,
             "loras": lora_reports,
         }
         metadata = PngImagePlugin.PngInfo()

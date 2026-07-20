@@ -409,7 +409,7 @@ def compile_regional_prompt_plan(
             float(falloff_pixels),
             edge_weight=0.85 if subject_fill else 0.5,
         )
-        if role == "subject"
+        if role in {"subject", "edit"}
         else _soft_box_field(geometry, box, float(falloff_pixels))
         for (_, box), role in zip(active, roles, strict=True)
     )
@@ -661,6 +661,14 @@ def _regional_clause(
             f"{height_percent:.0f}% of its height"
         )
         return f"{location}, there is {description}."
+
+    if role == "edit":
+        location = f"Inside the {vertical} {horizontal} edit area"
+        return (
+            f"{location}, the desired final appearance is {description}. Integrate the "
+            "change naturally with the surrounding image without drawing a box, border, "
+            "seam, label, or annotation."
+        )
 
     location = f"In the {vertical} {horizontal}"
     framing = _subject_framing(height_percent)

@@ -710,16 +710,16 @@ class MainWindow(QMainWindow):
         self.edit_latent_feather_input = QSpinBox()
         self.edit_latent_feather_input.setRange(0, 256)
         self.edit_latent_feather_input.setSuffix(" px")
-        self.edit_latent_feather_input.setValue(48)
+        self.edit_latent_feather_input.setValue(64)
         self.edit_composite_feather_input = QSpinBox()
         self.edit_composite_feather_input.setRange(0, 256)
         self.edit_composite_feather_input.setSuffix(" px")
-        self.edit_composite_feather_input.setValue(64)
+        self.edit_composite_feather_input.setValue(48)
         self.edit_reference_retention_input = QDoubleSpinBox()
         self.edit_reference_retention_input.setRange(0.0, 1.0)
         self.edit_reference_retention_input.setDecimals(2)
         self.edit_reference_retention_input.setSingleStep(0.05)
-        self.edit_reference_retention_input.setValue(0.25)
+        self.edit_reference_retention_input.setValue(1.0)
         self.edit_regional_strength_input = QDoubleSpinBox()
         self.edit_regional_strength_input.setRange(0.1, 10.0)
         self.edit_regional_strength_input.setValue(1.0)
@@ -3040,13 +3040,18 @@ class MainWindow(QMainWindow):
         if source_path is None or not source_path.is_file():
             QMessageBox.warning(self, "Source image required", "Load an image before editing.")
             return
+        edit_instruction = self.edit_global_prompt.toPlainText().strip()
         active_regions = [
             region
             for region in self.edit_regions
             if region.enabled
-            and (region.prompt.strip() or region.face_identity_prompt.strip())
+            and (
+                edit_instruction
+                or region.prompt.strip()
+                or region.face_identity_prompt.strip()
+            )
         ]
-        if not self.edit_global_prompt.toPlainText().strip() and not active_regions:
+        if not edit_instruction and not active_regions:
             QMessageBox.warning(
                 self,
                 "Edit prompt required",

@@ -176,7 +176,11 @@ class KreaSpatialAttentionOverride:
                     self.plan.strength,
                     outside_penalty_ratio=self.outside_penalty_ratio,
                     outside_penalty=self.plan.outside_penalty
-                    * (1.0 if span.spatial_role == "subject" else 0.25),
+                    * (
+                        1.0
+                        if span.spatial_role in {"subject", "edit"}
+                        else 0.25
+                    ),
                 ),
                 dtype=torch.float32,
                 device=device,

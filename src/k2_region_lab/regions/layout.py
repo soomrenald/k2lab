@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from k2_region_lab.regions.geometry import CanvasGeometry, PixelBox
 
 
-REGION_ROLES = ("auto", "subject", "background")
+REGION_ROLES = ("auto", "subject", "background", "edit")
 
 
 @dataclass(frozen=True, slots=True)

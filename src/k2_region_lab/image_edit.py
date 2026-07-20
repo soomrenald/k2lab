@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from math import ceil, floor
 from pathlib import Path
 
@@ -42,11 +42,11 @@ class ImageEditState:
     scheduler: str = DEFAULT_SCHEDULER
     seed: int = 0
     denoise: float = 0.15
-    latent_feather_pixels: int = 48
-    composite_feather_pixels: int = 64
+    latent_feather_pixels: int = 64
+    composite_feather_pixels: int = 48
     edit_entire_image: bool = False
     preserve_identity: bool = True
-    reference_description_retention: float = 0.25
+    reference_description_retention: float = 1.0
     regional_prompt_strength: float = 1.0
     regional_outside_penalty: float = 1.0
     regional_feather_pixels: int = 128
@@ -184,6 +184,49 @@ def regional_composite_mask(
                 draw.rectangle((left, top, right, bottom), fill=round(255 * smooth))
         union = ImageChops.lighter(union, region_mask)
     return union
+
+
+def regional_edit_conditioning(
+    reference_regions: tuple[RegionDefinition, ...],
+    edit_regions: tuple[RegionDefinition, ...],
+    instruction: str,
+    *,
+    preserve_identity: bool = True,
+) -> tuple[RegionDefinition, ...]:
+    """Combine original layout clauses with non-owning edit clauses.
+
+    Reference subject regions retain their exclusive identity ownership. Edit clauses use
+    the ``edit`` role, so the same image tokens can read both the original subject identity
+    and the desired local delta.
+    """
+
+    references = tuple(
+        region
+        if preserve_identity
+        else replace(region, face_identity_prompt="")
+        for region in reference_regions
+    )
+    edit_instruction = instruction.strip().rstrip(".!? ")
+    edits: list[RegionDefinition] = []
+    for region in edit_regions:
+        if not region.enabled:
+            continue
+        local_prompt = region.prompt.strip().rstrip(".!? ")
+        description = ". ".join(
+            dict.fromkeys(
+                part for part in (edit_instruction, local_prompt) if part
+            )
+        )
+        if not description and not region.face_identity_prompt.strip():
+            continue
+        edits.append(
+            replace(
+                region,
+                prompt=description,
+                spatial_role="edit",
+            )
+        )
+    return references + tuple(edits)
 
 
 def composite_regional_edit(

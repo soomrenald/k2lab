@@ -203,6 +203,32 @@ class RegionalPromptingTests(unittest.TestCase):
         self.assertEqual(float(scores[0, 0, left.start, left.start]), 0.0)
         self.assertEqual(float(scores[0, 0, left.start, 0]), 0.0)
 
+    def test_edit_clause_is_spatial_but_does_not_take_subject_ownership(self) -> None:
+        regions = (
+            RegionDefinition(
+                "person",
+                "Person",
+                PixelBox(0, 0, 48, 64),
+                "the same woman",
+                spatial_role="subject",
+            ),
+            RegionDefinition(
+                "edit",
+                "Jacket edit",
+                PixelBox(8, 20, 40, 55),
+                "a green jacket",
+                spatial_role="edit",
+            ),
+        )
+        plan = compile_regional_prompt_plan(64, 64, "portrait", regions)
+        bound = plan.bind_tokens(len, conditioning_text_token_count=len(plan.prompt))
+        owners = text_region_ownership(bound)
+        subject, edit = bound.spans
+
+        self.assertTrue(all(owner > 0 for owner in owners[subject.start : subject.end]))
+        self.assertTrue(all(owner == 0 for owner in owners[edit.start : edit.end]))
+        self.assertIn("desired final appearance", plan.regions[1].clause)
+
     def test_cross_modal_partition_preserves_image_to_image_attention(self) -> None:
         try:
             import torch

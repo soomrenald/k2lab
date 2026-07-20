@@ -11,6 +11,7 @@ from typing import Any
 from k2_region_lab.config import ModelDirectories
 from k2_region_lab.debug import configure_debug_logging
 from k2_region_lab.model import discover_model_artifacts
+from k2_region_lab.projector import DEFAULT_PROJECTOR_PRESET
 from k2_region_lab.regional_prompting import (
     prompt_emphases_from_payload,
     region_definitions_from_payload,
@@ -319,14 +320,29 @@ def main() -> int:
                     ),
                     prompt=str(payload.get("prompt", "")),
                     regions=region_definitions_from_payload(payload.get("regions", [])),
+                    reference_prompt=str(payload.get("reference_prompt", "")),
+                    reference_regions=region_definitions_from_payload(
+                        payload.get("reference_regions", [])
+                    ),
+                    prompt_emphases=prompt_emphases_from_payload(
+                        payload.get("prompt_emphases", [])
+                    ),
                     loras=list(payload.get("loras", [])),
                     seed=int(payload.get("seed", 0)),
                     steps=int(payload.get("steps", 8)),
                     sampler=str(payload.get("sampler", "euler")),
                     scheduler=str(payload.get("scheduler", "simple")),
-                    denoise=float(payload.get("denoise", 0.35)),
+                    denoise=float(payload.get("denoise", 0.15)),
+                    latent_feather_pixels=int(
+                        payload.get("latent_feather_pixels", 64)
+                    ),
                     composite_feather_pixels=int(
-                        payload.get("composite_feather_pixels", 32)
+                        payload.get("composite_feather_pixels", 48)
+                    ),
+                    edit_entire_image=bool(payload.get("edit_entire_image", False)),
+                    preserve_identity=bool(payload.get("preserve_identity", True)),
+                    reference_description_retention=float(
+                        payload.get("reference_description_retention", 1.0)
                     ),
                     regional_prompt_strength=float(
                         payload.get("regional_prompt_strength", 1.0)
@@ -351,6 +367,21 @@ def main() -> int:
                     ),
                     regional_lora_delta_adaptation_gain=float(
                         payload.get("regional_lora_delta_adaptation_gain", 0.35)
+                    ),
+                    projector_enabled=bool(payload.get("projector_enabled", False)),
+                    projector_preset=str(
+                        payload.get("projector_preset", DEFAULT_PROJECTOR_PRESET)
+                    ),
+                    projector_values=(
+                        tuple(float(value) for value in payload["projector_values"])
+                        if payload.get("projector_values") is not None
+                        else None
+                    ),
+                    projector_multiplier=float(
+                        payload.get("projector_multiplier", 1.0)
+                    ),
+                    projector_identity_protection=float(
+                        payload.get("projector_identity_protection", 1.0)
                     ),
                     project_json=(
                         dict(payload["project_json"])

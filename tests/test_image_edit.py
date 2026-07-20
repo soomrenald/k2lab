@@ -13,6 +13,7 @@ from k2_region_lab.image_edit import (
     edge_pad_to_krea,
     load_source_image,
     regional_composite_mask,
+    regional_edit_conditioning,
 )
 from k2_region_lab.project import (
     ProjectState,
@@ -72,6 +73,34 @@ class ImageEditGeometryTests(unittest.TestCase):
         self.assertEqual(result.getpixel((10, 10)), (0, 0, 0))
         self.assertEqual(result.getpixel((50, 50)), (255, 255, 255))
         self.assertNotEqual(result.getpixel((27, 50)), (0, 0, 0))
+
+    def test_reference_and_edit_regions_compile_as_separate_semantic_layers(self) -> None:
+        reference = RegionDefinition(
+            "person",
+            "Person",
+            PixelBox(10, 10, 80, 95),
+            "a woman in a blue coat",
+            face_identity_prompt="the same face",
+            spatial_role="subject",
+        )
+        target = RegionDefinition(
+            "sleeve-edit",
+            "Sleeve edit",
+            PixelBox(15, 45, 45, 80),
+            "embroidered gold cuffs",
+        )
+
+        combined = regional_edit_conditioning(
+            (reference,), (target,), "change the clothing"
+        )
+
+        self.assertEqual(combined[0], reference)
+        self.assertEqual(combined[1].spatial_role, "edit")
+        self.assertEqual(
+            combined[1].prompt,
+            "change the clothing. embroidered gold cuffs",
+        )
+        self.assertEqual(combined[1].box, target.box)
 
 
 class ImageEditProjectTests(unittest.TestCase):

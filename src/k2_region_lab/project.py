@@ -705,15 +705,15 @@ def project_state(document: dict[str, Any]) -> ProjectState:
             seed=int(edit_document.get("seed", 0)),
             denoise=float(edit_document.get("denoise", 0.15)),
             latent_feather_pixels=int(
-                edit_document.get("latent_feather_pixels", 48)
+                edit_document.get("latent_feather_pixels", 64)
             ),
             composite_feather_pixels=int(
-                edit_document.get("composite_feather_pixels", 64)
+                edit_document.get("composite_feather_pixels", 48)
             ),
             edit_entire_image=bool(edit_document.get("edit_entire_image", False)),
             preserve_identity=bool(edit_document.get("preserve_identity", True)),
             reference_description_retention=float(
-                edit_document.get("reference_description_retention", 0.25)
+                edit_document.get("reference_description_retention", 1.0)
             ),
             regional_prompt_strength=float(
                 edit_document.get("regional_prompt_strength", 1.0)
