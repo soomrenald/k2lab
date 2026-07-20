@@ -117,6 +117,29 @@ vendor-neutral environment discovery, or provide an exact CUDA/ROCm interpreter.
 
 ## Development
 
+### Web workspace preview
+
+The first web/RunPod milestone now includes a provider-neutral FastAPI control plane and a
+React/Vite interface. Its default in-memory backend is explicitly development-only: it
+simulates credential validation, GPU planning, costs, leases, and workspace lifecycle but
+cannot contact RunPod or create billable resources. The browser studio includes the
+Generate/Edit/Faces layout, local image loading, separate edit/reference layers, and live
+SVG region drawing, movement, and edge/corner resizing.
+
+```bash
+uv sync --extra dev --extra web
+uv run k2lab-web --reload
+
+# In a second terminal
+cd web/client
+npm install
+npm run dev
+```
+
+Open `http://127.0.0.1:5173`. See [`web/README.md`](web/README.md) for the exact implemented
+boundary and [`docs/runpod_web_workspace_spec.md`](docs/runpod_web_workspace_spec.md) for
+the production persistent-Pod and portable-workspace requirements.
+
 The model execution environment targets Python 3.12. The geometry and discovery tests intentionally use only the standard library so they can run before GPU dependencies are installed:
 
 ```bash
