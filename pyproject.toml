@@ -27,6 +27,11 @@ diagnostics = [
     "pyqtgraph>=0.13.7",
     "zarr>=3.0",
 ]
+web = [
+    "fastapi>=0.115,<1",
+    "httpx>=0.28,<1",
+    "uvicorn[standard]>=0.34,<1",
+]
 dev = [
     "pytest>=8.3",
     "ruff>=0.9",
@@ -34,6 +39,7 @@ dev = [
 
 [project.scripts]
 k2lab = "k2_region_lab.app:main"
+k2lab-web = "k2_region_lab.web.app:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/k2_region_lab"]
