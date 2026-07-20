@@ -6,6 +6,7 @@ Rectangle {
     id: root
 
     required property QtObject controller
+    signal openSetupRequested()
     color: "#111621"
     border.color: "#262d3c"
     border.width: 1
@@ -788,7 +789,7 @@ Rectangle {
                             }
                             Text {
                                 Layout.fillWidth: true
-                                text: "Open the compatibility settings window for model paths, worker launch, token emphasis, and projector diagnostics."
+                                text: "Configure runtime paths, model files, memory policy, and output defaults in the dedicated setup window."
                                 color: "#778095"
                                 wrapMode: Text.Wrap
                                 font.pixelSize: 11
@@ -796,7 +797,7 @@ Rectangle {
                             MiniButton {
                                 text: "Open setup window"
                                 Layout.fillWidth: true
-                                onClicked: controller.showLegacyWindow()
+                                onClicked: root.openSetupRequested()
                             }
                         }
                     }

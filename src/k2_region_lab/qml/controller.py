@@ -18,7 +18,10 @@ from PySide6.QtCore import (
 )
 from PySide6.QtWidgets import QFileDialog
 
+from k2_region_lab.config import ModelDirectories, discover_worker_python
 from k2_region_lab.lora import LoraBinding
+from k2_region_lab.memory import MEMORY_POLICIES, memory_policy
+from k2_region_lab.output import validate_filename_prefix
 from k2_region_lab.regions import PixelBox, RegionDefinition
 
 
@@ -169,6 +172,273 @@ class LoraListModel(QAbstractListModel):
         self.endResetModel()
 
 
+class SetupController(QObject):
+    """Staged runtime/model settings for the dedicated Qt Quick setup window."""
+
+    changed = Signal()
+    applied = Signal()
+    notification = Signal(str)
+
+    def __init__(self, backend, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self.backend = backend
+        self._values: dict[str, Any] = {}
+        self._baseline: dict[str, Any] = {}
+        self._revision = 0
+        self._status_snapshot: tuple[str, ...] | None = None
+        self._status_timer = QTimer(self)
+        self._status_timer.setInterval(500)
+        self._status_timer.timeout.connect(self.refreshStatus)
+        self._status_timer.start()
+        self.reset()
+
+    @Property(bool, notify=changed)
+    def dirty(self) -> bool:
+        return self._values != self._baseline
+
+    @Property(int, notify=changed)
+    def revision(self) -> int:
+        return self._revision
+
+    @Property("QVariantList", constant=True)
+    def memoryPolicyOptions(self) -> list[dict[str, str]]:
+        return [{"label": policy.label, "value": policy.key} for policy in MEMORY_POLICIES]
+
+    @Property(str, notify=changed)
+    def workerStatus(self) -> str:
+        return self.backend.worker_status.text()
+
+    @Property(str, notify=changed)
+    def acceleratorStatus(self) -> str:
+        return self.backend.accelerator_status.text()
+
+    @Property(str, notify=changed)
+    def modelStatus(self) -> str:
+        if self.backend.artifacts is None:
+            return "Models have not been discovered"
+        return "Model set complete" if self.backend.artifacts.complete else "Model set incomplete"
+
+    @Property(str, notify=changed)
+    def memoryStatus(self) -> str:
+        return self.backend.memory_status.text()
+
+    @Slot(str, result="QVariant")
+    def value(self, name: str):
+        return self._values.get(name)
+
+    @Slot(str, "QVariant")
+    def setValue(self, name: str, value) -> None:
+        if name not in self._values:
+            return
+        if name in {"reserveVram", "minimumRam"}:
+            normalized: Any = float(value)
+        elif name in {"cpuVae", "oomRecovery"}:
+            normalized = bool(value)
+        else:
+            normalized = str(value).strip()
+        if self._values[name] == normalized:
+            return
+        self._values[name] = normalized
+        if name == "memoryPolicy":
+            try:
+                policy = memory_policy(normalized)
+            except ValueError:
+                pass
+            else:
+                self._values.update(
+                    {
+                        "reserveVram": policy.reserve_vram_gb,
+                        "minimumRam": policy.minimum_system_ram_gb,
+                        "cpuVae": policy.cpu_vae,
+                        "oomRecovery": policy.oom_recovery,
+                    }
+                )
+        self._revision += 1
+        self.changed.emit()
+
+    @Slot()
+    def reset(self) -> None:
+        settings = self.backend.settings
+        directories = settings.model_directories
+        self._values = {
+            "comfyuiRoot": str(settings.comfyui_root),
+            "workerPython": str(settings.worker_python),
+            "transformer": str(directories.diffusion_model_file or ""),
+            "textEncoder": str(directories.text_encoder_file or ""),
+            "vae": str(directories.vae_file or ""),
+            "faceDetector": str(settings.face_detector_path or ""),
+            "memoryPolicy": settings.memory_policy,
+            "reserveVram": float(self.backend.reserve_vram_input.value()),
+            "minimumRam": float(self.backend.minimum_ram_input.value()),
+            "cpuVae": bool(self.backend.cpu_vae_input.isChecked()),
+            "oomRecovery": bool(self.backend.oom_recovery_input.isChecked()),
+            "outputDirectory": str(self.backend._output_directory),
+            "filenamePrefix": self.backend.filename_prefix_input.text(),
+        }
+        self._baseline = dict(self._values)
+        self._revision += 1
+        self.changed.emit()
+
+    @Slot(str)
+    def browseDirectory(self, name: str) -> None:
+        if name not in {"comfyuiRoot", "outputDirectory"}:
+            return
+        selected = QFileDialog.getExistingDirectory(
+            None,
+            "Select ComfyUI checkout" if name == "comfyuiRoot" else "Select output folder",
+            str(self._values[name]),
+        )
+        if selected:
+            self.setValue(name, str(Path(selected).expanduser().resolve()))
+
+    @Slot(str)
+    def browseFile(self, name: str) -> None:
+        definitions = {
+            "workerPython": ("Select GPU worker Python", "All files (*)"),
+            "transformer": ("Select Krea transformer", "Safetensors (*.safetensors)"),
+            "textEncoder": ("Select text encoder", "Safetensors (*.safetensors)"),
+            "vae": ("Select VAE", "Safetensors (*.safetensors)"),
+            "faceDetector": ("Select face detector", "ONNX model (*.onnx)"),
+        }
+        if name not in definitions:
+            return
+        title, file_filter = definitions[name]
+        current = Path(str(self._values[name] or self._values["comfyuiRoot"]))
+        start = current if current.is_dir() else current.parent
+        selected, _ = QFileDialog.getOpenFileName(None, title, str(start), file_filter)
+        if selected:
+            path = Path(selected).expanduser()
+            self.setValue(name, str(path.absolute() if name == "workerPython" else path.resolve()))
+
+    @Slot(str)
+    def useAutomatic(self, name: str) -> None:
+        if name == "workerPython":
+            self.setValue(
+                name,
+                str(discover_worker_python(Path(self._values["comfyuiRoot"]))),
+            )
+        elif name in {"transformer", "textEncoder", "vae", "faceDetector"}:
+            self.setValue(name, "")
+
+    @Slot(result=bool)
+    def apply(self) -> bool:
+        if self.backend._generation_active:
+            self.notification.emit("Stop the current generation before applying setup changes")
+            return False
+        try:
+            policy = memory_policy(str(self._values["memoryPolicy"]))
+            prefix = validate_filename_prefix(str(self._values["filenamePrefix"]))
+            comfyui_root = Path(self._values["comfyuiRoot"]).expanduser().resolve()
+            worker_python = Path(self._values["workerPython"]).expanduser().absolute()
+            output_directory = Path(self._values["outputDirectory"]).expanduser().resolve()
+            reserve_vram = max(policy.reserve_vram_gb, float(self._values["reserveVram"]))
+            minimum_ram = max(policy.minimum_system_ram_gb, float(self._values["minimumRam"]))
+        except (OSError, TypeError, ValueError) as error:
+            self.notification.emit(f"Could not apply settings: {error}")
+            return False
+
+        current = self.backend.settings
+        current_directories = current.model_directories
+        if comfyui_root != current.comfyui_root:
+            current_directories = ModelDirectories(
+                diffusion_models=comfyui_root / "models" / "diffusion_models",
+                text_encoders=comfyui_root / "models" / "text_encoders",
+                vae=comfyui_root / "models" / "vae",
+                loras=comfyui_root / "models" / "loras",
+                upscale_models=comfyui_root / "models" / "upscale_models",
+            )
+
+        def optional_path(name: str) -> Path | None:
+            text = str(self._values[name]).strip()
+            return Path(text).expanduser().resolve() if text else None
+
+        directories = replace(
+            current_directories,
+            diffusion_model_file=optional_path("transformer"),
+            text_encoder_file=optional_path("textEncoder"),
+            vae_file=optional_path("vae"),
+        )
+        updated = replace(
+            current,
+            comfyui_root=comfyui_root,
+            worker_python=worker_python,
+            model_directories=directories,
+            face_detector_path=optional_path("faceDetector"),
+            memory_policy=policy.key,
+            reserve_vram_gb=reserve_vram,
+            minimum_system_ram_gb=minimum_ram,
+            cpu_vae=bool(self._values["cpuVae"]),
+            oom_recovery=bool(self._values["oomRecovery"]),
+            output_directory=output_directory,
+            filename_prefix=prefix,
+        )
+        if not self.backend._apply_runtime_settings(updated, rediscover=True):
+            return False
+
+        policy_index = self.backend.memory_policy_input.findData(policy.key)
+        self.backend.memory_policy_input.blockSignals(True)
+        self.backend.memory_policy_input.setCurrentIndex(policy_index)
+        self.backend.memory_policy_input.blockSignals(False)
+        self.backend.reserve_vram_input.setValue(reserve_vram)
+        self.backend.minimum_ram_input.setValue(minimum_ram)
+        self.backend.cpu_vae_input.setChecked(bool(self._values["cpuVae"]))
+        self.backend.oom_recovery_input.setChecked(bool(self._values["oomRecovery"]))
+        self.backend._output_directory = output_directory
+        self.backend.output_directory_input.setText(str(output_directory))
+        self.backend.filename_prefix_input.setText(prefix)
+        self.backend.events.addItem("Applied runtime and model setup changes")
+        self.reset()
+        self.applied.emit()
+        self.notification.emit("Settings applied")
+        return True
+
+    @Slot()
+    def discoverModels(self) -> None:
+        if not self._require_applied():
+            return
+        self.backend.discover_models()
+        self.refreshStatus()
+
+    @Slot()
+    def startWorker(self) -> None:
+        if self._require_applied():
+            self.backend._start_worker()
+
+    @Slot()
+    def validateModels(self) -> None:
+        if self._require_applied():
+            self.backend._validate_worker_models()
+
+    @Slot()
+    def loadModel(self) -> None:
+        if self._require_applied():
+            self.backend._load_worker_model()
+
+    @Slot()
+    def diagnoseAccelerator(self) -> None:
+        if self._require_applied():
+            self.backend._diagnose_accelerator()
+
+    @Slot()
+    def refreshStatus(self) -> None:
+        snapshot = (
+            self.workerStatus,
+            self.acceleratorStatus,
+            self.modelStatus,
+            self.memoryStatus,
+        )
+        if snapshot != self._status_snapshot:
+            self._status_snapshot = snapshot
+            self._revision += 1
+            self.changed.emit()
+
+    def _require_applied(self) -> bool:
+        if self.dirty:
+            self.notification.emit("Apply the staged settings before running this action")
+            return False
+        return True
+
+
 class QmlWorkspaceController(QObject):
     """Presentation adapter over the stable Widgets-era application controller.
 
@@ -202,6 +472,7 @@ class QmlWorkspaceController(QObject):
         self._edit_regions = RegionListModel(self)
         self._reference_regions = RegionListModel(self)
         self._loras = LoraListModel(self)
+        self._setup_controller = SetupController(self.backend, self)
         self.backend.worker_client.event_received.connect(self._worker_event)
         self.backend.worker_client.process_status.connect(self._worker_status)
         self._refresh_timer = QTimer(self)
@@ -231,6 +502,10 @@ class QmlWorkspaceController(QObject):
     @Property(QObject, constant=True)
     def loraModel(self) -> QObject:
         return self._loras
+
+    @Property(QObject, constant=True)
+    def setupController(self) -> QObject:
+        return self._setup_controller
 
     @Property("QVariantMap", notify=selectionChanged)
     def selectedRegion(self) -> dict[str, Any]:
@@ -808,12 +1083,6 @@ class QmlWorkspaceController(QObject):
             path = path.with_suffix(path.suffix + ".json")
         self.backend._save_project_to(path, show_error_dialog=True)
         self.refresh()
-
-    @Slot()
-    def showLegacyWindow(self) -> None:
-        self.backend.show()
-        self.backend.raise_()
-        self.backend.activateWindow()
 
     @Slot()
     def refresh(self) -> None:

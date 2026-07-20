@@ -19,10 +19,27 @@ ApplicationWindow {
     property real compareValue: 0.5
     property string lastWorkspaceMode: ""
     property string lastEditSource: ""
+    property var setupWindowInstance: null
     readonly property QtObject studio: controller
     property real comparisonPosition: resultMode.currentIndex === 0 ? 0
                                       : (resultMode.currentIndex === 1 ? 1 : compareValue)
     readonly property color accent: "#7c8cff"
+
+    function openSetupWindow() {
+        if (setupWindowInstance === null) {
+            let component = Qt.createComponent("SetupWindow.qml")
+            if (component.status !== Component.Ready) {
+                toastMessage.text = "Could not open setup: " + component.errorString()
+                toast.visible = true
+                toastTimer.restart()
+                return
+            }
+            setupWindowInstance = component.createObject(window, {
+                "controller": window.studio.setupController
+            })
+        }
+        setupWindowInstance.openWindow()
+    }
 
     component StudioButton: Button {
         id: studioButton
@@ -206,7 +223,7 @@ ApplicationWindow {
                         text: "⚙"
                         ToolTip.visible: hovered
                         ToolTip.text: "Runtime and model setup"
-                        onClicked: controller.showLegacyWindow()
+                        onClicked: window.openSetupWindow()
                     }
                 }
             }
@@ -410,6 +427,7 @@ ApplicationWindow {
                         Layout.minimumWidth: visible ? 340 : 0
                         Layout.fillHeight: true
                         controller: window.studio
+                        onOpenSetupRequested: window.openSetupWindow()
                     }
                 }
             }

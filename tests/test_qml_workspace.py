@@ -13,7 +13,7 @@ PYSIDE_AVAILABLE = importlib.util.find_spec("PySide6") is not None
 
 if PYSIDE_AVAILABLE:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    from PySide6.QtCore import QUrl
+    from PySide6.QtCore import QMetaObject, QObject, QUrl
     from PySide6.QtQml import QQmlApplicationEngine
     from PySide6.QtWidgets import QApplication
     from PIL import Image
@@ -83,8 +83,18 @@ class QmlWorkspaceTests(unittest.TestCase):
             self.application.processEvents()
 
             self.assertEqual(len(engine.rootObjects()), 1)
-            self.assertEqual(engine.rootObjects()[0].property("title"), "K2 Region Lab")
-            engine.rootObjects()[0].close()
+            root_object = engine.rootObjects()[0]
+            self.assertEqual(root_object.property("title"), "K2 Region Lab")
+            self.assertTrue(QMetaObject.invokeMethod(root_object, "openSetupWindow"))
+            self.application.processEvents()
+            setup_window = root_object.findChild(QObject, "setupWindow")
+            self.assertIsNotNone(setup_window)
+            self.assertTrue(setup_window.property("visible"))
+            self.assertTrue(QMetaObject.invokeMethod(setup_window, "requestClose"))
+            self.application.processEvents()
+            self.assertFalse(setup_window.property("visible"))
+            self.assertTrue(root_object.property("visible"))
+            root_object.close()
             backend.close()
 
     def test_lora_can_be_deactivated_reactivated_and_removed(self) -> None:
@@ -139,6 +149,38 @@ class QmlWorkspaceTests(unittest.TestCase):
             self.assertEqual(Path(controller.imageSource.toLocalFile()), source.resolve())
             self.assertEqual(Path(controller.resultSource.toLocalFile()), result.resolve())
             self.assertEqual(controller.activeRegionCount, 1)
+            controller.deleteLater()
+            backend.close()
+
+    def test_setup_settings_are_staged_until_apply_and_can_be_discarded(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / "renders"
+            backend = self.make_window(root)
+            controller = QmlWorkspaceController(backend)
+            setup = controller.setupController
+            original_prefix = backend.filename_prefix_input.text()
+
+            setup.setValue("filenamePrefix", "discard-me")
+            self.assertTrue(setup.dirty)
+            self.assertEqual(backend.filename_prefix_input.text(), original_prefix)
+            setup.reset()
+            self.assertFalse(setup.dirty)
+            self.assertEqual(backend.filename_prefix_input.text(), original_prefix)
+
+            setup.setValue("memoryPolicy", "custom")
+            setup.setValue("reserveVram", 2.5)
+            setup.setValue("minimumRam", 10.0)
+            setup.setValue("outputDirectory", str(output))
+            setup.setValue("filenamePrefix", "qml-setup")
+            self.assertTrue(setup.apply())
+
+            self.assertFalse(setup.dirty)
+            self.assertEqual(backend.settings.memory_policy, "custom")
+            self.assertEqual(backend.reserve_vram_input.value(), 2.5)
+            self.assertEqual(backend.minimum_ram_input.value(), 10.0)
+            self.assertEqual(backend._output_directory, output.resolve())
+            self.assertEqual(backend.filename_prefix_input.text(), "qml-setup")
             controller.deleteLater()
             backend.close()
 

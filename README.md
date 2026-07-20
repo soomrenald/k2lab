@@ -145,10 +145,11 @@ k2lab
 
 The default interface is the Qt Quick workspace. It keeps the image canvas large,
 uses a fixed contextual inspector for prompts, regions, LoRAs, and advanced controls,
-and keeps progress plus the active Run/Stop action visible along the bottom. During
-the QML migration, model/runtime configuration and research diagnostics remain in
-the compatibility settings window opened with the gear button. To launch the entire
-previous Qt Widgets interface directly, use:
+and keeps progress plus the active Run/Stop action visible along the bottom. The
+matching Qt Quick setup window opened with the gear button contains only runtime,
+model, memory, and output configuration. Its changes are staged until **Apply
+settings**, and closing it prompts to apply or discard any outstanding edits. To
+launch the entire previous Qt Widgets interface directly, use:
 
 ```bash
 k2lab --legacy-widgets
@@ -208,18 +209,17 @@ available directly over the canvas. The inspector can be hidden to maximize canv
 space, while the bottom action bar always retains status, memory telemetry, progress,
 and the relevant generation action.
 
-The compatibility setup window contains **Model & memory**, **Generation & spatial**,
-**LoRA library & scope**, **Token emphasis**, and **Projector** tabs. It can select the
-ComfyUI checkout and its CUDA- or ROCm-enabled Python interpreter. The **Krea
-checkpoint** selector lists every `krea*.safetensors` transformer in the configured
-ComfyUI diffusion-model directory; selecting one pins its exact path in worker
-payloads and saved projects. The transformer, text encoder, and VAE retain
-**Choose…** and **Auto** controls, and the compatible NanoDet face detector is also
-selectable. Use **Validate tensors** before **Load selected Krea 2 model**. The Raw
-and Turbo checkpoints share the architecture targeted by regional attention and
-routed LoRAs, but the current generation path remains the eight-step, CFG-free Turbo
-path. **Sampler** and **Scheduler** reproduce the ordered ComfyUI registries, are
-validated by the worker, and round-trip through project JSON and PNG metadata.
+The dedicated setup window can select the ComfyUI checkout, its CUDA- or ROCm-enabled
+Python interpreter, exact transformer, text encoder, VAE, and face-detector files,
+memory policy, and output defaults. Exact model files may be returned to automatic
+discovery. Worker discovery, startup, tensor validation, model loading, and
+accelerator diagnosis are available as setup actions, but prompt, sampling,
+regional, image-edit, face-refinement, and LoRA controls remain exclusively in the
+main workspace. Use **Validate** before **Load model**. The Raw and Turbo checkpoints
+share the architecture targeted by regional attention and routed LoRAs, but the
+current generation path remains the eight-step, CFG-free Turbo path. **Sampler** and
+**Scheduler** reproduce the ordered ComfyUI registries, are validated by the worker,
+and round-trip through project JSON and PNG metadata.
 
 The **Projector** tab controls Krea's 12-column `txtfusion.projector` delta. It provides the `FilterBypass2`, `FilterBypass3`, `skc3vo`, and `z0jglf` reference presets, twelve editable vector fields, and one multiplier that scales the entire vector. The control is off by default and is saved in project JSON and PNG metadata. Each subject region also has a separate **Face identity prompt** for the character trigger and stable face/hair description. **Face identity protection** scales the projector delta only on that field's exact Qwen token span: `0` applies the complete preset, while `1` retains the baseline projector mixture for those identity tokens. Body, pose, action, and scene tokens continue receiving the complete preset, and there is no image-space exclusion mask. K2 Lab installs this token-selective projector delta before regional LoRA hooks, preserving regional LoRA routing unchanged.
 
