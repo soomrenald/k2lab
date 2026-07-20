@@ -16,6 +16,7 @@ if PYSIDE_AVAILABLE:
     from PySide6.QtCore import QUrl
     from PySide6.QtQml import QQmlApplicationEngine
     from PySide6.QtWidgets import QApplication
+    from PIL import Image
 
     from k2_region_lab.config import AppSettings, ModelDirectories
     from k2_region_lab.desktop.main_window import MainWindow
@@ -118,6 +119,26 @@ class QmlWorkspaceTests(unittest.TestCase):
             controller.removeLora(lora_id)
             self.assertEqual(backend.lora_library.entries(), ())
             self.assertEqual(backend.lora_list.count(), 0)
+            controller.deleteLater()
+            backend.close()
+
+    def test_edit_canvas_source_remains_the_original_when_a_result_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "original.png"
+            result = root / "edited.png"
+            Image.new("RGB", (320, 256), "navy").save(source)
+            Image.new("RGB", (320, 256), "orange").save(result)
+            backend = self.make_window(root)
+            self.assertTrue(backend._set_edit_source(source, confirm_reset=False))
+            backend._edit_result_path = result
+            controller = QmlWorkspaceController(backend)
+            controller.setMode("edit")
+            controller.createRegion(20, 20, 180, 180)
+
+            self.assertEqual(Path(controller.imageSource.toLocalFile()), source.resolve())
+            self.assertEqual(Path(controller.resultSource.toLocalFile()), result.resolve())
+            self.assertEqual(controller.activeRegionCount, 1)
             controller.deleteLater()
             backend.close()
 

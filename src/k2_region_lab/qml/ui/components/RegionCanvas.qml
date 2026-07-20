@@ -129,6 +129,7 @@ Item {
                 required property real x1
                 required property real y1
                 required property bool regionEnabled
+                required property int index
 
                 x: root.imageX(x0)
                 y: root.imageY(y0)
@@ -139,6 +140,7 @@ Item {
                               ? "white" : root.layerColor
                 border.width: controller.selectedRegionId === regionId ? 2 : 1
                 opacity: regionEnabled ? 1 : 0.55
+                z: controller.selectedRegionId === regionId ? 1000 : index
 
                 Rectangle {
                     anchors.left: parent.left
@@ -165,6 +167,7 @@ Item {
                 DragHandler {
                     id: moveHandler
                     enabled: !controller.drawMode
+                             && controller.selectedRegionId === regionId
                     target: regionBox
                     xAxis.minimum: root.paintedX
                     xAxis.maximum: root.paintedX + root.paintedWidth - regionBox.width
@@ -186,12 +189,14 @@ Item {
 
                 TapHandler {
                     enabled: !controller.drawMode
+                             && controller.selectedRegionId !== regionId
                     onTapped: controller.selectRegion(regionId)
                 }
 
                 Rectangle {
                     id: bottomRightHandle
                     visible: controller.selectedRegionId === regionId
+                    z: 30
                     width: 13
                     height: 13
                     radius: 4
@@ -200,6 +205,7 @@ Item {
                     border.width: 2
                     x: parent.width - 6
                     y: parent.height - 6
+                    HoverHandler { cursorShape: Qt.SizeFDiagCursor }
 
                     DragHandler {
                         target: bottomRightHandle
@@ -223,6 +229,7 @@ Item {
                 Rectangle {
                     id: topLeftHandle
                     visible: controller.selectedRegionId === regionId
+                    z: 30
                     width: 13
                     height: 13
                     radius: 4
@@ -231,6 +238,7 @@ Item {
                     border.width: 2
                     x: -6
                     y: -6
+                    HoverHandler { cursorShape: Qt.SizeFDiagCursor }
 
                     DragHandler {
                         target: topLeftHandle
@@ -247,6 +255,170 @@ Item {
                                     root.pixelX(regionBox.x + regionBox.width),
                                     root.pixelY(regionBox.y + regionBox.height))
                             }
+                        }
+                    }
+                }
+
+                Rectangle {
+                    id: topRightHandle
+                    visible: controller.selectedRegionId === regionId
+                    z: 30
+                    width: 13
+                    height: 13
+                    radius: 4
+                    color: "white"
+                    border.color: root.layerColor
+                    border.width: 2
+                    x: parent.width - 6
+                    y: -6
+                    HoverHandler { cursorShape: Qt.SizeBDiagCursor }
+                    DragHandler {
+                        target: topRightHandle
+                        xAxis.minimum: 18
+                        xAxis.maximum: root.paintedX + root.paintedWidth - regionBox.x - 6.5
+                        yAxis.minimum: root.paintedY - regionBox.y - 6.5
+                        yAxis.maximum: regionBox.height - 18
+                        onActiveChanged: if (!active) {
+                            controller.updateRegionGeometry(
+                                regionId,
+                                root.pixelX(regionBox.x),
+                                root.pixelY(regionBox.y + topRightHandle.y + 6.5),
+                                root.pixelX(regionBox.x + topRightHandle.x + 6.5),
+                                root.pixelY(regionBox.y + regionBox.height))
+                        }
+                    }
+                }
+
+                Rectangle {
+                    id: bottomLeftHandle
+                    visible: controller.selectedRegionId === regionId
+                    z: 30
+                    width: 13
+                    height: 13
+                    radius: 4
+                    color: "white"
+                    border.color: root.layerColor
+                    border.width: 2
+                    x: -6
+                    y: parent.height - 6
+                    HoverHandler { cursorShape: Qt.SizeBDiagCursor }
+                    DragHandler {
+                        target: bottomLeftHandle
+                        xAxis.minimum: root.paintedX - regionBox.x - 6.5
+                        xAxis.maximum: regionBox.width - 18
+                        yAxis.minimum: 18
+                        yAxis.maximum: root.paintedY + root.paintedHeight - regionBox.y - 6.5
+                        onActiveChanged: if (!active) {
+                            controller.updateRegionGeometry(
+                                regionId,
+                                root.pixelX(regionBox.x + bottomLeftHandle.x + 6.5),
+                                root.pixelY(regionBox.y),
+                                root.pixelX(regionBox.x + regionBox.width),
+                                root.pixelY(regionBox.y + bottomLeftHandle.y + 6.5))
+                        }
+                    }
+                }
+
+                Rectangle {
+                    id: leftEdge
+                    visible: controller.selectedRegionId === regionId
+                    z: 20
+                    x: -5
+                    y: 8
+                    width: 10
+                    height: Math.max(0, parent.height - 16)
+                    color: "transparent"
+                    HoverHandler { cursorShape: Qt.SizeHorCursor }
+                    DragHandler {
+                        target: leftEdge
+                        xAxis.minimum: root.paintedX - regionBox.x - 5
+                        xAxis.maximum: regionBox.width - 21
+                        yAxis.enabled: false
+                        onActiveChanged: if (!active) {
+                            controller.updateRegionGeometry(
+                                regionId,
+                                root.pixelX(regionBox.x + leftEdge.x + 5),
+                                root.pixelY(regionBox.y),
+                                root.pixelX(regionBox.x + regionBox.width),
+                                root.pixelY(regionBox.y + regionBox.height))
+                        }
+                    }
+                }
+
+                Rectangle {
+                    id: rightEdge
+                    visible: controller.selectedRegionId === regionId
+                    z: 20
+                    x: parent.width - 5
+                    y: 8
+                    width: 10
+                    height: Math.max(0, parent.height - 16)
+                    color: "transparent"
+                    HoverHandler { cursorShape: Qt.SizeHorCursor }
+                    DragHandler {
+                        target: rightEdge
+                        xAxis.minimum: 11
+                        xAxis.maximum: root.paintedX + root.paintedWidth - regionBox.x - 5
+                        yAxis.enabled: false
+                        onActiveChanged: if (!active) {
+                            controller.updateRegionGeometry(
+                                regionId,
+                                root.pixelX(regionBox.x),
+                                root.pixelY(regionBox.y),
+                                root.pixelX(regionBox.x + rightEdge.x + 5),
+                                root.pixelY(regionBox.y + regionBox.height))
+                        }
+                    }
+                }
+
+                Rectangle {
+                    id: topEdge
+                    visible: controller.selectedRegionId === regionId
+                    z: 20
+                    x: 8
+                    y: -5
+                    width: Math.max(0, parent.width - 16)
+                    height: 10
+                    color: "transparent"
+                    HoverHandler { cursorShape: Qt.SizeVerCursor }
+                    DragHandler {
+                        target: topEdge
+                        xAxis.enabled: false
+                        yAxis.minimum: root.paintedY - regionBox.y - 5
+                        yAxis.maximum: regionBox.height - 21
+                        onActiveChanged: if (!active) {
+                            controller.updateRegionGeometry(
+                                regionId,
+                                root.pixelX(regionBox.x),
+                                root.pixelY(regionBox.y + topEdge.y + 5),
+                                root.pixelX(regionBox.x + regionBox.width),
+                                root.pixelY(regionBox.y + regionBox.height))
+                        }
+                    }
+                }
+
+                Rectangle {
+                    id: bottomEdge
+                    visible: controller.selectedRegionId === regionId
+                    z: 20
+                    x: 8
+                    y: parent.height - 5
+                    width: Math.max(0, parent.width - 16)
+                    height: 10
+                    color: "transparent"
+                    HoverHandler { cursorShape: Qt.SizeVerCursor }
+                    DragHandler {
+                        target: bottomEdge
+                        xAxis.enabled: false
+                        yAxis.minimum: 11
+                        yAxis.maximum: root.paintedY + root.paintedHeight - regionBox.y - 5
+                        onActiveChanged: if (!active) {
+                            controller.updateRegionGeometry(
+                                regionId,
+                                root.pixelX(regionBox.x),
+                                root.pixelY(regionBox.y),
+                                root.pixelX(regionBox.x + regionBox.width),
+                                root.pixelY(regionBox.y + bottomEdge.y + 5))
                         }
                     }
                 }

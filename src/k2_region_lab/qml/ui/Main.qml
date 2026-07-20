@@ -17,6 +17,8 @@ ApplicationWindow {
 
     property bool inspectorVisible: true
     property real compareValue: 0.5
+    property string lastWorkspaceMode: ""
+    property string lastEditSource: ""
     readonly property QtObject studio: controller
     property real comparisonPosition: resultMode.currentIndex === 0 ? 0
                                       : (resultMode.currentIndex === 1 ? 1 : compareValue)
@@ -97,6 +99,16 @@ ApplicationWindow {
             toastMessage.text = message
             toast.visible = true
             toastTimer.restart()
+        }
+        function onStateChanged() {
+            let source = controller.imageSource.toString()
+            if (controller.mode === "edit"
+                    && (window.lastWorkspaceMode !== "edit"
+                        || source !== window.lastEditSource)) {
+                resultMode.currentIndex = 0
+            }
+            window.lastWorkspaceMode = controller.mode
+            window.lastEditSource = source
         }
     }
 
@@ -380,6 +392,15 @@ ApplicationWindow {
                                 font.pixelSize: 12
                             }
                         }
+                    }
+
+                    RegionStrip {
+                        visible: controller.imageSource.toString().length > 0
+                                 && controller.activeRegionCount > 0
+                        Layout.preferredWidth: visible ? 184 : 0
+                        Layout.minimumWidth: visible ? 168 : 0
+                        Layout.fillHeight: true
+                        controller: window.studio
                     }
 
                     InspectorPanel {

@@ -368,6 +368,12 @@ class QmlWorkspaceController(QObject):
     def faceCount(self) -> int:
         return len(self.backend._face_detections)
 
+    @Property(int, notify=stateChanged)
+    def activeRegionCount(self) -> int:
+        if self._mode == self.FACE_REFINEMENT:
+            return len(self.backend._face_detections)
+        return len(self._active_regions())
+
     @Property("QVariantList", notify=stateChanged)
     def faces(self) -> list[dict[str, Any]]:
         selected = set(self.backend._selected_face_indices())
