@@ -85,6 +85,29 @@ class QmlWorkspaceTests(unittest.TestCase):
             self.assertEqual(len(engine.rootObjects()), 1)
             root_object = engine.rootObjects()[0]
             self.assertEqual(root_object.property("title"), "K2 Region Lab")
+
+            comparison_mode = root_object.findChild(QObject, "comparisonMode")
+            canvas_stage = root_object.findChild(QObject, "canvasStage")
+            result_clip = root_object.findChild(QObject, "comparisonResultClip")
+            self.assertIsNotNone(comparison_mode)
+            self.assertIsNotNone(canvas_stage)
+            self.assertIsNotNone(result_clip)
+            comparison_mode.setProperty("currentIndex", 2)
+            root_object.setProperty("compareValue", 0.25)
+            self.application.processEvents()
+            self.assertAlmostEqual(
+                result_clip.property("width"),
+                canvas_stage.property("width") * 0.25,
+                delta=1.0,
+            )
+            root_object.setProperty("compareValue", 0.75)
+            self.application.processEvents()
+            self.assertAlmostEqual(
+                result_clip.property("width"),
+                canvas_stage.property("width") * 0.75,
+                delta=1.0,
+            )
+
             self.assertTrue(QMetaObject.invokeMethod(root_object, "openSetupWindow"))
             self.application.processEvents()
             setup_window = root_object.findChild(QObject, "setupWindow")

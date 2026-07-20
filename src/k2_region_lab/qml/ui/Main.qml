@@ -352,6 +352,7 @@ ApplicationWindow {
 
                         RegionCanvas {
                             id: canvas
+                            objectName: "mainRegionCanvas"
                             anchors.fill: parent
                             controller: window.studio
                             comparisonPosition: window.comparisonPosition
@@ -374,6 +375,7 @@ ApplicationWindow {
                                 spacing: 7
                                 ComboBox {
                                     id: resultMode
+                                    objectName: "comparisonMode"
                                     model: ["Source", "Result", "Compare"]
                                     currentIndex: 1
                                     implicitWidth: 92

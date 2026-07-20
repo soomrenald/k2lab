@@ -45,6 +45,7 @@ Item {
 
     Rectangle {
         id: stage
+        objectName: "canvasStage"
         anchors.fill: parent
         radius: 12
         color: "#080b12"
@@ -82,11 +83,15 @@ Item {
         }
 
         Item {
-            anchors.fill: parent
+            id: comparisonResultClip
+            objectName: "comparisonResultClip"
+            x: 0
+            y: 0
+            height: stage.height
+            width: stage.width * root.comparisonPosition
             clip: true
             visible: controller.resultSource.toString().length > 0
                      && root.comparisonPosition > 0
-            width: parent.width * root.comparisonPosition
 
             Image {
                 width: stage.width
