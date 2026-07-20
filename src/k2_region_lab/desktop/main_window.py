@@ -59,9 +59,11 @@ from k2_region_lab.face_detail import (
     discover_face_detector,
     expanded_square_crop,
 )
+from k2_region_lab.image_edit import ImageEditState, load_source_image
 from k2_region_lab.lora import (
     CHARACTER_IDENTITY_LORA_ROUTING,
     STANDARD_LORA_ROUTING,
+    LoraBinding,
     LoraLibrary,
 )
 from k2_region_lab.memory import (
@@ -107,6 +109,7 @@ from k2_region_lab.worker.protocol import CommandKind
 
 
 GLOBAL_SCOPE_ID = "__global__"
+DISABLED_SCOPE_ID = "__disabled__"
 
 
 class EventListWidget(QListWidget):
@@ -373,6 +376,12 @@ class MainWindow(QMainWindow):
         self._model_loaded = False
         self._current_project_path: Path | None = None
         self._background_image_path: Path | None = None
+        self.edit_regions: list[RegionDefinition] = []
+        self._edit_region_number = 0
+        self._edit_loading_region_form = False
+        self._edit_source_path: Path | None = None
+        self._edit_result_path: Path | None = None
+        self._edit_lora_bindings: dict[str, LoraBinding] = {}
         self._face_source_path: Path | None = None
         self._face_result_path: Path | None = None
         self._face_detections: list[dict[str, object]] = []
@@ -382,6 +391,7 @@ class MainWindow(QMainWindow):
         self._upscale_model_path = settings.default_upscale_model
         self._generation_active = False
         self._pending_generation_payload: dict[str, object] | None = None
+        self._pending_image_edit_payload: dict[str, object] | None = None
         self._pending_face_refinement_payload: dict[str, object] | None = None
         self._batch_base_payload: dict[str, object] | None = None
         self._batch_runs_remaining = 0
@@ -422,7 +432,9 @@ class MainWindow(QMainWindow):
         generation_layout.addLayout(canvas_actions)
         generation_layout.addWidget(self.canvas, 1)
         self.workspace_tabs.addTab(generation_page, "Generation canvas")
+        self._build_image_edit_tab()
         self._build_face_refinement_tab()
+        self.workspace_tabs.currentChanged.connect(self._workspace_tab_changed)
         self.setCentralWidget(self.workspace_tabs)
         self.canvas.region_created.connect(self._region_created)
         self.canvas.region_changed.connect(self._region_changed)
@@ -641,6 +653,184 @@ class MainWindow(QMainWindow):
         dock.setWidget(self._scrollable(body))
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, dock)
         self.prompt_dock = dock
+
+    def _build_image_edit_tab(self) -> None:
+        page = QWidget()
+        page_layout = QVBoxLayout(page)
+        source_row = QHBoxLayout()
+        self.edit_source_input = QLineEdit()
+        self.edit_source_input.setReadOnly(True)
+        self.edit_source_input.setPlaceholderText("Select a PNG, JPEG, or WebP image…")
+        browse = QPushButton("Load image…")
+        browse.clicked.connect(self._browse_edit_source)
+        source_row.addWidget(QLabel("Source"))
+        source_row.addWidget(self.edit_source_input, 1)
+        source_row.addWidget(browse)
+        page_layout.addLayout(source_row)
+
+        controls_body = QWidget()
+        controls = QGridLayout(controls_body)
+        self.edit_seed_input = QSpinBox()
+        self.edit_seed_input.setRange(0, 2_147_483_647)
+        self.edit_steps_input = QSpinBox()
+        self.edit_steps_input.setRange(1, 100)
+        self.edit_steps_input.setValue(8)
+        self.edit_sampler_input = QComboBox()
+        for sampler in COMFYUI_SAMPLERS:
+            self.edit_sampler_input.addItem(sampler, sampler)
+        self.edit_scheduler_input = QComboBox()
+        for scheduler in COMFYUI_SCHEDULERS:
+            self.edit_scheduler_input.addItem(scheduler, scheduler)
+        self.edit_denoise_input = QDoubleSpinBox()
+        self.edit_denoise_input.setRange(0.05, 1.0)
+        self.edit_denoise_input.setDecimals(2)
+        self.edit_denoise_input.setSingleStep(0.05)
+        self.edit_denoise_input.setValue(0.35)
+        self.edit_composite_feather_input = QSpinBox()
+        self.edit_composite_feather_input.setRange(0, 256)
+        self.edit_composite_feather_input.setSuffix(" px")
+        self.edit_composite_feather_input.setValue(32)
+        self.edit_regional_strength_input = QDoubleSpinBox()
+        self.edit_regional_strength_input.setRange(0.1, 10.0)
+        self.edit_regional_strength_input.setValue(1.0)
+        self.edit_outside_penalty_input = QDoubleSpinBox()
+        self.edit_outside_penalty_input.setRange(0.0, 10.0)
+        self.edit_outside_penalty_input.setValue(1.0)
+        self.edit_spatial_falloff_input = QSpinBox()
+        self.edit_spatial_falloff_input.setRange(0, 2048)
+        self.edit_spatial_falloff_input.setSuffix(" px")
+        self.edit_spatial_falloff_input.setValue(128)
+        self.edit_subject_competition_input = QCheckBox("Separate overlapping subjects")
+        self.edit_subject_competition_input.setChecked(True)
+        self.edit_subject_fill_input = QCheckBox("Make subjects fill boxes")
+        self.edit_subject_fill_input.setChecked(True)
+        self.edit_late_step_scale_input = QDoubleSpinBox()
+        self.edit_late_step_scale_input.setRange(0.0, 1.0)
+        self.edit_late_step_scale_input.setDecimals(2)
+        self.edit_late_step_scale_input.setValue(0.35)
+        self.edit_lora_adaptation_input = QCheckBox("Adapt from regional LoRA delta")
+        self.edit_lora_adaptation_gain_input = QDoubleSpinBox()
+        self.edit_lora_adaptation_gain_input.setRange(0.0, 1.0)
+        self.edit_lora_adaptation_gain_input.setDecimals(2)
+        self.edit_lora_adaptation_gain_input.setValue(0.35)
+        edit_controls = (
+            ("Seed", self.edit_seed_input),
+            ("Steps", self.edit_steps_input),
+            ("Sampler", self.edit_sampler_input),
+            ("Scheduler", self.edit_scheduler_input),
+            ("Denoise", self.edit_denoise_input),
+            ("Composite feather", self.edit_composite_feather_input),
+            ("Inside boost", self.edit_regional_strength_input),
+            ("Outside penalty", self.edit_outside_penalty_input),
+            ("Spatial falloff", self.edit_spatial_falloff_input),
+            ("Late-step scale", self.edit_late_step_scale_input),
+            ("LoRA response", self.edit_lora_adaptation_gain_input),
+        )
+        for index, (label, control) in enumerate(edit_controls):
+            row = index // 4
+            column = (index % 4) * 2
+            controls.addWidget(QLabel(label), row, column)
+            controls.addWidget(control, row, column + 1)
+        option_row = len(edit_controls) // 4 + 1
+        controls.addWidget(self.edit_subject_competition_input, option_row, 0, 1, 2)
+        controls.addWidget(self.edit_subject_fill_input, option_row, 2, 1, 2)
+        controls.addWidget(self.edit_lora_adaptation_input, option_row, 4, 1, 2)
+        controls_scroll = QScrollArea()
+        controls_scroll.setWidgetResizable(True)
+        controls_scroll.setWidget(controls_body)
+        controls_scroll.setMaximumHeight(155)
+        controls_scroll.setMinimumWidth(0)
+        page_layout.addWidget(controls_scroll)
+
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        prompt_panel = QWidget()
+        prompt_layout = QVBoxLayout(prompt_panel)
+        prompt_layout.setContentsMargins(0, 0, 0, 0)
+        prompt_layout.addWidget(QLabel("Global edit prompt"))
+        self.edit_global_prompt = QTextEdit()
+        self.edit_global_prompt.setMinimumHeight(75)
+        self.edit_global_prompt.setPlaceholderText(
+            "Optional: when non-empty the entire image may change…"
+        )
+        prompt_layout.addWidget(self.edit_global_prompt)
+        region_actions = QHBoxLayout()
+        draw = QPushButton("Draw edit region")
+        delete = QPushButton("Delete selected")
+        region_actions.addWidget(draw)
+        region_actions.addWidget(delete)
+        prompt_layout.addLayout(region_actions)
+        prompt_layout.addWidget(QLabel("Edit regions (front to back)"))
+        self.edit_region_list = QListWidget()
+        self.edit_region_list.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        self.edit_region_list.model().rowsMoved.connect(self._edit_region_order_changed)
+        self.edit_region_list.currentRowChanged.connect(self._selected_edit_region_changed)
+        prompt_layout.addWidget(self.edit_region_list, 1)
+        self.edit_region_name = QLineEdit()
+        self.edit_region_name.setPlaceholderText("Selected region name")
+        self.edit_region_name.setEnabled(False)
+        self.edit_region_name.editingFinished.connect(self._edit_region_name_edited)
+        prompt_layout.addWidget(self.edit_region_name)
+        self.edit_region_role = QComboBox()
+        self.edit_region_role.addItem("Auto (based on box width)", "auto")
+        self.edit_region_role.addItem("Subject target", "subject")
+        self.edit_region_role.addItem("Background band", "background")
+        self.edit_region_role.setEnabled(False)
+        self.edit_region_role.currentIndexChanged.connect(self._edit_region_form_edited)
+        prompt_layout.addWidget(self.edit_region_role)
+        self.edit_region_face_prompt = QTextEdit()
+        self.edit_region_face_prompt.setPlaceholderText("Optional face identity prompt…")
+        self.edit_region_face_prompt.setMaximumHeight(70)
+        self.edit_region_face_prompt.setEnabled(False)
+        self.edit_region_face_prompt.textChanged.connect(self._edit_region_form_edited)
+        prompt_layout.addWidget(self.edit_region_face_prompt)
+        self.edit_region_prompt = QTextEdit()
+        self.edit_region_prompt.setPlaceholderText("Describe the edit inside this box…")
+        self.edit_region_prompt.setEnabled(False)
+        self.edit_region_prompt.textChanged.connect(self._edit_region_form_edited)
+        prompt_layout.addWidget(self.edit_region_prompt)
+
+        source_panel = QWidget()
+        source_layout = QVBoxLayout(source_panel)
+        source_layout.setContentsMargins(0, 0, 0, 0)
+        source_layout.addWidget(QLabel("Source with editable regions"))
+        self.edit_canvas = RegionCanvas(
+            self.settings.default_width, self.settings.default_height
+        )
+        source_layout.addWidget(self.edit_canvas, 1)
+        draw.clicked.connect(self.edit_canvas.begin_region)
+        delete.clicked.connect(self.edit_canvas.delete_selected_regions)
+        self.edit_canvas.region_created.connect(self._edit_region_created)
+        self.edit_canvas.region_changed.connect(self._edit_region_changed)
+        self.edit_canvas.region_deleted.connect(self._edit_region_deleted)
+        self.edit_canvas.region_selected.connect(self._edit_canvas_region_selected)
+
+        result_panel = QWidget()
+        result_layout = QVBoxLayout(result_panel)
+        result_layout.setContentsMargins(0, 0, 0, 0)
+        result_layout.addWidget(QLabel("Edited result"))
+        self.edit_result_preview = ScaledImagePreview("Run an edit to compare the result")
+        result_layout.addWidget(self.edit_result_preview, 1)
+        self.edit_result_input = QLineEdit()
+        self.edit_result_input.setReadOnly(True)
+        self.edit_result_input.setPlaceholderText("Result path")
+        result_layout.addWidget(self.edit_result_input)
+        self.edit_run_button = QPushButton("Run image edit")
+        self.edit_run_button.setEnabled(False)
+        self.edit_run_button.clicked.connect(self._run_image_edit)
+        result_layout.addWidget(self.edit_run_button)
+        note = QLabel(
+            "Blank global prompt preserves source pixels outside the feathered box union. "
+            "A global prompt permits whole-image changes."
+        )
+        note.setWordWrap(True)
+        result_layout.addWidget(note)
+
+        splitter.addWidget(prompt_panel)
+        splitter.addWidget(source_panel)
+        splitter.addWidget(result_panel)
+        splitter.setSizes([330, 700, 500])
+        page_layout.addWidget(splitter, 1)
+        self.workspace_tabs.addTab(page, "Image editing")
 
     def _build_face_refinement_tab(self) -> None:
         page = QWidget()
@@ -1622,7 +1812,11 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.lora_status)
         scope_group = QGroupBox("Apply selected LoRA")
         scope_layout = QVBoxLayout(scope_group)
-        scope_layout.addWidget(QLabel("Choose Global or one or more named regions"))
+        self.lora_scope_context_label = QLabel(
+            "Generation scope: choose Global or one or more named regions"
+        )
+        self.lora_scope_context_label.setWordWrap(True)
+        scope_layout.addWidget(self.lora_scope_context_label)
         self.lora_scope_list = QListWidget()
         self.lora_scope_list.itemChanged.connect(self._lora_scope_changed)
         scope_layout.addWidget(self.lora_scope_list)
@@ -2035,6 +2229,246 @@ class MainWindow(QMainWindow):
         self._syncing_face_selection = False
         self._face_selection_changed()
 
+    def _workspace_tab_changed(self, _index: int) -> None:
+        self._refresh_lora_scope()
+        self._selected_lora_changed(self.lora_list.currentItem(), None)
+
+    def _editing_scope_active(self) -> bool:
+        return self.workspace_tabs.currentIndex() == 1
+
+    def _browse_edit_source(self) -> None:
+        start = (
+            self._edit_source_path.parent
+            if self._edit_source_path is not None
+            else self._output_directory
+        )
+        selected, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select image to edit",
+            str(start),
+            "Images (*.png *.jpg *.jpeg *.webp)",
+        )
+        if selected and not self._set_edit_source(Path(selected), confirm_reset=True):
+            QMessageBox.warning(self, "Could not load image", selected)
+
+    def _set_edit_source(self, path: Path, *, confirm_reset: bool) -> bool:
+        try:
+            image, _metadata = load_source_image(path)
+        except (OSError, ValueError) as error:
+            self.events.addItem(f"Could not load image-edit source: {error}")
+            return False
+        dimensions_changed = (
+            bool(self.edit_regions or self._edit_source_path is not None)
+            and (image.width, image.height)
+            != (self.edit_canvas.canvas_width, self.edit_canvas.canvas_height)
+        )
+        if dimensions_changed and self.edit_regions and confirm_reset:
+            answer = QMessageBox.question(
+                self,
+                "Reset edit regions?",
+                "The replacement image has different dimensions. Loading it will clear "
+                "the current edit boxes and their LoRA assignments.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return False
+        if dimensions_changed:
+            self._clear_edit_regions()
+        self.edit_canvas.set_canvas_size(image.width, image.height)
+        if not self.edit_canvas.set_image(str(path)):
+            return False
+        self._edit_source_path = path.expanduser().resolve()
+        self.edit_source_input.setText(str(self._edit_source_path))
+        self._edit_result_path = None
+        self.edit_result_input.clear()
+        self.edit_result_preview.clear_image("Run an edit to compare the result")
+        self.edit_run_button.setEnabled(
+            bool(not self._generation_active and self.artifacts and self.artifacts.complete)
+        )
+        self.events.addItem(
+            f"Image-edit source loaded: {self._edit_source_path.name} "
+            f"({image.width}x{image.height})"
+        )
+        return True
+
+    def _next_edit_region_name(self) -> str:
+        existing = {region.name.casefold() for region in self.edit_regions}
+        while True:
+            self._edit_region_number += 1
+            candidate = f"Edit region {self._edit_region_number}"
+            if candidate.casefold() not in existing:
+                return candidate
+
+    def _edit_region_created(
+        self, region_id: str, x0: float, y0: float, x1: float, y1: float
+    ) -> None:
+        region = RegionDefinition(
+            region_id=region_id,
+            name=self._next_edit_region_name(),
+            box=PixelBox(x0, y0, x1, y1),
+        )
+        self.edit_regions.append(region)
+        self._normalize_edit_region_priorities()
+        item = QListWidgetItem(self._region_label(region))
+        item.setData(Qt.ItemDataRole.UserRole, region_id)
+        self.edit_region_list.addItem(item)
+        self.edit_canvas.add_region_box(
+            region_id, QRectF(x0, y0, x1 - x0, y1 - y0), region.name
+        )
+        self._sync_edit_canvas_stack()
+        self.edit_region_list.setCurrentItem(item)
+        self._refresh_lora_scope()
+
+    def _edit_region_changed(
+        self, region_id: str, x0: float, y0: float, x1: float, y1: float
+    ) -> None:
+        index = self._edit_region_index(region_id)
+        self.edit_regions[index] = replace(
+            self.edit_regions[index], box=PixelBox(x0, y0, x1, y1)
+        )
+        item = self._edit_region_list_item(region_id)
+        if item is not None:
+            item.setText(self._region_label(self.edit_regions[index]))
+
+    def _edit_region_deleted(self, region_id: str) -> None:
+        try:
+            index = self._edit_region_index(region_id)
+        except KeyError:
+            return
+        self.edit_regions.pop(index)
+        item = self._edit_region_list_item(region_id)
+        if item is not None:
+            self.edit_region_list.takeItem(self.edit_region_list.row(item))
+        for lora_id, binding in tuple(self._edit_lora_bindings.items()):
+            remaining = tuple(item for item in binding.region_ids if item != region_id)
+            if remaining != binding.region_ids:
+                self._edit_lora_bindings[lora_id] = replace(
+                    binding, global_scope=False, region_ids=remaining
+                )
+        self._normalize_edit_region_priorities()
+        self._sync_edit_canvas_stack()
+        self._refresh_lora_scope()
+
+    def _clear_edit_regions(self) -> None:
+        self.edit_canvas.clear_regions()
+        self.edit_region_list.clear()
+        self.edit_regions = []
+        self._edit_lora_bindings = {
+            lora_id: replace(binding, global_scope=False, region_ids=())
+            for lora_id, binding in self._edit_lora_bindings.items()
+        }
+        self._selected_edit_region_changed(-1)
+
+    def _edit_region_index(self, region_id: str) -> int:
+        for index, region in enumerate(self.edit_regions):
+            if region.region_id == region_id:
+                return index
+        raise KeyError(region_id)
+
+    def _edit_region_list_item(self, region_id: str) -> QListWidgetItem | None:
+        for row in range(self.edit_region_list.count()):
+            item = self.edit_region_list.item(row)
+            if item.data(Qt.ItemDataRole.UserRole) == region_id:
+                return item
+        return None
+
+    def _normalize_edit_region_priorities(self) -> None:
+        count = len(self.edit_regions)
+        self.edit_regions = [
+            replace(region, priority=count - index)
+            for index, region in enumerate(self.edit_regions)
+        ]
+
+    def _sync_edit_canvas_stack(self) -> None:
+        self.edit_canvas.set_region_stack_order(
+            tuple(region.region_id for region in self.edit_regions)
+        )
+
+    def _edit_region_order_changed(self, *_args) -> None:
+        by_id = {region.region_id: region for region in self.edit_regions}
+        ordered_ids = [
+            str(self.edit_region_list.item(row).data(Qt.ItemDataRole.UserRole))
+            for row in range(self.edit_region_list.count())
+        ]
+        if set(ordered_ids) != set(by_id):
+            return
+        self.edit_regions = [by_id[region_id] for region_id in ordered_ids]
+        self._normalize_edit_region_priorities()
+        self._sync_edit_canvas_stack()
+        self._selected_edit_region_changed(self.edit_region_list.currentRow())
+
+    def _edit_canvas_region_selected(self, region_id: str) -> None:
+        item = self._edit_region_list_item(region_id)
+        if item is not None and self.edit_region_list.currentItem() is not item:
+            self.edit_region_list.setCurrentItem(item)
+
+    def _selected_edit_region_changed(self, row: int) -> None:
+        selected = 0 <= row < len(self.edit_regions)
+        for control in (
+            self.edit_region_name,
+            self.edit_region_role,
+            self.edit_region_face_prompt,
+            self.edit_region_prompt,
+        ):
+            control.setEnabled(selected)
+        self._edit_loading_region_form = True
+        try:
+            if selected:
+                region = self.edit_regions[row]
+                self.edit_region_name.setText(region.name)
+                self.edit_region_role.setCurrentIndex(
+                    max(0, self.edit_region_role.findData(region.spatial_role))
+                )
+                self.edit_region_face_prompt.setPlainText(region.face_identity_prompt)
+                self.edit_region_prompt.setPlainText(region.prompt)
+                self.edit_canvas.select_region(region.region_id)
+            else:
+                self.edit_region_name.clear()
+                self.edit_region_role.setCurrentIndex(0)
+                self.edit_region_face_prompt.clear()
+                self.edit_region_prompt.clear()
+        finally:
+            self._edit_loading_region_form = False
+
+    def _edit_region_name_edited(self) -> None:
+        if self._edit_loading_region_form:
+            return
+        row = self.edit_region_list.currentRow()
+        if not 0 <= row < len(self.edit_regions):
+            return
+        region = self.edit_regions[row]
+        name = self.edit_region_name.text().strip()
+        duplicate = any(
+            index != row and candidate.name.casefold() == name.casefold()
+            for index, candidate in enumerate(self.edit_regions)
+        )
+        if not name or duplicate:
+            self.edit_region_name.setText(region.name)
+            return
+        self.edit_regions[row] = replace(region, name=name)
+        item = self._edit_region_list_item(region.region_id)
+        if item is not None:
+            item.setText(self._region_label(self.edit_regions[row]))
+        self.edit_canvas.set_region_name(region.region_id, name)
+        self._refresh_lora_scope()
+
+    def _edit_region_form_edited(self, *_args) -> None:
+        if self._edit_loading_region_form:
+            return
+        row = self.edit_region_list.currentRow()
+        if not 0 <= row < len(self.edit_regions):
+            return
+        self.edit_regions[row] = replace(
+            self.edit_regions[row],
+            spatial_role=str(self.edit_region_role.currentData()),
+            face_identity_prompt=self.edit_region_face_prompt.toPlainText(),
+            prompt=self.edit_region_prompt.toPlainText(),
+        )
+        item = self._edit_region_list_item(self.edit_regions[row].region_id)
+        if item is not None:
+            item.setText(self._region_label(self.edit_regions[row]))
+
     def _browse_face_source(self) -> None:
         start = (
             self._face_source_path.parent
@@ -2062,6 +2496,98 @@ class MainWindow(QMainWindow):
             return
         if show_message:
             self.events.addItem(f"Loaded latest first-pass PNG: {latest.name}")
+
+    def _run_image_edit(self) -> None:
+        source_path = self._edit_source_path
+        if source_path is None or not source_path.is_file():
+            QMessageBox.warning(self, "Source image required", "Load an image before editing.")
+            return
+        active_regions = [
+            region
+            for region in self.edit_regions
+            if region.enabled
+            and (region.prompt.strip() or region.face_identity_prompt.strip())
+        ]
+        if not self.edit_global_prompt.toPlainText().strip() and not active_regions:
+            QMessageBox.warning(
+                self,
+                "Edit prompt required",
+                "With a blank global prompt, add at least one box with a regional prompt.",
+            )
+            return
+        active_ids = {region.region_id for region in active_regions}
+        invalid_lora = next(
+            (
+                lora["name"]
+                for lora in self._edit_lora_payload()
+                if not lora["global"]
+                and not set(lora["region_ids"]).issubset(active_ids)
+            ),
+            None,
+        )
+        if invalid_lora is not None:
+            QMessageBox.warning(
+                self,
+                "Regional prompt required",
+                f"{invalid_lora} targets an edit region without an active prompt.",
+            )
+            return
+        payload = self._worker_payload()
+        payload.update(
+            {
+                "image_path": str(source_path),
+                "output_directory": str(self._output_directory),
+                "prompt": self.edit_global_prompt.toPlainText(),
+                "seed": self.edit_seed_input.value(),
+                "steps": self.edit_steps_input.value(),
+                "sampler": str(self.edit_sampler_input.currentData()),
+                "scheduler": str(self.edit_scheduler_input.currentData()),
+                "denoise": self.edit_denoise_input.value(),
+                "composite_feather_pixels": (
+                    self.edit_composite_feather_input.value()
+                ),
+                "regional_prompt_strength": self.edit_regional_strength_input.value(),
+                "regional_outside_penalty": self.edit_outside_penalty_input.value(),
+                "regional_feather_pixels": self.edit_spatial_falloff_input.value(),
+                "regional_subject_competition": (
+                    self.edit_subject_competition_input.isChecked()
+                ),
+                "regional_subject_fill": self.edit_subject_fill_input.isChecked(),
+                "regional_late_step_scale": self.edit_late_step_scale_input.value(),
+                "regional_lora_delta_adaptation": (
+                    self.edit_lora_adaptation_input.isChecked()
+                ),
+                "regional_lora_delta_adaptation_gain": (
+                    self.edit_lora_adaptation_gain_input.value()
+                ),
+                "regions": [self._region_payload(region) for region in self.edit_regions],
+                "loras": self._edit_lora_payload(),
+                "project_json": project_document(self._project_state()),
+            }
+        )
+        self._pending_image_edit_payload = payload
+        self._generation_completed = False
+        self._active_task = "image_edit"
+        self._set_generation_active(True)
+        self._advance_pending_generation()
+
+    @staticmethod
+    def _region_payload(region: RegionDefinition) -> dict[str, object]:
+        return {
+            "id": region.region_id,
+            "name": region.name,
+            "box": {
+                "x0": region.box.x0,
+                "y0": region.box.y0,
+                "x1": region.box.x1,
+                "y1": region.box.y1,
+            },
+            "prompt": region.prompt,
+            "face_identity_prompt": region.face_identity_prompt,
+            "enabled": region.enabled,
+            "priority": region.priority,
+            "spatial_role": region.spatial_role,
+        }
 
     def _run_face_refinement(self) -> None:
         source_path = self._face_source_path
@@ -2442,6 +2968,14 @@ class MainWindow(QMainWindow):
                 and self._face_source_path.is_file()
             )
         )
+        self.edit_run_button.setEnabled(
+            bool(
+                self.artifacts.complete
+                and not self._generation_active
+                and self._edit_source_path is not None
+                and self._edit_source_path.is_file()
+            )
+        )
         self.events.addItem(f"Model discovery {state}")
         self.statusBar().showMessage(f"Local model set: {state}")
 
@@ -2698,6 +3232,13 @@ class MainWindow(QMainWindow):
             return False
 
         existing = self._lora_list_item(entry.lora_id)
+        self._edit_lora_bindings[entry.lora_id] = LoraBinding(
+            lora_id=entry.lora_id,
+            global_scope=False,
+            region_ids=(),
+            strength=self.lora_library.binding_for(entry.lora_id).strength,
+            trigger_phrase=entry.path.stem,
+        )
         if existing is None:
             existing = QListWidgetItem(self._lora_label(entry.lora_id))
             existing.setData(Qt.ItemDataRole.UserRole, entry.lora_id)
@@ -2724,6 +3265,7 @@ class MainWindow(QMainWindow):
         lora_id = item.data(Qt.ItemDataRole.UserRole)
         entry = self.lora_library.get(lora_id)
         self.lora_library.remove(lora_id)
+        self._edit_lora_bindings.pop(lora_id, None)
         self.lora_list.takeItem(self.lora_list.row(item))
         self._refresh_lora_scope()
         self.events.addItem(f"Removed LoRA {entry.display_name}")
@@ -2768,7 +3310,7 @@ class MainWindow(QMainWindow):
                 )
                 self.lora_trigger_input.clear()
             else:
-                binding = self.lora_library.binding_for(lora_id)
+                binding = self._active_lora_binding(lora_id)
                 self.lora_routing_mode_input.setCurrentIndex(
                     self.lora_routing_mode_input.findData(binding.routing_mode)
                 )
@@ -2789,6 +3331,11 @@ class MainWindow(QMainWindow):
             item.setText(self._lora_label(lora_id))
         entry = self.lora_library.get(lora_id)
         self.events.addItem(f"Set {entry.display_name} strength to {strength:.2f}")
+
+    def _active_lora_binding(self, lora_id: str) -> LoraBinding:
+        if self._editing_scope_active():
+            return self._edit_lora_bindings[lora_id]
+        return self.lora_library.binding_for(lora_id)
 
     def _refresh_lora_routing_controls(self) -> None:
         lora_id = self._current_lora_id()
@@ -2818,7 +3365,7 @@ class MainWindow(QMainWindow):
         if lora_id is None:
             return
         routing_mode = str(self.lora_routing_mode_input.currentData())
-        binding = self.lora_library.binding_for(lora_id)
+        binding = self._active_lora_binding(lora_id)
         if (
             routing_mode == CHARACTER_IDENTITY_LORA_ROUTING
             and binding.global_scope
@@ -2835,7 +3382,12 @@ class MainWindow(QMainWindow):
             )
             self._refresh_lora_routing_controls()
             return
-        self.lora_library.set_routing_mode(lora_id, routing_mode)
+        if self._editing_scope_active():
+            self._edit_lora_bindings[lora_id] = replace(
+                binding, routing_mode=routing_mode
+            )
+        else:
+            self.lora_library.set_routing_mode(lora_id, routing_mode)
         self._refresh_lora_routing_controls()
         item = self._lora_list_item(lora_id)
         if item is not None:
@@ -2852,13 +3404,19 @@ class MainWindow(QMainWindow):
         lora_id = self._current_lora_id()
         if lora_id is None:
             return
-        previous = self.lora_library.binding_for(lora_id).trigger_phrase
+        binding = self._active_lora_binding(lora_id)
+        previous = binding.trigger_phrase
         phrase = self.lora_trigger_input.text().strip()
         if not phrase:
             self.lora_trigger_input.setText(previous)
             self.events.addItem("Character identity trigger cannot be empty")
             return
-        self.lora_library.set_trigger_phrase(lora_id, phrase)
+        if self._editing_scope_active():
+            self._edit_lora_bindings[lora_id] = replace(
+                binding, trigger_phrase=phrase
+            )
+        else:
+            self.lora_library.set_trigger_phrase(lora_id, phrase)
         self.lora_trigger_input.setText(phrase)
         item = self._lora_list_item(lora_id)
         if item is not None:
@@ -2886,6 +3444,26 @@ class MainWindow(QMainWindow):
             )
         return payload
 
+    def _edit_lora_payload(self) -> list[dict[str, object]]:
+        payload = []
+        for entry in self.lora_library.entries():
+            binding = self._edit_lora_bindings.get(entry.lora_id)
+            if binding is None or (not binding.global_scope and not binding.region_ids):
+                continue
+            payload.append(
+                {
+                    "id": entry.lora_id,
+                    "name": entry.display_name,
+                    "path": str(entry.path),
+                    "strength": self.lora_library.binding_for(entry.lora_id).strength,
+                    "global": binding.global_scope,
+                    "region_ids": list(binding.region_ids),
+                    "routing_mode": binding.routing_mode,
+                    "trigger_phrase": binding.trigger_phrase,
+                }
+            )
+        return payload
+
     def _diagnose_selected_lora(self) -> None:
         lora_id = self._current_lora_id()
         if lora_id is None:
@@ -2903,15 +3481,27 @@ class MainWindow(QMainWindow):
         self._syncing_lora_scope = True
         try:
             self.lora_scope_list.clear()
+            editing = self._editing_scope_active()
+            self.lora_scope_context_label.setText(
+                "Image-edit scope: Disabled, Global, or one or more edit regions"
+                if editing
+                else "Generation scope: choose Global or one or more named regions"
+            )
             lora_id = self._current_lora_id()
             if lora_id is None:
                 self.lora_scope_list.setEnabled(False)
                 return
             self.lora_scope_list.setEnabled(True)
-            binding = self.lora_library.binding_for(lora_id)
+            binding = self._active_lora_binding(lora_id)
+            if editing:
+                disabled = not binding.global_scope and not binding.region_ids
+                self.lora_scope_list.addItem(
+                    self._scope_item("Disabled for image editing", DISABLED_SCOPE_ID, disabled)
+                )
             global_item = self._scope_item("Global", GLOBAL_SCOPE_ID, binding.global_scope)
             self.lora_scope_list.addItem(global_item)
-            for region in self.regions:
+            regions = self.edit_regions if editing else self.regions
+            for region in regions:
                 item = self._scope_item(
                     region.name, region.region_id, region.region_id in binding.region_ids
                 )
@@ -2937,41 +3527,64 @@ class MainWindow(QMainWindow):
         if lora_id is None:
             return
         scope_id = changed_item.data(Qt.ItemDataRole.UserRole)
-        if (
-            scope_id == GLOBAL_SCOPE_ID
+        editing = self._editing_scope_active()
+        current = self._active_lora_binding(lora_id)
+        if editing and (
+            scope_id == DISABLED_SCOPE_ID
             and changed_item.checkState() == Qt.CheckState.Checked
         ):
-            binding = self.lora_library.assign_global(lora_id)
+            binding = replace(current, global_scope=False, region_ids=())
+            self._edit_lora_bindings[lora_id] = binding
+        elif scope_id == GLOBAL_SCOPE_ID and changed_item.checkState() == Qt.CheckState.Checked:
+            binding = replace(current, global_scope=True, region_ids=())
+            if editing:
+                self._edit_lora_bindings[lora_id] = binding
+            else:
+                binding = self.lora_library.assign_global(lora_id)
         else:
             selected_regions = tuple(
                 item.data(Qt.ItemDataRole.UserRole)
                 for index in range(self.lora_scope_list.count())
                 if (item := self.lora_scope_list.item(index)).data(Qt.ItemDataRole.UserRole)
-                != GLOBAL_SCOPE_ID
+                not in {GLOBAL_SCOPE_ID, DISABLED_SCOPE_ID}
                 and item.checkState() == Qt.CheckState.Checked
             )
-            binding = self.lora_library.assign_regions(lora_id, selected_regions)
+            if editing:
+                binding = replace(
+                    current, global_scope=False, region_ids=selected_regions
+                )
+                self._edit_lora_bindings[lora_id] = binding
+            else:
+                binding = self.lora_library.assign_regions(lora_id, selected_regions)
         if (
             binding.global_scope
             and binding.routing_mode == CHARACTER_IDENTITY_LORA_ROUTING
         ):
-            binding = self.lora_library.set_routing_mode(
-                lora_id, STANDARD_LORA_ROUTING
-            )
+            if editing:
+                binding = replace(binding, routing_mode=STANDARD_LORA_ROUTING)
+                self._edit_lora_bindings[lora_id] = binding
+            else:
+                binding = self.lora_library.set_routing_mode(
+                    lora_id, STANDARD_LORA_ROUTING
+                )
             self.events.addItem(
                 "Character identity routing returned to Standard because the LoRA is Global"
             )
         self._refresh_lora_scope()
         self._selected_lora_changed(self.lora_list.currentItem(), None)
         entry = self.lora_library.get(lora_id)
+        regions = self.edit_regions if editing else self.regions
         names = {
             region.region_id: region.name
-            for region in self.regions
+            for region in regions
         }
         scope = (
             "Global"
             if binding.global_scope
-            else ", ".join(names.get(region_id, region_id) for region_id in binding.region_ids)
+            else (
+                ", ".join(names.get(region_id, region_id) for region_id in binding.region_ids)
+                or "Disabled"
+            )
         )
         self.events.addItem(f"Assigned {entry.display_name} to {scope}")
 
@@ -3017,6 +3630,14 @@ class MainWindow(QMainWindow):
                 strength=binding.strength,
                 routing_mode=binding.routing_mode,
                 trigger_phrase=binding.trigger_phrase,
+                edit_enabled=bool(
+                    (edit_binding := self._edit_lora_bindings[entry.lora_id]).global_scope
+                    or edit_binding.region_ids
+                ),
+                edit_global_scope=edit_binding.global_scope,
+                edit_region_ids=edit_binding.region_ids,
+                edit_routing_mode=edit_binding.routing_mode,
+                edit_trigger_phrase=edit_binding.trigger_phrase,
             )
             for entry in self.lora_library.entries()
         )
@@ -3077,6 +3698,33 @@ class MainWindow(QMainWindow):
             loras=saved_loras,
             runtime=runtime,
             background_image=self._background_image_path,
+            image_edit=ImageEditState(
+                source_image=self._edit_source_path,
+                width=(self.edit_canvas.canvas_width if self._edit_source_path else 0),
+                height=(self.edit_canvas.canvas_height if self._edit_source_path else 0),
+                global_prompt=self.edit_global_prompt.toPlainText(),
+                steps=self.edit_steps_input.value(),
+                sampler=str(self.edit_sampler_input.currentData()),
+                scheduler=str(self.edit_scheduler_input.currentData()),
+                seed=self.edit_seed_input.value(),
+                denoise=self.edit_denoise_input.value(),
+                composite_feather_pixels=self.edit_composite_feather_input.value(),
+                regional_prompt_strength=self.edit_regional_strength_input.value(),
+                regional_outside_penalty=self.edit_outside_penalty_input.value(),
+                regional_feather_pixels=self.edit_spatial_falloff_input.value(),
+                regional_subject_competition=(
+                    self.edit_subject_competition_input.isChecked()
+                ),
+                regional_subject_fill=self.edit_subject_fill_input.isChecked(),
+                regional_late_step_scale=self.edit_late_step_scale_input.value(),
+                regional_lora_delta_adaptation=(
+                    self.edit_lora_adaptation_input.isChecked()
+                ),
+                regional_lora_delta_adaptation_gain=(
+                    self.edit_lora_adaptation_gain_input.value()
+                ),
+                regions=tuple(self.edit_regions),
+            ),
         )
 
     def _clear_generation_canvas(self) -> None:
@@ -3313,6 +3961,7 @@ class MainWindow(QMainWindow):
     ) -> None:
         self.worker_client.stop()
         self._pending_generation_payload = None
+        self._pending_image_edit_payload = None
         self._pending_face_refinement_payload = None
         self._clear_batch_state()
         self._active_task = None
@@ -3428,7 +4077,81 @@ class MainWindow(QMainWindow):
         self._sync_canvas_region_stack()
         self._refresh_prompt_emphases()
 
+        edit_state = state.image_edit
+        self.edit_global_prompt.setPlainText(edit_state.global_prompt)
+        self.edit_steps_input.setValue(edit_state.steps)
+        self.edit_sampler_input.setCurrentIndex(
+            max(0, self.edit_sampler_input.findData(edit_state.sampler))
+        )
+        self.edit_scheduler_input.setCurrentIndex(
+            max(0, self.edit_scheduler_input.findData(edit_state.scheduler))
+        )
+        self.edit_seed_input.setValue(edit_state.seed)
+        self.edit_denoise_input.setValue(edit_state.denoise)
+        self.edit_composite_feather_input.setValue(
+            edit_state.composite_feather_pixels
+        )
+        self.edit_regional_strength_input.setValue(
+            edit_state.regional_prompt_strength
+        )
+        self.edit_outside_penalty_input.setValue(
+            edit_state.regional_outside_penalty
+        )
+        self.edit_spatial_falloff_input.setValue(edit_state.regional_feather_pixels)
+        self.edit_subject_competition_input.setChecked(
+            edit_state.regional_subject_competition
+        )
+        self.edit_subject_fill_input.setChecked(edit_state.regional_subject_fill)
+        self.edit_late_step_scale_input.setValue(edit_state.regional_late_step_scale)
+        self.edit_lora_adaptation_input.setChecked(
+            edit_state.regional_lora_delta_adaptation
+        )
+        self.edit_lora_adaptation_gain_input.setValue(
+            edit_state.regional_lora_delta_adaptation_gain
+        )
+        self.edit_canvas.clear_regions()
+        self.edit_canvas.clear_image()
+        self.edit_region_list.clear()
+        self.edit_regions = list(edit_state.regions)
+        if edit_state.width and edit_state.height:
+            self.edit_canvas.set_canvas_size(edit_state.width, edit_state.height)
+        self._normalize_edit_region_priorities()
+        self._edit_region_number = max(
+            (
+                int(match.group(1))
+                for region in self.edit_regions
+                if (match := re.fullmatch(r"Edit region (\d+)", region.name))
+            ),
+            default=0,
+        )
+        for region in self.edit_regions:
+            item = QListWidgetItem(self._region_label(region))
+            item.setData(Qt.ItemDataRole.UserRole, region.region_id)
+            self.edit_region_list.addItem(item)
+            box = region.box
+            self.edit_canvas.add_region_box(
+                region.region_id,
+                QRectF(box.x0, box.y0, box.width, box.height),
+                region.name,
+            )
+        self._sync_edit_canvas_stack()
+        self._edit_source_path = None
+        self._edit_result_path = None
+        self.edit_source_input.clear()
+        self.edit_result_input.clear()
+        self.edit_result_preview.clear_image("Run an edit to compare the result")
+        if edit_state.source_image:
+            self._edit_source_path = edit_state.source_image.expanduser().resolve()
+            self.edit_source_input.setText(
+                str(self._edit_source_path)
+                if self._edit_source_path.is_file()
+                else f"{self._edit_source_path} (missing)"
+            )
+            if self._edit_source_path.is_file():
+                self.edit_canvas.set_image(str(self._edit_source_path))
+
         self.lora_library = LoraLibrary()
+        self._edit_lora_bindings = {}
         self.lora_list.clear()
         for saved_lora in state.loras:
             if not self._add_lora_path(saved_lora.path):
@@ -3442,6 +4165,20 @@ class MainWindow(QMainWindow):
             if saved_lora.trigger_phrase:
                 self.lora_library.set_trigger_phrase(lora_id, saved_lora.trigger_phrase)
             self.lora_library.set_routing_mode(lora_id, saved_lora.routing_mode)
+            self._edit_lora_bindings[lora_id] = LoraBinding(
+                lora_id=lora_id,
+                global_scope=(
+                    saved_lora.edit_global_scope if saved_lora.edit_enabled else False
+                ),
+                region_ids=(
+                    saved_lora.edit_region_ids if saved_lora.edit_enabled else ()
+                ),
+                strength=saved_lora.strength,
+                routing_mode=saved_lora.edit_routing_mode,
+                trigger_phrase=(
+                    saved_lora.edit_trigger_phrase or saved_lora.path.stem
+                ),
+            )
             item = self._lora_list_item(lora_id)
             if item is not None:
                 item.setText(self._lora_label(lora_id))
@@ -3461,6 +4198,14 @@ class MainWindow(QMainWindow):
         )
         self.face_detect_button.setEnabled(False)
         self.face_refine_button.setEnabled(False)
+        self.edit_run_button.setEnabled(
+            bool(
+                self.artifacts
+                and self.artifacts.complete
+                and self._edit_source_path is not None
+                and self._edit_source_path.is_file()
+            )
+        )
         if state.background_image and state.background_image.is_file():
             if self.canvas.set_image(str(state.background_image)):
                 self._background_image_path = state.background_image
@@ -3471,6 +4216,10 @@ class MainWindow(QMainWindow):
             self.region_list.setCurrentRow(0)
         else:
             self._selected_region_changed(-1)
+        if self.edit_region_list.count():
+            self.edit_region_list.setCurrentRow(0)
+        else:
+            self._selected_edit_region_changed(-1)
         self.discover_models()
 
     def _worker_payload(self) -> dict[str, object]:
@@ -3634,7 +4383,11 @@ class MainWindow(QMainWindow):
         pending_payload = (
             self._pending_face_refinement_payload
             if self._pending_face_refinement_payload is not None
-            else self._pending_generation_payload
+            else (
+                self._pending_image_edit_payload
+                if self._pending_image_edit_payload is not None
+                else self._pending_generation_payload
+            )
         )
         if pending_payload is None or self._worker_bootstrap_stage:
             return
@@ -3642,7 +4395,11 @@ class MainWindow(QMainWindow):
             task_name = (
                 "face-refinement"
                 if self._pending_face_refinement_payload is not None
-                else "generation"
+                else (
+                    "image-edit"
+                    if self._pending_image_edit_payload is not None
+                    else "generation"
+                )
             )
             self.events.addItem(f"Starting a fresh disposable {task_name} worker")
             self._start_worker()
@@ -3659,15 +4416,17 @@ class MainWindow(QMainWindow):
             self._load_worker_model()
             return
         is_refinement = self._pending_face_refinement_payload is not None
-        command = (
-            CommandKind.REFINE_FACES
-            if is_refinement
-            else CommandKind.GENERATE_BASELINE
-        )
+        is_image_edit = self._pending_image_edit_payload is not None
+        command = CommandKind.GENERATE_BASELINE
+        if is_refinement:
+            command = CommandKind.REFINE_FACES
+        elif is_image_edit:
+            command = CommandKind.EDIT_IMAGE
         try:
             self.worker_client.send(command, pending_payload)
         except RuntimeError as error:
             self._pending_generation_payload = None
+            self._pending_image_edit_payload = None
             self._pending_face_refinement_payload = None
             self._active_task = None
             self._set_generation_active(False)
@@ -3676,6 +4435,9 @@ class MainWindow(QMainWindow):
         if is_refinement:
             self._pending_face_refinement_payload = None
             self.events.addItem("Fresh worker ready; face refinement dispatched")
+        elif is_image_edit:
+            self._pending_image_edit_payload = None
+            self.events.addItem("Fresh worker ready; image edit dispatched")
         else:
             self._pending_generation_payload = None
             self.events.addItem("Fresh worker ready; generation dispatched")
@@ -3921,6 +4683,15 @@ class MainWindow(QMainWindow):
                 and self._face_source_path.is_file()
             )
         )
+        self.edit_run_button.setEnabled(
+            bool(
+                not active
+                and self.artifacts is not None
+                and self.artifacts.complete
+                and self._edit_source_path is not None
+                and self._edit_source_path.is_file()
+            )
+        )
         self.stop_generation_button.setEnabled(active)
 
     def _stop_generation(self) -> None:
@@ -3928,6 +4699,7 @@ class MainWindow(QMainWindow):
             return
         pid = self.worker_client.cancel_generation()
         self._pending_generation_payload = None
+        self._pending_image_edit_payload = None
         self._pending_face_refinement_payload = None
         self._clear_batch_state()
         self._worker_bootstrap_stage = None
@@ -4007,11 +4779,13 @@ class MainWindow(QMainWindow):
                 if (
                     (
                         self._pending_generation_payload is not None
+                        or self._pending_image_edit_payload is not None
                         or self._pending_face_refinement_payload is not None
                     )
                     and not self._accelerator_available
                 ):
                     self._pending_generation_payload = None
+                    self._pending_image_edit_payload = None
                     self._pending_face_refinement_payload = None
                     self._active_task = None
                     self._set_generation_active(False)
@@ -4026,9 +4800,11 @@ class MainWindow(QMainWindow):
             self._worker_bootstrap_stage = None
             if (
                 self._pending_generation_payload is not None
+                or self._pending_image_edit_payload is not None
                 or self._pending_face_refinement_payload is not None
             ) and not compatible:
                 self._pending_generation_payload = None
+                self._pending_image_edit_payload = None
                 self._pending_face_refinement_payload = None
                 self._active_task = None
                 self._set_generation_active(False)
@@ -4131,6 +4907,23 @@ class MainWindow(QMainWindow):
             # The worker exits immediately after this event. Keep Generate disabled
             # until QProcess confirms that all GPU/system allocations are gone.
             self.generate_button.setEnabled(False)
+            self.edit_run_button.setEnabled(False)
+            self.face_refine_button.setEnabled(False)
+        elif message == "Image editing complete":
+            self._generation_completed = True
+            self._set_generation_active(False)
+            image_path = payload.get("image_path")
+            if image_path:
+                result_path = Path(image_path)
+                if self.edit_result_preview.set_image(result_path):
+                    self._edit_result_path = result_path
+                    self.edit_result_input.setText(str(result_path))
+                    self._set_face_refinement_source(result_path)
+                    self.statusBar().showMessage(
+                        f"Edited image saved to {result_path}"
+                    )
+            self.generate_button.setEnabled(False)
+            self.edit_run_button.setEnabled(False)
             self.face_refine_button.setEnabled(False)
         elif message == "Face refinement complete":
             self._generation_completed = True
@@ -4148,11 +4941,13 @@ class MainWindow(QMainWindow):
             self.face_refine_button.setEnabled(False)
         elif message in {
             "Generation worker releasing GPU and system RAM",
+            "Image-edit worker releasing GPU and system RAM",
             "Face refinement worker releasing GPU and system RAM",
         }:
             self.memory_status.setText("Releasing disposable worker memory…")
         elif state == "error":
             self._pending_generation_payload = None
+            self._pending_image_edit_payload = None
             self._pending_face_refinement_payload = None
             self._clear_batch_state()
             self._worker_bootstrap_stage = None
@@ -4162,6 +4957,7 @@ class MainWindow(QMainWindow):
                 self._model_loaded = False
             self.load_model_button.setEnabled(self._accelerator_available)
             self.generate_button.setEnabled(False)
+            self.edit_run_button.setEnabled(False)
             self.face_refine_button.setEnabled(False)
             self._set_memory_controls_enabled(True)
             normalized_message = message.casefold()
@@ -4181,6 +4977,7 @@ class MainWindow(QMainWindow):
 
         if (
             self._pending_generation_payload is not None
+            or self._pending_image_edit_payload is not None
             or self._pending_face_refinement_payload is not None
         ) and state != "error":
             self._advance_pending_generation()
@@ -4198,6 +4995,7 @@ class MainWindow(QMainWindow):
             self._generation_completed = False
             if not completed:
                 self._pending_generation_payload = None
+                self._pending_image_edit_payload = None
                 self._pending_face_refinement_payload = None
                 self._clear_batch_state()
             completed_task = self._active_task

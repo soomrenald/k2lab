@@ -12,6 +12,11 @@ from pathlib import Path
 from typing import Any, Callable
 
 from k2_region_lab.config import ModelDirectories
+from k2_region_lab.image_edit import (
+    composite_regional_edit,
+    edge_pad_to_krea,
+    load_source_image,
+)
 from k2_region_lab.face_detail import (
     BACKEND as FACE_DETAIL_BACKEND,
     FaceDetailSettings,
@@ -1745,6 +1750,293 @@ class ComfyBaselineRuntime:
             "cpu_vae": self.cpu_vae,
             "oom_recovered": oom_recovered,
             "memory": self.memory_snapshot("generation complete"),
+        }
+
+    def edit_image(
+        self,
+        *,
+        image_path: Path,
+        prompt: str,
+        regions: tuple[RegionDefinition, ...],
+        loras: list[dict[str, Any]],
+        seed: int = 0,
+        steps: int = 8,
+        sampler: str = DEFAULT_SAMPLER,
+        scheduler: str = DEFAULT_SCHEDULER,
+        denoise: float = 0.35,
+        composite_feather_pixels: int = 32,
+        regional_prompt_strength: float = 1.0,
+        regional_outside_penalty: float = 1.0,
+        regional_feather_pixels: float = 128.0,
+        regional_subject_competition: bool = True,
+        regional_subject_fill: bool = True,
+        regional_late_step_scale: float = 0.35,
+        regional_lora_delta_adaptation: bool = False,
+        regional_lora_delta_adaptation_gain: float = 0.35,
+        project_json: dict[str, Any] | None = None,
+        output_directory: Path | None = None,
+        progress: Callable[[int, int, dict[str, Any]], None] | None = None,
+        event: Callable[[str, dict[str, Any]], None] | None = None,
+    ) -> dict[str, Any]:
+        """Run source-latent img2img with the baseline regional routing stack."""
+
+        if not self.loaded:
+            raise RuntimeError("baseline components must be loaded before image editing")
+        if not 1 <= steps <= 100:
+            raise ValueError("image-edit steps must be between 1 and 100")
+        if not 0.0 < denoise <= 1.0:
+            raise ValueError("image-edit denoise must be in (0, 1]")
+        if not 0 <= composite_feather_pixels <= 256:
+            raise ValueError("image-edit composite feather must be between 0 and 256 pixels")
+        sampler = validate_sampler(sampler)
+        scheduler = validate_scheduler(scheduler)
+
+        import numpy as np
+        import torch
+        from PIL import Image, PngImagePlugin
+
+        import comfy.model_management
+        import comfy.sample
+        import comfy.samplers
+
+        if sampler not in comfy.samplers.KSampler.SAMPLERS:
+            raise ValueError(
+                f"sampler {sampler!r} is unavailable in the installed ComfyUI runtime"
+            )
+        if scheduler not in comfy.samplers.KSampler.SCHEDULERS:
+            raise ValueError(
+                f"scheduler {scheduler!r} is unavailable in the installed ComfyUI runtime"
+            )
+
+        source_path = image_path.expanduser().resolve()
+        source_image, source_metadata = load_source_image(source_path)
+        padded_source, geometry = edge_pad_to_krea(source_image)
+        active_regions = tuple(
+            region
+            for region in regions
+            if region.enabled
+            and (region.prompt.strip() or region.face_identity_prompt.strip())
+        )
+        if not prompt.strip() and not active_regions:
+            raise ValueError(
+                "a blank image-edit global prompt requires at least one active regional prompt"
+            )
+
+        regional_plan = (
+            compile_regional_prompt_plan(
+                source_image.width,
+                source_image.height,
+                prompt,
+                regions,
+                strength=regional_prompt_strength,
+                outside_penalty=regional_outside_penalty,
+                falloff_pixels=regional_feather_pixels,
+                subject_competition=regional_subject_competition,
+                subject_fill=regional_subject_fill,
+                late_step_scale=regional_late_step_scale,
+                character_identity_triggers=character_identity_triggers(loras),
+            )
+            if regions
+            else None
+        )
+        conditioned_prompt = (
+            regional_plan.prompt
+            if regional_plan is not None and regional_plan.regions
+            else prompt.strip()
+        )
+        if not conditioned_prompt:
+            raise ValueError("image editing requires prompt text")
+
+        self._ensure_memory("before image-edit text encoding", event)
+        positive = self.clip.encode_from_tokens_scheduled(
+            self.clip.tokenize(conditioned_prompt)
+        )
+        negative = self.clip.encode_from_tokens_scheduled(self.clip.tokenize(""))
+        if not positive:
+            raise RuntimeError("Krea text encoder returned no image-edit conditioning")
+        text_token_counts = {int(condition[0].shape[1]) for condition in positive}
+        if len(text_token_counts) != 1:
+            raise RuntimeError("Krea image-edit conditioning must use one text sequence length")
+        text_token_count = text_token_counts.pop()
+        bound_plan = None
+        if regional_plan is not None and regional_plan.regions:
+            bound_plan = regional_plan.bind_tokens(
+                lambda prefix: krea_prompt_token_count(self.clip.tokenize(prefix)),
+                conditioning_text_token_count=text_token_count,
+            )
+            if event is not None:
+                event("Unified spatial edit prompt prepared", bound_plan.summary())
+
+        pixels = torch.from_numpy(
+            np.asarray(padded_source, dtype=np.float32).copy() / 255.0
+        ).unsqueeze(0)
+        self._ensure_memory("before image-edit VAE encode", event)
+        latent = self._encode_vae(pixels)
+        latent = comfy.sample.fix_empty_latent_channels(
+            self.model, latent, downscale_ratio_spacial=8
+        )
+        noise = comfy.sample.prepare_noise(latent, seed)
+        generation_model, lora_reports, lora_statistics = self._apply_routed_loras(
+            loras,
+            base_model=self.model,
+            width=geometry.aligned_width,
+            height=geometry.aligned_height,
+            text_token_count=text_token_count,
+            regional_plan=regional_plan,
+            bound_plan=bound_plan,
+            event=event,
+        )
+        attention_override = (
+            KreaSpatialAttentionOverride(
+                bound_plan,
+                lora_delta_adaptation=regional_lora_delta_adaptation,
+                lora_delta_adaptation_gain=regional_lora_delta_adaptation_gain,
+            )
+            if bound_plan is not None and bound_plan.spans
+            else None
+        )
+
+        def callback(step: int, denoised, current, total: int) -> None:
+            del denoised, current
+            if attention_override is not None:
+                attention_override.set_denoising_progress(step + 1, total)
+                if regional_lora_delta_adaptation:
+                    attention_override.set_lora_delta_scales(
+                        lora_statistics.regional_attention_scales(
+                            regional_lora_delta_adaptation_gain
+                        )
+                    )
+                    lora_statistics.reset_step_measurements()
+            snapshot = self.memory_snapshot(f"image-edit step {step + 1}/{total}")
+            if progress is not None:
+                progress(step + 1, total, snapshot)
+            if snapshot["gpu_free_bytes"] < snapshot["critical_free_bytes"]:
+                raise CriticalGpuMemoryPressure(
+                    "critical GPU memory pressure after image-edit denoising step "
+                    f"{step + 1}/{total}"
+                )
+
+        transformer_options = generation_model.model_options.setdefault(
+            "transformer_options", {}
+        )
+        missing = object()
+        previous_override = transformer_options.get("optimized_attention_override", missing)
+        if attention_override is not None:
+            if previous_override is not missing:
+                raise RuntimeError("another optimized-attention override is already installed")
+            transformer_options["optimized_attention_override"] = attention_override
+        self._ensure_memory("before image-edit denoising", event)
+        try:
+            samples = comfy.sample.sample(
+                generation_model,
+                noise,
+                steps,
+                1.0,
+                sampler,
+                scheduler,
+                positive,
+                negative,
+                latent,
+                denoise=denoise,
+                callback=callback,
+                disable_pbar=True,
+                seed=seed,
+            )
+        finally:
+            if attention_override is not None:
+                attention_override.clear()
+                if previous_override is missing:
+                    transformer_options.pop("optimized_attention_override", None)
+                else:
+                    transformer_options["optimized_attention_override"] = previous_override
+        if attention_override is not None:
+            if attention_override.matched_calls == 0:
+                raise RuntimeError(
+                    "Krea main-stream attention was not reached by the edit spatial override"
+                )
+            if attention_override.text_refiner_calls == 0:
+                raise RuntimeError(
+                    "Krea text-refiner attention was not reached by the edit text partition"
+                )
+        for report in lora_reports:
+            if report.get("status") in {"applied_global", "applied_regional"}:
+                report["delta_statistics"] = lora_statistics.summary(str(report["id"]))
+
+        self._ensure_memory("before image-edit VAE decode", event)
+        self._prepare_vae_handoff(generation_model, event)
+        images = self._decode_vae(samples)
+        image_tensor = images[0]
+        while image_tensor.ndim > 3 and image_tensor.shape[0] == 1:
+            image_tensor = image_tensor[0]
+        if image_tensor.ndim != 3 or image_tensor.shape[-1] != 3:
+            raise RuntimeError(f"unexpected image-edit decoded shape: {tuple(images.shape)}")
+        array = (
+            image_tensor.detach()
+            .to(device="cpu", dtype=torch.float32)
+            .clamp(0, 1)
+            .numpy()
+            * 255.0
+        ).round().astype(np.uint8)
+        candidate = Image.fromarray(array).crop(
+            (0, 0, source_image.width, source_image.height)
+        )
+        preserve_outside = not prompt.strip()
+        if preserve_outside:
+            output_image, mask = composite_regional_edit(
+                source_image,
+                candidate,
+                active_regions,
+                composite_feather_pixels,
+            )
+            changed_bounds = mask.getbbox()
+        else:
+            output_image = candidate
+            changed_bounds = (0, 0, source_image.width, source_image.height)
+
+        destination = (output_directory or source_path.parent).expanduser().resolve()
+        destination.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        output_path = destination / f"{source_path.stem}_edited_{stamp}_seed-{seed}.png"
+        regional_summary = self._regional_summary(
+            regional_plan, bound_plan, attention_override
+        )
+        edit_summary = {
+            "source_image": str(source_path),
+            "original_size": [source_image.width, source_image.height],
+            "aligned_size": [geometry.aligned_width, geometry.aligned_height],
+            "seed": seed,
+            "steps": steps,
+            "sampler": sampler,
+            "scheduler": scheduler,
+            "denoise": denoise,
+            "preserve_outside_regions": preserve_outside,
+            "composite_feather_pixels": composite_feather_pixels,
+            "composite_bounds": list(changed_bounds) if changed_bounds else None,
+            "regional_prompting": regional_summary,
+            "loras": lora_reports,
+        }
+        metadata = PngImagePlugin.PngInfo()
+        for key, value in source_metadata.items():
+            if key not in {"k2lab_mode", "source_image", "image_edit", "k2lab_project"}:
+                metadata.add_text(key, value)
+        metadata.add_text("k2lab_mode", "krea2_regional_image_edit")
+        metadata.add_text("source_image", str(source_path))
+        metadata.add_text("prompt", conditioned_prompt)
+        metadata.add_text("global_prompt", prompt)
+        metadata.add_text("image_edit", json.dumps(edit_summary))
+        metadata.add_text("regional_prompting", json.dumps(regional_summary))
+        metadata.add_text("loras", json.dumps(lora_reports))
+        if project_json is not None:
+            metadata.add_text("k2lab_project", json.dumps(project_json, separators=(",", ":")))
+        output_image.save(output_path, pnginfo=metadata)
+        return {
+            "image_path": str(output_path),
+            "source_image": str(source_path),
+            "width": output_image.width,
+            "height": output_image.height,
+            "seed": seed,
+            "image_edit": edit_summary,
+            "memory": self.memory_snapshot("image editing complete"),
         }
 
     def refine_faces(

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
+from k2_region_lab.image_edit import ImageEditState
 from k2_region_lab.lora import (
     CHARACTER_IDENTITY_LORA_ROUTING,
     LORA_ROUTING_MODES,
@@ -32,7 +33,7 @@ from k2_region_lab.sampling import (
 
 PROJECT_SCHEMA = "k2-region-lab-project"
 PNG_PROJECT_KEY = "k2lab_project"
-PROJECT_VERSION = 16
+PROJECT_VERSION = 17
 SUPPORTED_PROJECT_VERSIONS = {
     1,
     2,
@@ -48,6 +49,7 @@ SUPPORTED_PROJECT_VERSIONS = {
     12,
     14,
     15,
+    16,
     PROJECT_VERSION,
 }
 
@@ -60,6 +62,11 @@ class SavedLora:
     strength: float = 1.0
     routing_mode: str = STANDARD_LORA_ROUTING
     trigger_phrase: str = ""
+    edit_enabled: bool = False
+    edit_global_scope: bool = False
+    edit_region_ids: tuple[str, ...] = ()
+    edit_routing_mode: str = STANDARD_LORA_ROUTING
+    edit_trigger_phrase: str = ""
 
     def __post_init__(self) -> None:
         if not -4.0 <= self.strength <= 4.0:
@@ -70,6 +77,26 @@ class SavedLora:
             raise ValueError("character identity routing requires a trigger phrase")
         if self.routing_mode == CHARACTER_IDENTITY_LORA_ROUTING and self.global_scope:
             raise ValueError("character identity routing requires regional scope")
+        if self.edit_routing_mode not in LORA_ROUTING_MODES:
+            raise ValueError(
+                f"unsupported saved edit LoRA routing mode: {self.edit_routing_mode!r}"
+            )
+        if self.edit_enabled and self.edit_global_scope and self.edit_region_ids:
+            raise ValueError("an edit LoRA cannot be global and region-scoped at the same time")
+        if self.edit_enabled and not self.edit_global_scope and not self.edit_region_ids:
+            raise ValueError("an enabled edit LoRA must have a global or regional scope")
+        if (
+            self.edit_enabled
+            and self.edit_routing_mode == CHARACTER_IDENTITY_LORA_ROUTING
+            and not self.edit_trigger_phrase.strip()
+        ):
+            raise ValueError("character identity edit routing requires a trigger phrase")
+        if (
+            self.edit_enabled
+            and self.edit_routing_mode == CHARACTER_IDENTITY_LORA_ROUTING
+            and self.edit_global_scope
+        ):
+            raise ValueError("character identity edit routing requires regional scope")
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,6 +145,7 @@ class ProjectState:
     loras: tuple[SavedLora, ...] = ()
     runtime: dict[str, Any] | None = None
     background_image: Path | None = None
+    image_edit: ImageEditState = field(default_factory=ImageEditState)
 
     def __post_init__(self) -> None:
         if not 256 <= self.canvas_width <= 4096 or not 256 <= self.canvas_height <= 4096:
@@ -208,6 +236,9 @@ class ProjectState:
                 raise ValueError("a global LoRA cannot also target regions")
             if not set(lora.region_ids).issubset(known_ids):
                 raise ValueError("a LoRA references a region missing from the project")
+            edit_ids = {region.region_id for region in self.image_edit.regions}
+            if not set(lora.edit_region_ids).issubset(edit_ids):
+                raise ValueError("an edit LoRA references a region missing from the edit setup")
 
 
 def project_document(state: ProjectState) -> dict[str, Any]:
@@ -293,9 +324,64 @@ def project_document(state: ProjectState) -> dict[str, Any]:
                 "strength": lora.strength,
                 "routing_mode": lora.routing_mode,
                 "trigger_phrase": lora.trigger_phrase,
+                "image_edit": {
+                    "enabled": lora.edit_enabled,
+                    "global": lora.edit_global_scope,
+                    "region_ids": list(lora.edit_region_ids),
+                    "routing_mode": lora.edit_routing_mode,
+                    "trigger_phrase": lora.edit_trigger_phrase,
+                },
             }
             for lora in state.loras
         ],
+        "image_edit": {
+            "source_image": (
+                str(state.image_edit.source_image)
+                if state.image_edit.source_image is not None
+                else None
+            ),
+            "width": state.image_edit.width,
+            "height": state.image_edit.height,
+            "global_prompt": state.image_edit.global_prompt,
+            "steps": state.image_edit.steps,
+            "sampler": state.image_edit.sampler,
+            "scheduler": state.image_edit.scheduler,
+            "seed": state.image_edit.seed,
+            "denoise": state.image_edit.denoise,
+            "composite_feather_pixels": state.image_edit.composite_feather_pixels,
+            "regional_prompt_strength": state.image_edit.regional_prompt_strength,
+            "regional_outside_penalty": state.image_edit.regional_outside_penalty,
+            "regional_feather_pixels": state.image_edit.regional_feather_pixels,
+            "regional_subject_competition": (
+                state.image_edit.regional_subject_competition
+            ),
+            "regional_subject_fill": state.image_edit.regional_subject_fill,
+            "regional_late_step_scale": state.image_edit.regional_late_step_scale,
+            "regional_lora_delta_adaptation": (
+                state.image_edit.regional_lora_delta_adaptation
+            ),
+            "regional_lora_delta_adaptation_gain": (
+                state.image_edit.regional_lora_delta_adaptation_gain
+            ),
+            "regions": [
+                {
+                    "id": region.region_id,
+                    "name": region.name,
+                    "box": {
+                        "x0": region.box.x0,
+                        "y0": region.box.y0,
+                        "x1": region.box.x1,
+                        "y1": region.box.y1,
+                    },
+                    "prompt": region.prompt,
+                    "face_identity_prompt": region.face_identity_prompt,
+                    "enabled": region.enabled,
+                    "priority": region.priority,
+                    "spatial_role": region.spatial_role,
+                }
+                for region in state.image_edit.regions
+            ],
+        },
         "runtime": state.runtime or {},
         "background_image": str(state.background_image) if state.background_image else None,
     }
@@ -326,6 +412,25 @@ def project_state(document: dict[str, Any]) -> ProjectState:
         )
         for item in document.get("regions", [])
     )
+    edit_document = document.get("image_edit", {})
+    edit_regions = tuple(
+        RegionDefinition(
+            region_id=str(item["id"]),
+            name=str(item["name"]),
+            box=PixelBox(
+                float(item["box"]["x0"]),
+                float(item["box"]["y0"]),
+                float(item["box"]["x1"]),
+                float(item["box"]["y1"]),
+            ),
+            prompt=str(item.get("prompt", "")),
+            face_identity_prompt=str(item.get("face_identity_prompt", "")),
+            enabled=bool(item.get("enabled", True)),
+            priority=int(item.get("priority", 0)),
+            spatial_role=str(item.get("spatial_role", "auto")),
+        )
+        for item in edit_document.get("regions", [])
+    )
     loras = tuple(
         SavedLora(
             path=Path(item["path"]).expanduser(),
@@ -334,6 +439,18 @@ def project_state(document: dict[str, Any]) -> ProjectState:
             strength=float(item.get("strength", 1.0)),
             routing_mode=str(item.get("routing_mode", STANDARD_LORA_ROUTING)),
             trigger_phrase=str(item.get("trigger_phrase", "")),
+            edit_enabled=bool(item.get("image_edit", {}).get("enabled", False)),
+            edit_global_scope=bool(item.get("image_edit", {}).get("global", False)),
+            edit_region_ids=tuple(
+                str(region_id)
+                for region_id in item.get("image_edit", {}).get("region_ids", [])
+            ),
+            edit_routing_mode=str(
+                item.get("image_edit", {}).get("routing_mode", STANDARD_LORA_ROUTING)
+            ),
+            edit_trigger_phrase=str(
+                item.get("image_edit", {}).get("trigger_phrase", "")
+            ),
         )
         for item in document.get("loras", [])
     )
@@ -414,6 +531,49 @@ def project_state(document: dict[str, Any]) -> ProjectState:
         loras=loras,
         runtime=dict(document.get("runtime", {})),
         background_image=Path(background).expanduser() if background else None,
+        image_edit=ImageEditState(
+            source_image=(
+                Path(edit_document["source_image"]).expanduser()
+                if edit_document.get("source_image")
+                else None
+            ),
+            width=int(edit_document.get("width", 0)),
+            height=int(edit_document.get("height", 0)),
+            global_prompt=str(edit_document.get("global_prompt", "")),
+            steps=int(edit_document.get("steps", 8)),
+            sampler=str(edit_document.get("sampler", DEFAULT_SAMPLER)),
+            scheduler=str(edit_document.get("scheduler", DEFAULT_SCHEDULER)),
+            seed=int(edit_document.get("seed", 0)),
+            denoise=float(edit_document.get("denoise", 0.35)),
+            composite_feather_pixels=int(
+                edit_document.get("composite_feather_pixels", 32)
+            ),
+            regional_prompt_strength=float(
+                edit_document.get("regional_prompt_strength", 1.0)
+            ),
+            regional_outside_penalty=float(
+                edit_document.get("regional_outside_penalty", 1.0)
+            ),
+            regional_feather_pixels=int(
+                edit_document.get("regional_feather_pixels", 128)
+            ),
+            regional_subject_competition=bool(
+                edit_document.get("regional_subject_competition", True)
+            ),
+            regional_subject_fill=bool(
+                edit_document.get("regional_subject_fill", True)
+            ),
+            regional_late_step_scale=float(
+                edit_document.get("regional_late_step_scale", 0.35)
+            ),
+            regional_lora_delta_adaptation=bool(
+                edit_document.get("regional_lora_delta_adaptation", False)
+            ),
+            regional_lora_delta_adaptation_gain=float(
+                edit_document.get("regional_lora_delta_adaptation_gain", 0.35)
+            ),
+            regions=edit_regions,
+        ),
     )
 
 

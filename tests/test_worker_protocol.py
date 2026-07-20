@@ -9,6 +9,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from k2_region_lab.worker.protocol import CommandKind
+
 
 def descriptor(shape: list[int], dtype: str = "BF16") -> dict:
     return {"dtype": dtype, "shape": shape, "data_offsets": [0, 2]}
@@ -65,6 +67,9 @@ def write_compatible_artifacts(root: Path) -> tuple[Path, Path, Path]:
 
 
 class WorkerProtocolTests(unittest.TestCase):
+    def test_image_edit_has_a_dedicated_worker_command(self) -> None:
+        self.assertEqual(CommandKind.EDIT_IMAGE.value, "edit_image")
+
     def test_external_worker_probes_validates_and_stops(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -285,6 +285,93 @@ def main() -> int:
                     command_id=command_id,
                 )
                 return 0
+            elif kind == CommandKind.EDIT_IMAGE:
+                if runtime is None or not runtime.loaded:
+                    raise RuntimeError("load the Krea 2 baseline before image editing")
+                emit(
+                    WorkerState.RUNNING,
+                    "Image editing started",
+                    command_id=command_id,
+                )
+
+                def edit_progress(step: int, total: int, memory: dict[str, Any]) -> None:
+                    emit(
+                        WorkerState.RUNNING,
+                        f"Image-edit denoising step {step}/{total}",
+                        command_id=command_id,
+                        payload={"step": step, "total_steps": total, "memory": memory},
+                    )
+
+                def edit_event(message: str, event_payload: dict[str, Any]) -> None:
+                    emit(
+                        WorkerState.RUNNING,
+                        message,
+                        command_id=command_id,
+                        payload=event_payload,
+                    )
+
+                edited = runtime.edit_image(
+                    image_path=Path(payload["image_path"]),
+                    output_directory=(
+                        Path(payload["output_directory"])
+                        if payload.get("output_directory")
+                        else None
+                    ),
+                    prompt=str(payload.get("prompt", "")),
+                    regions=region_definitions_from_payload(payload.get("regions", [])),
+                    loras=list(payload.get("loras", [])),
+                    seed=int(payload.get("seed", 0)),
+                    steps=int(payload.get("steps", 8)),
+                    sampler=str(payload.get("sampler", "euler")),
+                    scheduler=str(payload.get("scheduler", "simple")),
+                    denoise=float(payload.get("denoise", 0.35)),
+                    composite_feather_pixels=int(
+                        payload.get("composite_feather_pixels", 32)
+                    ),
+                    regional_prompt_strength=float(
+                        payload.get("regional_prompt_strength", 1.0)
+                    ),
+                    regional_outside_penalty=float(
+                        payload.get("regional_outside_penalty", 1.0)
+                    ),
+                    regional_feather_pixels=float(
+                        payload.get("regional_feather_pixels", 128.0)
+                    ),
+                    regional_subject_competition=bool(
+                        payload.get("regional_subject_competition", True)
+                    ),
+                    regional_subject_fill=bool(
+                        payload.get("regional_subject_fill", True)
+                    ),
+                    regional_late_step_scale=float(
+                        payload.get("regional_late_step_scale", 0.35)
+                    ),
+                    regional_lora_delta_adaptation=bool(
+                        payload.get("regional_lora_delta_adaptation", False)
+                    ),
+                    regional_lora_delta_adaptation_gain=float(
+                        payload.get("regional_lora_delta_adaptation_gain", 0.35)
+                    ),
+                    project_json=(
+                        dict(payload["project_json"])
+                        if isinstance(payload.get("project_json"), dict)
+                        else None
+                    ),
+                    progress=edit_progress,
+                    event=edit_event,
+                )
+                emit(
+                    WorkerState.READY,
+                    "Image editing complete",
+                    command_id=command_id,
+                    payload=edited,
+                )
+                emit(
+                    WorkerState.COMPLETE,
+                    "Image-edit worker releasing GPU and system RAM",
+                    command_id=command_id,
+                )
+                return 0
             elif kind == CommandKind.REFINE_FACES:
                 if runtime is None or not runtime.loaded:
                     raise RuntimeError("load the Krea 2 baseline before refining faces")
@@ -370,6 +457,7 @@ def main() -> int:
             if kind in {
                 CommandKind.LOAD_MODEL,
                 CommandKind.GENERATE_BASELINE,
+                CommandKind.EDIT_IMAGE,
                 CommandKind.REFINE_FACES,
             }:
                 return 1

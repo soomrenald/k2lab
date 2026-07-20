@@ -126,6 +126,75 @@ class DesktopSmokeTests(unittest.TestCase):
             self.assertFalse(window.lora_list.isHidden())
             self.assertFalse(window.lora_scope_list.isHidden())
 
+    def test_image_edit_workspace_has_independent_source_regions_and_project_state(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "edit-source.jpg"
+            Image.new("RGB", (320, 288), "navy").save(source)
+            window = self.make_window(root)
+
+            self.assertEqual(window.workspace_tabs.tabText(0), "Generation canvas")
+            self.assertEqual(window.workspace_tabs.tabText(1), "Image editing")
+            self.assertEqual(window.workspace_tabs.tabText(2), "Face refinement")
+            self.assertTrue(window._set_edit_source(source, confirm_reset=False))
+            window.edit_canvas.region_created.emit(
+                "edit-one", 24.0, 32.0, 180.0, 200.0
+            )
+            window.edit_region_prompt.setPlainText("replace the window with stained glass")
+            self.application.processEvents()
+
+            self.assertEqual(window.regions, [])
+            self.assertEqual(len(window.edit_regions), 1)
+            self.assertEqual(
+                window.edit_regions[0].prompt,
+                "replace the window with stained glass",
+            )
+            state = window._project_state()
+            self.assertEqual(state.image_edit.source_image, source.resolve())
+            self.assertEqual((state.image_edit.width, state.image_edit.height), (320, 288))
+            self.assertEqual(state.image_edit.regions[0].region_id, "edit-one")
+            window.close()
+
+    def test_image_edit_lora_scope_is_independent_and_defaults_disabled(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.png"
+            lora_path = root / "character.safetensors"
+            Image.new("RGB", (320, 320), "black").save(source)
+            write_lora(lora_path)
+            window = self.make_window(root)
+            window.canvas.region_created.emit("generation-region", 0, 0, 160, 320)
+            self.assertTrue(window._add_lora_path(lora_path))
+            lora_id = window._current_lora_id()
+            self.assertTrue(window.lora_library.binding_for(lora_id).global_scope)
+
+            self.assertTrue(window._set_edit_source(source, confirm_reset=False))
+            window.edit_canvas.region_created.emit("edit-region", 40, 40, 240, 240)
+            window.edit_region_prompt.setPlainText("a different jacket")
+            window.workspace_tabs.setCurrentIndex(1)
+            self.application.processEvents()
+
+            edit_binding = window._edit_lora_bindings[lora_id]
+            self.assertFalse(edit_binding.global_scope)
+            self.assertEqual(edit_binding.region_ids, ())
+            region_item = next(
+                window.lora_scope_list.item(index)
+                for index in range(window.lora_scope_list.count())
+                if window.lora_scope_list.item(index).data(Qt.ItemDataRole.UserRole)
+                == "edit-region"
+            )
+            region_item.setCheckState(Qt.CheckState.Checked)
+            self.application.processEvents()
+
+            self.assertEqual(
+                window._edit_lora_bindings[lora_id].region_ids, ("edit-region",)
+            )
+            self.assertTrue(window.lora_library.binding_for(lora_id).global_scope)
+            saved = window._project_state().loras[0]
+            self.assertTrue(saved.edit_enabled)
+            self.assertEqual(saved.edit_region_ids, ("edit-region",))
+            window.close()
+
     def test_file_menu_imports_embedded_project_from_generated_png(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

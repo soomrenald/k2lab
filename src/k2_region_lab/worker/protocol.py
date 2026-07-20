@@ -14,6 +14,7 @@ class CommandKind(StrEnum):
     LOAD_MODEL = "load_model"
     INITIALIZE_RUN = "initialize_run"
     GENERATE_BASELINE = "generate_baseline"
+    EDIT_IMAGE = "edit_image"
     REFINE_FACES = "refine_faces"
     NEXT_BLOCK = "next_block"
     NEXT_STEP = "next_step"
