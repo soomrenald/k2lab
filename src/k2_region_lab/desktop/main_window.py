@@ -2633,6 +2633,9 @@ class MainWindow(QMainWindow):
         )
 
         sampling_state = edit_state if use_saved_edit_reference else state
+        edit_controls_state = (
+            edit_state if use_saved_edit_reference else ImageEditState()
+        )
         self.edit_seed_input.setValue(sampling_state.seed)
         self.edit_steps_input.setValue(sampling_state.steps)
         self.edit_sampler_input.setCurrentIndex(
@@ -2640,6 +2643,22 @@ class MainWindow(QMainWindow):
         )
         self.edit_scheduler_input.setCurrentIndex(
             max(0, self.edit_scheduler_input.findData(sampling_state.scheduler))
+        )
+        self.edit_denoise_input.setValue(edit_controls_state.denoise)
+        self.edit_latent_feather_input.setValue(
+            edit_controls_state.latent_feather_pixels
+        )
+        self.edit_composite_feather_input.setValue(
+            edit_controls_state.composite_feather_pixels
+        )
+        self.edit_entire_image_input.setChecked(
+            edit_controls_state.edit_entire_image
+        )
+        self.edit_preserve_identity_input.setChecked(
+            edit_controls_state.preserve_identity
+        )
+        self.edit_reference_retention_input.setValue(
+            edit_controls_state.reference_description_retention
         )
         self.edit_regional_strength_input.setValue(
             sampling_state.regional_prompt_strength

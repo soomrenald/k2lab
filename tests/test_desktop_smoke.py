@@ -299,6 +299,11 @@ class DesktopSmokeTests(unittest.TestCase):
                     reference_regions=(reference_region,),
                     seed=812,
                     steps=15,
+                    denoise=0.7,
+                    latent_feather_pixels=72,
+                    composite_feather_pixels=36,
+                    preserve_identity=False,
+                    reference_description_retention=0.65,
                 ),
             )
             metadata = PngImagePlugin.PngInfo()
@@ -315,6 +320,11 @@ class DesktopSmokeTests(unittest.TestCase):
             )
             self.assertEqual(window.edit_seed_input.value(), 812)
             self.assertEqual(window.edit_steps_input.value(), 15)
+            self.assertEqual(window.edit_denoise_input.value(), 0.7)
+            self.assertEqual(window.edit_latent_feather_input.value(), 72)
+            self.assertEqual(window.edit_composite_feather_input.value(), 36)
+            self.assertFalse(window.edit_preserve_identity_input.isChecked())
+            self.assertEqual(window.edit_reference_retention_input.value(), 0.65)
             self.assertEqual(
                 window.edit_reference_regions[0].region_id,
                 "reference-person",
