@@ -33,7 +33,7 @@ from k2_region_lab.sampling import (
 
 PROJECT_SCHEMA = "k2-region-lab-project"
 PNG_PROJECT_KEY = "k2lab_project"
-PROJECT_VERSION = 17
+PROJECT_VERSION = 18
 SUPPORTED_PROJECT_VERSIONS = {
     1,
     2,
@@ -50,6 +50,7 @@ SUPPORTED_PROJECT_VERSIONS = {
     14,
     15,
     16,
+    17,
     PROJECT_VERSION,
 }
 
@@ -67,6 +68,11 @@ class SavedLora:
     edit_region_ids: tuple[str, ...] = ()
     edit_routing_mode: str = STANDARD_LORA_ROUTING
     edit_trigger_phrase: str = ""
+    reference_enabled: bool = False
+    reference_global_scope: bool = False
+    reference_region_ids: tuple[str, ...] = ()
+    reference_routing_mode: str = STANDARD_LORA_ROUTING
+    reference_trigger_phrase: str = ""
 
     def __post_init__(self) -> None:
         if not -4.0 <= self.strength <= 4.0:
@@ -97,6 +103,25 @@ class SavedLora:
             and self.edit_global_scope
         ):
             raise ValueError("character identity edit routing requires regional scope")
+        if self.reference_routing_mode not in LORA_ROUTING_MODES:
+            raise ValueError(
+                "unsupported saved reference LoRA routing mode: "
+                f"{self.reference_routing_mode!r}"
+            )
+        if (
+            self.reference_enabled
+            and self.reference_global_scope
+            and self.reference_region_ids
+        ):
+            raise ValueError(
+                "a reference LoRA cannot be global and region-scoped at the same time"
+            )
+        if (
+            self.reference_enabled
+            and not self.reference_global_scope
+            and not self.reference_region_ids
+        ):
+            raise ValueError("an enabled reference LoRA must have a scope")
 
 
 @dataclass(frozen=True, slots=True)
@@ -239,6 +264,13 @@ class ProjectState:
             edit_ids = {region.region_id for region in self.image_edit.regions}
             if not set(lora.edit_region_ids).issubset(edit_ids):
                 raise ValueError("an edit LoRA references a region missing from the edit setup")
+            reference_ids = {
+                region.region_id for region in self.image_edit.reference_regions
+            }
+            if not set(lora.reference_region_ids).issubset(reference_ids):
+                raise ValueError(
+                    "a reference LoRA references a region missing from the reference setup"
+                )
 
 
 def project_document(state: ProjectState) -> dict[str, Any]:
@@ -331,6 +363,13 @@ def project_document(state: ProjectState) -> dict[str, Any]:
                     "routing_mode": lora.edit_routing_mode,
                     "trigger_phrase": lora.edit_trigger_phrase,
                 },
+                "image_edit_reference": {
+                    "enabled": lora.reference_enabled,
+                    "global": lora.reference_global_scope,
+                    "region_ids": list(lora.reference_region_ids),
+                    "routing_mode": lora.reference_routing_mode,
+                    "trigger_phrase": lora.reference_trigger_phrase,
+                },
             }
             for lora in state.loras
         ],
@@ -340,15 +379,49 @@ def project_document(state: ProjectState) -> dict[str, Any]:
                 if state.image_edit.source_image is not None
                 else None
             ),
+            "associated_project": (
+                str(state.image_edit.associated_project)
+                if state.image_edit.associated_project is not None
+                else None
+            ),
             "width": state.image_edit.width,
             "height": state.image_edit.height,
+            "reference_global_prompt": state.image_edit.reference_global_prompt,
+            "reference_prompt_emphases": [
+                {
+                    "scope_id": emphasis.scope_id,
+                    "phrase": emphasis.phrase,
+                    "strength": emphasis.strength,
+                    "occurrence": emphasis.occurrence,
+                }
+                for emphasis in state.image_edit.reference_prompt_emphases
+            ],
+            "reference_projector_enabled": (
+                state.image_edit.reference_projector_enabled
+            ),
+            "reference_projector_preset": state.image_edit.reference_projector_preset,
+            "reference_projector_values": list(
+                state.image_edit.reference_projector_values
+            ),
+            "reference_projector_multiplier": (
+                state.image_edit.reference_projector_multiplier
+            ),
+            "reference_projector_identity_protection": (
+                state.image_edit.reference_projector_identity_protection
+            ),
             "global_prompt": state.image_edit.global_prompt,
             "steps": state.image_edit.steps,
             "sampler": state.image_edit.sampler,
             "scheduler": state.image_edit.scheduler,
             "seed": state.image_edit.seed,
             "denoise": state.image_edit.denoise,
+            "latent_feather_pixels": state.image_edit.latent_feather_pixels,
             "composite_feather_pixels": state.image_edit.composite_feather_pixels,
+            "edit_entire_image": state.image_edit.edit_entire_image,
+            "preserve_identity": state.image_edit.preserve_identity,
+            "reference_description_retention": (
+                state.image_edit.reference_description_retention
+            ),
             "regional_prompt_strength": state.image_edit.regional_prompt_strength,
             "regional_outside_penalty": state.image_edit.regional_outside_penalty,
             "regional_feather_pixels": state.image_edit.regional_feather_pixels,
@@ -380,6 +453,24 @@ def project_document(state: ProjectState) -> dict[str, Any]:
                     "spatial_role": region.spatial_role,
                 }
                 for region in state.image_edit.regions
+            ],
+            "reference_regions": [
+                {
+                    "id": region.region_id,
+                    "name": region.name,
+                    "box": {
+                        "x0": region.box.x0,
+                        "y0": region.box.y0,
+                        "x1": region.box.x1,
+                        "y1": region.box.y1,
+                    },
+                    "prompt": region.prompt,
+                    "face_identity_prompt": region.face_identity_prompt,
+                    "enabled": region.enabled,
+                    "priority": region.priority,
+                    "spatial_role": region.spatial_role,
+                }
+                for region in state.image_edit.reference_regions
             ],
         },
         "runtime": state.runtime or {},
@@ -431,6 +522,24 @@ def project_state(document: dict[str, Any]) -> ProjectState:
         )
         for item in edit_document.get("regions", [])
     )
+    edit_reference_regions = tuple(
+        RegionDefinition(
+            region_id=str(item["id"]),
+            name=str(item["name"]),
+            box=PixelBox(
+                float(item["box"]["x0"]),
+                float(item["box"]["y0"]),
+                float(item["box"]["x1"]),
+                float(item["box"]["y1"]),
+            ),
+            prompt=str(item.get("prompt", "")),
+            face_identity_prompt=str(item.get("face_identity_prompt", "")),
+            enabled=bool(item.get("enabled", True)),
+            priority=int(item.get("priority", 0)),
+            spatial_role=str(item.get("spatial_role", "auto")),
+        )
+        for item in edit_document.get("reference_regions", [])
+    )
     loras = tuple(
         SavedLora(
             path=Path(item["path"]).expanduser(),
@@ -450,6 +559,26 @@ def project_state(document: dict[str, Any]) -> ProjectState:
             ),
             edit_trigger_phrase=str(
                 item.get("image_edit", {}).get("trigger_phrase", "")
+            ),
+            reference_enabled=bool(
+                item.get("image_edit_reference", {}).get("enabled", False)
+            ),
+            reference_global_scope=bool(
+                item.get("image_edit_reference", {}).get("global", False)
+            ),
+            reference_region_ids=tuple(
+                str(region_id)
+                for region_id in item.get("image_edit_reference", {}).get(
+                    "region_ids", []
+                )
+            ),
+            reference_routing_mode=str(
+                item.get("image_edit_reference", {}).get(
+                    "routing_mode", STANDARD_LORA_ROUTING
+                )
+            ),
+            reference_trigger_phrase=str(
+                item.get("image_edit_reference", {}).get("trigger_phrase", "")
             ),
         )
         for item in document.get("loras", [])
@@ -537,16 +666,54 @@ def project_state(document: dict[str, Any]) -> ProjectState:
                 if edit_document.get("source_image")
                 else None
             ),
+            associated_project=(
+                Path(edit_document["associated_project"]).expanduser()
+                if edit_document.get("associated_project")
+                else None
+            ),
             width=int(edit_document.get("width", 0)),
             height=int(edit_document.get("height", 0)),
+            reference_global_prompt=str(
+                edit_document.get("reference_global_prompt", "")
+            ),
+            reference_regions=edit_reference_regions,
+            reference_prompt_emphases=prompt_emphases_from_payload(
+                edit_document.get("reference_prompt_emphases", [])
+            ),
+            reference_projector_enabled=bool(
+                edit_document.get("reference_projector_enabled", False)
+            ),
+            reference_projector_preset=str(
+                edit_document.get("reference_projector_preset", DEFAULT_PROJECTOR_PRESET)
+            ),
+            reference_projector_values=validate_projector_values(
+                edit_document.get(
+                    "reference_projector_values",
+                    PROJECTOR_PRESETS[DEFAULT_PROJECTOR_PRESET],
+                )
+            ),
+            reference_projector_multiplier=float(
+                edit_document.get("reference_projector_multiplier", 1.0)
+            ),
+            reference_projector_identity_protection=float(
+                edit_document.get("reference_projector_identity_protection", 1.0)
+            ),
             global_prompt=str(edit_document.get("global_prompt", "")),
             steps=int(edit_document.get("steps", 8)),
             sampler=str(edit_document.get("sampler", DEFAULT_SAMPLER)),
             scheduler=str(edit_document.get("scheduler", DEFAULT_SCHEDULER)),
             seed=int(edit_document.get("seed", 0)),
-            denoise=float(edit_document.get("denoise", 0.35)),
+            denoise=float(edit_document.get("denoise", 0.15)),
+            latent_feather_pixels=int(
+                edit_document.get("latent_feather_pixels", 48)
+            ),
             composite_feather_pixels=int(
-                edit_document.get("composite_feather_pixels", 32)
+                edit_document.get("composite_feather_pixels", 64)
+            ),
+            edit_entire_image=bool(edit_document.get("edit_entire_image", False)),
+            preserve_identity=bool(edit_document.get("preserve_identity", True)),
+            reference_description_retention=float(
+                edit_document.get("reference_description_retention", 0.25)
             ),
             regional_prompt_strength=float(
                 edit_document.get("regional_prompt_strength", 1.0)
@@ -613,3 +780,27 @@ def load_project_image(path: Path) -> ProjectState:
     if not isinstance(document, dict):
         raise ValueError("embedded K2 project root must be a JSON object")
     return replace(project_state(document), background_image=source)
+
+
+def load_associated_image_project(path: Path) -> tuple[ProjectState, Path] | None:
+    """Load project metadata embedded in an image or from an exact sidecar name."""
+
+    from PIL import Image
+
+    source = path.expanduser().resolve()
+    with Image.open(source) as image:
+        encoded = image.info.get(PNG_PROJECT_KEY)
+    if isinstance(encoded, str) and encoded.strip():
+        document = json.loads(encoded)
+        if not isinstance(document, dict):
+            raise ValueError("embedded K2 project root must be a JSON object")
+        return replace(project_state(document), background_image=source), source
+
+    sidecars = (
+        source.with_suffix(".k2lab.json"),
+        source.with_name(source.name + ".k2lab.json"),
+    )
+    for sidecar in dict.fromkeys(sidecars):
+        if sidecar.is_file():
+            return load_project(sidecar), sidecar
+    return None

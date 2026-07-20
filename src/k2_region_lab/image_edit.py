@@ -7,6 +7,8 @@ from pathlib import Path
 from PIL import Image, ImageChops, ImageDraw, ImageOps
 
 from k2_region_lab.regions import CanvasGeometry, RegionDefinition
+from k2_region_lab.projector import DEFAULT_PROJECTOR_PRESET, PROJECTOR_PRESETS
+from k2_region_lab.regional_prompting import PromptEmphasis
 from k2_region_lab.sampling import (
     DEFAULT_SAMPLER,
     DEFAULT_SCHEDULER,
@@ -21,15 +23,30 @@ SUPPORTED_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
 @dataclass(frozen=True, slots=True)
 class ImageEditState:
     source_image: Path | None = None
+    associated_project: Path | None = None
     width: int = 0
     height: int = 0
+    reference_global_prompt: str = ""
+    reference_regions: tuple[RegionDefinition, ...] = ()
+    reference_prompt_emphases: tuple[PromptEmphasis, ...] = ()
+    reference_projector_enabled: bool = False
+    reference_projector_preset: str = DEFAULT_PROJECTOR_PRESET
+    reference_projector_values: tuple[float, ...] = PROJECTOR_PRESETS[
+        DEFAULT_PROJECTOR_PRESET
+    ]
+    reference_projector_multiplier: float = 1.0
+    reference_projector_identity_protection: float = 1.0
     global_prompt: str = ""
     steps: int = 8
     sampler: str = DEFAULT_SAMPLER
     scheduler: str = DEFAULT_SCHEDULER
     seed: int = 0
-    denoise: float = 0.35
-    composite_feather_pixels: int = 32
+    denoise: float = 0.15
+    latent_feather_pixels: int = 48
+    composite_feather_pixels: int = 64
+    edit_entire_image: bool = False
+    preserve_identity: bool = True
+    reference_description_retention: float = 0.25
     regional_prompt_strength: float = 1.0
     regional_outside_penalty: float = 1.0
     regional_feather_pixels: int = 128
@@ -54,6 +71,8 @@ class ImageEditState:
             raise ValueError("image-edit seed must be between 0 and 2147483647")
         if not 0.0 < self.denoise <= 1.0:
             raise ValueError("image-edit denoise must be in (0, 1]")
+        if not 0 <= self.latent_feather_pixels <= 256:
+            raise ValueError("image-edit latent feather must be between 0 and 256 pixels")
         if not 0 <= self.composite_feather_pixels <= 256:
             raise ValueError("image-edit composite feather must be between 0 and 256 pixels")
         if not 0.0 < self.regional_prompt_strength <= 10.0:
@@ -66,6 +85,8 @@ class ImageEditState:
             raise ValueError("image-edit late-step scale must be between zero and one")
         if not 0.0 <= self.regional_lora_delta_adaptation_gain <= 1.0:
             raise ValueError("image-edit LoRA delta adaptation gain must be between zero and one")
+        if not 0.0 <= self.reference_description_retention <= 1.0:
+            raise ValueError("reference description retention must be between zero and one")
         ids = [region.region_id for region in self.regions]
         if len(ids) != len(set(ids)):
             raise ValueError("image-edit region IDs must be unique")
@@ -79,6 +100,19 @@ class ImageEditState:
                 or region.box.y1 > self.height
             ):
                 raise ValueError("image-edit region boxes must stay inside the source image")
+        reference_ids = [region.region_id for region in self.reference_regions]
+        if len(reference_ids) != len(set(reference_ids)):
+            raise ValueError("image-edit reference region IDs must be unique")
+        for region in self.reference_regions:
+            if region.box.width < 16 or region.box.height < 16:
+                raise ValueError("image-edit reference boxes must be at least 16x16 pixels")
+            if has_geometry and (
+                region.box.x0 < 0
+                or region.box.y0 < 0
+                or region.box.x1 > self.width
+                or region.box.y1 > self.height
+            ):
+                raise ValueError("image-edit reference boxes must stay inside the source image")
 
 
 def load_source_image(path: Path) -> tuple[Image.Image, dict[str, str]]:
