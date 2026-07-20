@@ -29,6 +29,7 @@ if PYSIDE_AVAILABLE:
 
     from k2_region_lab.config import AppSettings, ModelDirectories
     from k2_region_lab.desktop.main_window import GLOBAL_SCOPE_ID, MainWindow
+    from k2_region_lab.image_edit import ImageEditState
     from k2_region_lab.lora import CHARACTER_IDENTITY_LORA_ROUTING
     from k2_region_lab.processes import WorkerProcess
     from k2_region_lab.project import ProjectState, SavedLora, project_document
@@ -261,6 +262,69 @@ class DesktopSmokeTests(unittest.TestCase):
             state = window._project_state().image_edit
             self.assertEqual(state.reference_regions[0].prompt, "modified reference")
             self.assertEqual(state.regions[0].region_id, "edit")
+            window.close()
+
+    def test_reediting_output_prefers_saved_reference_layer(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "edited.png"
+            lora_path = root / "identity.safetensors"
+            write_lora(lora_path)
+            reference_region = RegionDefinition(
+                "reference-person",
+                "Original person",
+                PixelBox(20, 10, 280, 310),
+                "the retained person",
+                spatial_role="subject",
+            )
+            state = ProjectState(
+                canvas_width=320,
+                canvas_height=320,
+                global_prompt="stale generation prompt",
+                seed=1,
+                loras=(
+                    SavedLora(
+                        path=lora_path,
+                        global_scope=True,
+                        reference_enabled=True,
+                        reference_global_scope=False,
+                        reference_region_ids=("reference-person",),
+                    ),
+                ),
+                image_edit=ImageEditState(
+                    source_image=Path("/previous/source.png"),
+                    width=320,
+                    height=320,
+                    reference_global_prompt="retained edit reference",
+                    reference_regions=(reference_region,),
+                    seed=812,
+                    steps=15,
+                ),
+            )
+            metadata = PngImagePlugin.PngInfo()
+            metadata.add_text("k2lab_mode", "krea2_regional_image_edit")
+            metadata.add_text("k2lab_project", json.dumps(project_document(state)))
+            Image.new("RGB", (320, 320), "navy").save(source, pnginfo=metadata)
+            window = self.make_window(root)
+
+            self.assertTrue(window._set_edit_source(source, confirm_reset=False))
+
+            self.assertEqual(
+                window.edit_reference_global_prompt.toPlainText(),
+                "retained edit reference",
+            )
+            self.assertEqual(window.edit_seed_input.value(), 812)
+            self.assertEqual(window.edit_steps_input.value(), 15)
+            self.assertEqual(
+                window.edit_reference_regions[0].region_id,
+                "reference-person",
+            )
+            lora_id = window._current_lora_id()
+            self.assertFalse(window._edit_reference_lora_bindings[lora_id].global_scope)
+            self.assertEqual(
+                window._edit_reference_lora_bindings[lora_id].region_ids,
+                ("reference-person",),
+            )
             window.close()
 
     def test_file_menu_imports_embedded_project_from_generated_png(self) -> None:

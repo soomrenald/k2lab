@@ -2431,7 +2431,7 @@ class MainWindow(QMainWindow):
 
     def _set_edit_source(self, path: Path, *, confirm_reset: bool) -> bool:
         try:
-            image, _metadata = load_source_image(path)
+            image, metadata = load_source_image(path)
         except (OSError, ValueError) as error:
             self.events.addItem(f"Could not load image-edit source: {error}")
             return False
@@ -2476,7 +2476,13 @@ class MainWindow(QMainWindow):
         else:
             state, provenance = associated
             self._apply_edit_reference_project(
-                state, provenance, image.width, image.height
+                state,
+                provenance,
+                image.width,
+                image.height,
+                use_saved_edit_reference=(
+                    metadata.get("k2lab_mode") == "krea2_regional_image_edit"
+                ),
             )
         self.edit_run_button.setEnabled(
             bool(not self._generation_active and self.artifacts and self.artifacts.complete)
@@ -2540,15 +2546,39 @@ class MainWindow(QMainWindow):
         provenance: Path,
         image_width: int,
         image_height: int,
+        *,
+        use_saved_edit_reference: bool = False,
     ) -> None:
         self._clear_edit_reference_project()
+        edit_state = state.image_edit
+        reference_prompt = (
+            edit_state.reference_global_prompt
+            if use_saved_edit_reference
+            else state.global_prompt
+        )
+        reference_regions = (
+            edit_state.reference_regions
+            if use_saved_edit_reference
+            else state.regions
+        )
+        reference_width = (
+            edit_state.width if use_saved_edit_reference else state.canvas_width
+        )
+        reference_height = (
+            edit_state.height if use_saved_edit_reference else state.canvas_height
+        )
+        reference_emphases = (
+            edit_state.reference_prompt_emphases
+            if use_saved_edit_reference
+            else state.prompt_emphases
+        )
         self._edit_associated_project_path = provenance.expanduser().resolve()
-        self.edit_reference_global_prompt.setPlainText(state.global_prompt)
-        self.edit_reference_prompt_emphases = list(state.prompt_emphases)
+        self.edit_reference_global_prompt.setPlainText(reference_prompt)
+        self.edit_reference_prompt_emphases = list(reference_emphases)
         self.edit_reference_regions = self._scaled_regions_for_image(
-            state.regions,
-            state.canvas_width,
-            state.canvas_height,
+            reference_regions,
+            reference_width,
+            reference_height,
             image_width,
             image_height,
         )
@@ -2569,39 +2599,71 @@ class MainWindow(QMainWindow):
                 region.name,
             )
         self._sync_edit_reference_canvas_stack()
-        self._edit_reference_projector_enabled = state.projector_enabled
-        self._edit_reference_projector_preset = state.projector_preset
-        self._edit_reference_projector_values = state.projector_values
-        self._edit_reference_projector_multiplier = state.projector_multiplier
+        self._edit_reference_projector_enabled = (
+            edit_state.reference_projector_enabled
+            if use_saved_edit_reference
+            else state.projector_enabled
+        )
+        self._edit_reference_projector_preset = (
+            edit_state.reference_projector_preset
+            if use_saved_edit_reference
+            else state.projector_preset
+        )
+        self._edit_reference_projector_values = (
+            edit_state.reference_projector_values
+            if use_saved_edit_reference
+            else state.projector_values
+        )
+        self._edit_reference_projector_multiplier = (
+            edit_state.reference_projector_multiplier
+            if use_saved_edit_reference
+            else state.projector_multiplier
+        )
         self._edit_reference_projector_identity_protection = (
-            state.projector_identity_protection
+            edit_state.reference_projector_identity_protection
+            if use_saved_edit_reference
+            else state.projector_identity_protection
         )
 
-        self.edit_seed_input.setValue(state.seed)
-        self.edit_steps_input.setValue(state.steps)
+        sampling_state = edit_state if use_saved_edit_reference else state
+        self.edit_seed_input.setValue(sampling_state.seed)
+        self.edit_steps_input.setValue(sampling_state.steps)
         self.edit_sampler_input.setCurrentIndex(
-            max(0, self.edit_sampler_input.findData(state.sampler))
+            max(0, self.edit_sampler_input.findData(sampling_state.sampler))
         )
         self.edit_scheduler_input.setCurrentIndex(
-            max(0, self.edit_scheduler_input.findData(state.scheduler))
+            max(0, self.edit_scheduler_input.findData(sampling_state.scheduler))
         )
-        self.edit_regional_strength_input.setValue(state.regional_prompt_strength)
-        self.edit_outside_penalty_input.setValue(state.regional_outside_penalty)
-        self.edit_spatial_falloff_input.setValue(state.regional_feather_pixels)
+        self.edit_regional_strength_input.setValue(
+            sampling_state.regional_prompt_strength
+        )
+        self.edit_outside_penalty_input.setValue(
+            sampling_state.regional_outside_penalty
+        )
+        self.edit_spatial_falloff_input.setValue(
+            sampling_state.regional_feather_pixels
+        )
         self.edit_subject_competition_input.setChecked(
-            state.regional_subject_competition
+            sampling_state.regional_subject_competition
         )
-        self.edit_subject_fill_input.setChecked(state.regional_subject_fill)
-        self.edit_late_step_scale_input.setValue(state.regional_late_step_scale)
+        self.edit_subject_fill_input.setChecked(sampling_state.regional_subject_fill)
+        self.edit_late_step_scale_input.setValue(
+            sampling_state.regional_late_step_scale
+        )
         self.edit_lora_adaptation_input.setChecked(
-            state.regional_lora_delta_adaptation
+            sampling_state.regional_lora_delta_adaptation
         )
         self.edit_lora_adaptation_gain_input.setValue(
-            state.regional_lora_delta_adaptation_gain
+            sampling_state.regional_lora_delta_adaptation_gain
         )
 
         missing_loras = 0
-        for saved_lora in state.loras:
+        reference_loras = (
+            tuple(lora for lora in state.loras if lora.reference_enabled)
+            if use_saved_edit_reference
+            else state.loras
+        )
+        for saved_lora in reference_loras:
             if not self._add_lora_path(saved_lora.path):
                 missing_loras += 1
                 continue
@@ -2613,11 +2675,30 @@ class MainWindow(QMainWindow):
             self.lora_library.set_strength(lora_id, saved_lora.strength)
             self._edit_reference_lora_bindings[lora_id] = LoraBinding(
                 lora_id=lora_id,
-                global_scope=saved_lora.global_scope,
-                region_ids=saved_lora.region_ids,
+                global_scope=(
+                    saved_lora.reference_global_scope
+                    if use_saved_edit_reference
+                    else saved_lora.global_scope
+                ),
+                region_ids=(
+                    saved_lora.reference_region_ids
+                    if use_saved_edit_reference
+                    else saved_lora.region_ids
+                ),
                 strength=saved_lora.strength,
-                routing_mode=saved_lora.routing_mode,
-                trigger_phrase=saved_lora.trigger_phrase or saved_lora.path.stem,
+                routing_mode=(
+                    saved_lora.reference_routing_mode
+                    if use_saved_edit_reference
+                    else saved_lora.routing_mode
+                ),
+                trigger_phrase=(
+                    (
+                        saved_lora.reference_trigger_phrase
+                        if use_saved_edit_reference
+                        else saved_lora.trigger_phrase
+                    )
+                    or saved_lora.path.stem
+                ),
             )
             list_item = self._lora_list_item(lora_id)
             if list_item is not None:
@@ -2635,8 +2716,9 @@ class MainWindow(QMainWindow):
         self._refresh_lora_scope()
         self.events.addItem(
             f"Loaded source reference conditioning from {provenance.name}: "
-            f"fixed seed {state.seed}, {len(self.edit_reference_regions)} region(s), "
-            f"{len(state.loras) - missing_loras} LoRA(s)"
+            f"fixed seed {sampling_state.seed}, "
+            f"{len(self.edit_reference_regions)} region(s), "
+            f"{len(reference_loras) - missing_loras} LoRA(s)"
         )
 
     def _next_edit_region_name(self) -> str:
