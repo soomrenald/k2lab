@@ -25,12 +25,13 @@ if PYSIDE_AVAILABLE:
         QMessageBox,
         QTextEdit,
     )
+    from PIL import Image, PngImagePlugin
 
     from k2_region_lab.config import AppSettings, ModelDirectories
     from k2_region_lab.desktop.main_window import GLOBAL_SCOPE_ID, MainWindow
     from k2_region_lab.lora import CHARACTER_IDENTITY_LORA_ROUTING
     from k2_region_lab.processes import WorkerProcess
-    from k2_region_lab.project import ProjectState
+    from k2_region_lab.project import ProjectState, project_document
     from k2_region_lab.regional_prompting import PromptEmphasis
     from k2_region_lab.worker.protocol import CommandKind
 
@@ -124,6 +125,34 @@ class DesktopSmokeTests(unittest.TestCase):
             window.settings_tabs.setCurrentIndex(2)
             self.assertFalse(window.lora_list.isHidden())
             self.assertFalse(window.lora_scope_list.isHidden())
+
+    def test_file_menu_imports_embedded_project_from_generated_png(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            image_path = root / "generated.png"
+            document = project_document(
+                ProjectState(
+                    canvas_width=512,
+                    canvas_height=768,
+                    global_prompt="a copper airship",
+                    seed=73,
+                )
+            )
+            metadata = PngImagePlugin.PngInfo()
+            metadata.add_text("k2lab_project", json.dumps(document))
+            Image.new("RGB", (512, 768), "navy").save(image_path, pnginfo=metadata)
+            window = self.make_window(root)
+
+            self.assertIn("&Import image…", [action.text() for action in window.file_menu.actions()])
+            self.assertTrue(window._load_project_image_from(image_path))
+
+            self.assertEqual(window.global_prompt.toPlainText(), "a copper airship")
+            self.assertEqual(window.seed_input.value(), 73)
+            self.assertEqual(window._background_image_path, image_path.resolve())
+            self.assertEqual(window._face_source_path, image_path.resolve())
+            self.assertIsNone(window._current_project_path)
+            self.assertIn("(imported)", window.windowTitle())
+            window.close()
 
     def test_krea_checkpoint_selector_pins_raw_model_in_worker_payload(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

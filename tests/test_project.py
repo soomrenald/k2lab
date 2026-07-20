@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import json
+import tempfile
 import unittest
 
 from pathlib import Path
+
+from PIL import Image, PngImagePlugin
 
 from k2_region_lab.lora import (
     CHARACTER_IDENTITY_LORA_ROUTING,
@@ -12,6 +16,7 @@ from k2_region_lab.project import (
     PROJECT_VERSION,
     ProjectState,
     SavedLora,
+    load_project_image,
     project_document,
     project_state,
 )
@@ -20,6 +25,35 @@ from k2_region_lab.regions import PixelBox, RegionDefinition
 
 
 class ProjectStateTests(unittest.TestCase):
+    def test_project_image_metadata_loads_and_uses_imported_png_as_background(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "generated.png"
+            document = project_document(
+                ProjectState(
+                    canvas_width=768,
+                    canvas_height=512,
+                    global_prompt="a glass observatory",
+                    background_image=Path("old-output.png"),
+                )
+            )
+            metadata = PngImagePlugin.PngInfo()
+            metadata.add_text("k2lab_project", json.dumps(document))
+            Image.new("RGB", (768, 512), "navy").save(path, pnginfo=metadata)
+
+            restored = load_project_image(path)
+
+            self.assertEqual(restored.global_prompt, "a glass observatory")
+            self.assertEqual(restored.canvas_width, 768)
+            self.assertEqual(restored.background_image, path.resolve())
+
+    def test_project_image_requires_embedded_k2_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "ordinary.png"
+            Image.new("RGB", (32, 32), "black").save(path)
+
+            with self.assertRaisesRegex(ValueError, "does not contain"):
+                load_project_image(path)
+
     def test_late_step_scale_round_trips(self) -> None:
         state = ProjectState(
             canvas_width=1024,

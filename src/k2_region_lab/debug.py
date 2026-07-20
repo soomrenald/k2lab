@@ -11,10 +11,8 @@ def debug_enabled() -> bool:
 
 
 def configure_debug_logging(component: str, data_directory: Path | None = None) -> Path | None:
-    """Enable a bounded component log when DEBUG=1 is present at process startup."""
+    """Enable a bounded component log for every application process."""
 
-    if not debug_enabled():
-        return None
     root = data_directory or Path(
         os.environ.get("K2LAB_DATA_DIR", "~/.local/share/k2-region-lab")
     ).expanduser()
@@ -42,5 +40,5 @@ def configure_debug_logging(component: str, data_directory: Path | None = None) 
             )
         )
         logger.addHandler(handler)
-    logger.debug("%s debug logging initialized at %s", component, log_path)
+    logger.debug("%s logging initialized at %s", component, log_path)
     return log_path

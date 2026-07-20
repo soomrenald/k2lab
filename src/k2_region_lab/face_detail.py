@@ -57,6 +57,7 @@ class FaceDetailSettings:
 class DetectedFace:
     box: PixelBox
     score: float
+    mask_points: tuple[tuple[float, float], ...] = ()
 
     @property
     def center(self) -> tuple[float, float]:
@@ -210,6 +211,7 @@ def composite_face_crop(
     crop_box: tuple[int, int, int, int],
     feather: float,
     blend: float,
+    mask_points: tuple[tuple[float, float], ...] = (),
 ) -> Image.Image:
     x0, y0, x1, y1 = crop_box
     width, height = x1 - x0, y1 - y0
@@ -222,6 +224,32 @@ def composite_face_crop(
     if blend <= 0.0:
         return original
     original_crop = original.crop(crop_box)
+    if mask_points:
+        from PIL import ImageDraw, ImageFilter
+
+        center_x = sum(point[0] for point in mask_points) / len(mask_points)
+        center_y = sum(point[1] for point in mask_points) / len(mask_points)
+        expanded = [
+            (
+                center_x + (point_x - center_x) * 1.12 - x0,
+                center_y + (point_y - center_y) * 1.12 - y0,
+            )
+            for point_x, point_y in mask_points
+        ]
+        mask = Image.new("L", (width, height), 0)
+        ImageDraw.Draw(mask).polygon(expanded, fill=255)
+        if feather > 0.0:
+            mask = mask.filter(
+                ImageFilter.GaussianBlur(
+                    radius=max(1.0, min(width, height) * feather * 0.5)
+                )
+            )
+        if blend < 1.0:
+            mask = mask.point(lambda value: round(value * blend))
+        blended = Image.composite(refined, original_crop, mask)
+        result = original.copy()
+        result.paste(blended, (x0, y0))
+        return result
     if feather <= 0.0:
         result = original.copy()
         result.paste(Image.blend(original_crop, refined, blend), (x0, y0))
@@ -312,6 +340,19 @@ class OnnxNanoFaceDetector:
             raise RuntimeError(
                 "CUDA face detection was selected, but ONNX Runtime activated "
                 f"{self.execution_provider} instead"
+            )
+        inputs = self._session.get_inputs()
+        outputs = self._session.get_outputs()
+        input_shape = tuple(inputs[0].shape) if len(inputs) == 1 else ()
+        expected_shape = (1, 3, self.input_height, self.input_width)
+        if len(inputs) != 1 or input_shape != expected_shape or len(outputs) != 6:
+            self._session = None
+            raise RuntimeError(
+                f"incompatible face detector model: {self.model_path}; expected one "
+                f"rank-4 input shaped {expected_shape} and 6 outputs, found "
+                f"input shape {input_shape or 'unknown'} and {len(outputs)} outputs. "
+                "Select ComfyUI-WanVideoWrapper/fantasyportrait/models/face_det.onnx "
+                "or reset the detector setting to Auto."
             )
         return self._session
 

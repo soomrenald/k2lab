@@ -9,8 +9,16 @@ import subprocess
 from dataclasses import replace
 from pathlib import Path
 
-from PySide6.QtCore import QRectF, Qt
-from PySide6.QtGui import QAction, QColor, QKeySequence, QPainter, QPen, QPixmap
+from PySide6.QtCore import QPointF, QRectF, Qt, Signal
+from PySide6.QtGui import (
+    QAction,
+    QColor,
+    QKeySequence,
+    QPainter,
+    QPen,
+    QPixmap,
+    QPolygonF,
+)
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -49,6 +57,7 @@ from k2_region_lab.face_detail import (
     DetectedFace,
     assign_faces_to_regional_loras,
     discover_face_detector,
+    expanded_square_crop,
 )
 from k2_region_lab.lora import (
     CHARACTER_IDENTITY_LORA_ROUTING,
@@ -76,6 +85,7 @@ from k2_region_lab.project import (
     ProjectState,
     SavedLora,
     load_project,
+    load_project_image,
     project_document,
     save_project,
 )
@@ -103,6 +113,8 @@ class EventListWidget(QListWidget):
     """Follow new events only while the user is already viewing the end."""
 
     def addItem(self, item) -> None:
+        message = item.text() if isinstance(item, QListWidgetItem) else str(item)
+        logging.getLogger("k2_region_lab.events").info(message)
         scrollbar = self.verticalScrollBar()
         follow_latest = scrollbar.value() >= scrollbar.maximum()
         super().addItem(item)
@@ -191,6 +203,156 @@ class ScaledImagePreview(QLabel):
         self._fit_pixmap()
 
 
+class LassoImagePreview(ScaledImagePreview):
+    lassos_changed = Signal(object)
+
+    def __init__(self, placeholder: str) -> None:
+        super().__init__(placeholder)
+        self._drawing_enabled = False
+        self._lassos: list[tuple[tuple[float, float], ...]] = []
+        self._active_lasso: list[tuple[float, float]] = []
+        self._selected_lassos: set[int] = set()
+        self._lassos_visible = False
+
+    def lasso_paths(self) -> tuple[tuple[tuple[float, float], ...], ...]:
+        return tuple(self._lassos)
+
+    def set_lasso_paths(self, paths, *, emit: bool = True) -> None:
+        self._lassos = [tuple(tuple(point) for point in path) for path in paths]
+        self._active_lasso = []
+        self._selected_lassos = set(range(len(self._lassos)))
+        self._fit_pixmap()
+        if emit:
+            self.lassos_changed.emit(list(self._lassos))
+
+    def set_lassos_visible(self, visible: bool) -> None:
+        self._lassos_visible = bool(visible)
+        self._fit_pixmap()
+
+    def set_drawing_enabled(self, enabled: bool) -> None:
+        self._drawing_enabled = bool(enabled)
+        if enabled:
+            self.setCursor(Qt.CursorShape.CrossCursor)
+        else:
+            self.unsetCursor()
+            self._active_lasso = []
+            self._fit_pixmap()
+
+    def clear_lassos(self, *, emit: bool = True) -> None:
+        self._lassos = []
+        self._active_lasso = []
+        self._selected_lassos = set()
+        self._fit_pixmap()
+        if emit:
+            self.lassos_changed.emit([])
+
+    def undo_lasso(self) -> None:
+        if not self._lassos:
+            return
+        self._lassos.pop()
+        self._selected_lassos = set(range(len(self._lassos)))
+        self._fit_pixmap()
+        self.lassos_changed.emit(list(self._lassos))
+
+    def set_selected_lassos(self, selected: set[int]) -> None:
+        self._selected_lassos = set(selected)
+        self._fit_pixmap()
+
+    def _image_point(self, widget_point: QPointF) -> tuple[float, float] | None:
+        displayed = self.pixmap()
+        if displayed is None or displayed.isNull() or self._original_pixmap.isNull():
+            return None
+        area = self.contentsRect()
+        left = area.left() + (area.width() - displayed.width()) / 2.0
+        top = area.top() + (area.height() - displayed.height()) / 2.0
+        local_x = widget_point.x() - left
+        local_y = widget_point.y() - top
+        if not (0.0 <= local_x <= displayed.width() and 0.0 <= local_y <= displayed.height()):
+            return None
+        return (
+            local_x * self._original_pixmap.width() / max(1, displayed.width()),
+            local_y * self._original_pixmap.height() / max(1, displayed.height()),
+        )
+
+    def _fit_pixmap(self) -> None:
+        super()._fit_pixmap()
+        displayed = self.pixmap()
+        if (
+            displayed is None
+            or displayed.isNull()
+            or self._original_pixmap.isNull()
+            or not ((self._lassos_visible and self._lassos) or self._active_lasso)
+        ):
+            return
+        annotated = displayed.copy()
+        painter = QPainter(annotated)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        scale_x = annotated.width() / max(1, self._original_pixmap.width())
+        scale_y = annotated.height() / max(1, self._original_pixmap.height())
+        if self._lassos_visible:
+            for index, path in enumerate(self._lassos):
+                color = QColor("#39ff88" if index in self._selected_lassos else "#ffb340")
+                polygon = QPolygonF(
+                    [QPointF(x * scale_x, y * scale_y) for x, y in path]
+                )
+                painter.setPen(QPen(color, 3))
+                painter.setBrush(QColor(color.red(), color.green(), color.blue(), 45))
+                painter.drawPolygon(polygon)
+                if polygon:
+                    painter.setPen(color)
+                    painter.drawText(
+                        polygon.boundingRect().topLeft() + QPointF(4, 18),
+                        str(index + 1),
+                    )
+        if self._active_lasso:
+            painter.setPen(QPen(QColor("#42c7f5"), 3))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawPolyline(
+                QPolygonF(
+                    [
+                        QPointF(x * scale_x, y * scale_y)
+                        for x, y in self._active_lasso
+                    ]
+                )
+            )
+        painter.end()
+        self.setPixmap(annotated)
+
+    def mousePressEvent(self, event) -> None:
+        if self._drawing_enabled and event.button() == Qt.MouseButton.LeftButton:
+            point = self._image_point(event.position())
+            if point is not None:
+                self._active_lasso = [point]
+                self._fit_pixmap()
+                event.accept()
+                return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:
+        if self._drawing_enabled and self._active_lasso:
+            point = self._image_point(event.position())
+            if point is not None:
+                previous = self._active_lasso[-1]
+                if (point[0] - previous[0]) ** 2 + (point[1] - previous[1]) ** 2 >= 4.0:
+                    self._active_lasso.append(point)
+                    self._fit_pixmap()
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        if self._drawing_enabled and event.button() == Qt.MouseButton.LeftButton:
+            if len(self._active_lasso) >= 3:
+                self._lassos.append(tuple(self._active_lasso))
+                self._selected_lassos = set(range(len(self._lassos)))
+            self._active_lasso = []
+            self._fit_pixmap()
+            self.lassos_changed.emit(list(self._lassos))
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+
 class MainWindow(QMainWindow):
     def __init__(self, settings: AppSettings) -> None:
         super().__init__()
@@ -214,11 +376,17 @@ class MainWindow(QMainWindow):
         self._face_source_path: Path | None = None
         self._face_result_path: Path | None = None
         self._face_detections: list[dict[str, object]] = []
+        self._manual_face_paths: list[tuple[tuple[float, float], ...]] = []
+        self._lasso_dialog_active = False
         self._syncing_face_selection = False
         self._upscale_model_path = settings.default_upscale_model
         self._generation_active = False
         self._pending_generation_payload: dict[str, object] | None = None
         self._pending_face_refinement_payload: dict[str, object] | None = None
+        self._batch_base_payload: dict[str, object] | None = None
+        self._batch_runs_remaining = 0
+        self._batch_completed = 0
+        self._batch_total = 0
         self._active_task: str | None = None
         self._worker_bootstrap_stage: str | None = None
         self._generation_completed = False
@@ -273,9 +441,8 @@ class MainWindow(QMainWindow):
         self._use_latest_face_source(show_message=False)
         self._accelerator_available = False
         self.statusBar().showMessage("Ready — model not loaded")
-        if os.environ.get("DEBUG", "").strip() == "1":
-            log_path = self.settings.data_directory / "logs" / "desktop-debug.log"
-            self.events.addItem(f"DEBUG logging enabled: {log_path}")
+        log_path = self.settings.data_directory / "logs" / "desktop-debug.log"
+        self.events.addItem(f"Event logging enabled: {log_path}")
         self.discover_models()
         if settings.auto_start_worker:
             self._start_worker()
@@ -306,6 +473,9 @@ class MainWindow(QMainWindow):
         open_action = QAction("&Open project…", self)
         open_action.setShortcut(QKeySequence.StandardKey.Open)
         open_action.triggered.connect(self._open_project)
+        self.import_image_action = QAction("&Import image…", self)
+        self.import_image_action.setShortcut(QKeySequence("Ctrl+Shift+O"))
+        self.import_image_action.triggered.connect(self._import_image)
         save_action = QAction("&Save project", self)
         save_action.setShortcut(QKeySequence.StandardKey.Save)
         save_action.triggered.connect(self._save_project)
@@ -317,6 +487,7 @@ class MainWindow(QMainWindow):
         exit_action.triggered.connect(self.close)
         menu.addAction(new_action)
         menu.addAction(open_action)
+        menu.addAction(self.import_image_action)
         menu.addSeparator()
         menu.addAction(save_action)
         menu.addAction(save_as_action)
@@ -532,6 +703,9 @@ class MainWindow(QMainWindow):
             "Physical crop area relative to the detected face. Around 1.6–2.0 keeps "
             "hair and head context without redrawing too much background."
         )
+        self.face_detail_padding_input.valueChanged.connect(
+            self._face_selection_changed
+        )
         self.face_detail_feather_input = QDoubleSpinBox()
         self.face_detail_feather_input.setRange(0.0, 0.5)
         self.face_detail_feather_input.setDecimals(2)
@@ -614,11 +788,18 @@ class MainWindow(QMainWindow):
             "Runs the CPU face detector and draws a numbered box around every candidate."
         )
         self.face_detect_button.clicked.connect(self._detect_faces_for_refinement)
+        self.face_lasso_button = QPushButton("Draw face lasso")
+        self.face_lasso_button.setEnabled(False)
+        self.face_lasso_undo_button = QPushButton("Undo lasso")
+        self.face_lasso_clear_button = QPushButton("Clear lassos")
         self.face_refine_button = QPushButton("Run face refinement")
         self.face_refine_button.setEnabled(False)
         self.face_refine_button.clicked.connect(self._run_face_refinement)
         action_row.addWidget(assignment_note, 1)
         action_row.addWidget(self.face_detect_button)
+        action_row.addWidget(self.face_lasso_button)
+        action_row.addWidget(self.face_lasso_undo_button)
+        action_row.addWidget(self.face_lasso_clear_button)
         action_row.addWidget(self.face_refine_button)
         page_layout.addLayout(action_row)
 
@@ -646,9 +827,19 @@ class MainWindow(QMainWindow):
         previews = QSplitter(Qt.Orientation.Horizontal)
         source_panel = QWidget()
         source_layout = QVBoxLayout(source_panel)
+        self.face_source_panel = source_panel
+        self.face_source_preview_layout = source_layout
         source_layout.setContentsMargins(0, 0, 0, 0)
         source_layout.addWidget(QLabel("First pass with detected-face selection"))
-        self.face_source_preview = ScaledImagePreview("No source PNG loaded")
+        self.face_source_preview = LassoImagePreview("No source PNG loaded")
+        self.face_lasso_button.clicked.connect(self._open_face_lasso_dialog)
+        self.face_lasso_undo_button.clicked.connect(
+            self.face_source_preview.undo_lasso
+        )
+        self.face_lasso_clear_button.clicked.connect(
+            self.face_source_preview.clear_lassos
+        )
+        self.face_source_preview.lassos_changed.connect(self._manual_lassos_changed)
         source_layout.addWidget(self.face_source_preview, 1)
         result_panel = QWidget()
         result_layout = QVBoxLayout(result_panel)
@@ -876,6 +1067,18 @@ class MainWindow(QMainWindow):
         seed_mode_index = self.seed_mode_input.findData(self.settings.default_seed_mode)
         self.seed_mode_input.setCurrentIndex(max(0, seed_mode_index))
         layout.addRow("Seed behavior", self.seed_mode_input)
+        self.batch_mode_input = QCheckBox("Run generation in batch mode")
+        self.batch_mode_input.setChecked(False)
+        self.batch_mode_input.setToolTip(
+            "Run each image in a fresh worker so all GPU models are unloaded between runs"
+        )
+        layout.addRow(self.batch_mode_input)
+        self.batch_count_input = QSpinBox()
+        self.batch_count_input.setRange(1, 100)
+        self.batch_count_input.setValue(2)
+        self.batch_count_input.setEnabled(False)
+        layout.addRow("Batch runs", self.batch_count_input)
+        self.batch_mode_input.toggled.connect(self._batch_mode_changed)
         self.regional_prompting_input = QCheckBox("Use unified spatial prompting")
         self.regional_prompting_input.setChecked(True)
         layout.addRow(self.regional_prompting_input)
@@ -1479,16 +1682,132 @@ class MainWindow(QMainWindow):
             "Run face refinement to compare the result"
         )
         self.face_detect_button.setEnabled(not self._generation_active)
+        self.face_lasso_button.setEnabled(not self._generation_active)
         self.face_refine_button.setEnabled(False)
         return True
 
     def _clear_face_detections(self) -> None:
         self._face_detections = []
+        self._manual_face_paths = []
         self._syncing_face_selection = True
         self.face_selection_list.clear()
         self._syncing_face_selection = False
         self.face_source_preview.set_overlays([])
+        self.face_source_preview.clear_lassos(emit=False)
         self.face_refine_button.setEnabled(False)
+
+    def _manual_lassos_changed(self, paths) -> None:
+        self._manual_face_paths = [tuple(tuple(point) for point in path) for path in paths]
+        detections = tuple(
+            DetectedFace(
+                PixelBox(
+                    min(point[0] for point in path),
+                    min(point[1] for point in path),
+                    max(point[0] for point in path),
+                    max(point[1] for point in path),
+                ),
+                1.0,
+                path,
+            )
+            for path in self._manual_face_paths
+            if len(path) >= 3
+        )
+        if self.face_source_preview._original_pixmap.isNull():
+            return
+        targets = assign_faces_to_regional_loras(
+            detections,
+            self._scaled_face_regions(
+                self.face_source_preview._original_pixmap.width(),
+                self.face_source_preview._original_pixmap.height(),
+            ),
+            self._lora_payload(),
+        )
+        target_by_box = {
+            (target.face.box.x0, target.face.box.y0, target.face.box.x1, target.face.box.y1): target
+            for target in targets
+        }
+        self._face_detections = []
+        self._syncing_face_selection = True
+        self.face_selection_list.clear()
+        for index, face in enumerate(detections):
+            key = (face.box.x0, face.box.y0, face.box.x1, face.box.y1)
+            target = target_by_box.get(key)
+            matched = target is not None
+            self._face_detections.append(
+                {
+                    "index": index,
+                    "box": list(key),
+                    "score": 1.0,
+                    "region_id": target.region_id if target else None,
+                    "region_name": target.region_name if target else None,
+                    "manual": True,
+                }
+            )
+            assignment = target.region_name if target else "no regional LoRA match"
+            item = QListWidgetItem(f"Lasso {index + 1} - {assignment}")
+            item.setData(Qt.ItemDataRole.UserRole, index)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(Qt.CheckState.Checked if matched else Qt.CheckState.Unchecked)
+            self.face_selection_list.addItem(item)
+        self._syncing_face_selection = False
+        self._face_selection_changed()
+        self.events.addItem(
+            f"Prepared {len(detections)} manual face lasso(s); "
+            f"{len(targets)} matched regional LoRAs"
+        )
+
+    def _open_face_lasso_dialog(self) -> None:
+        if self._face_source_path is None or self.face_source_preview._original_pixmap.isNull():
+            QMessageBox.warning(
+                self, "Source PNG required", "Load a first-pass PNG before drawing lassos."
+            )
+            return
+        preview = self.face_source_preview
+        original_paths = preview.lasso_paths()
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Draw face lassos")
+        dialog.setMinimumSize(640, 480)
+        dialog.resize(1200, 850)
+        layout = QVBoxLayout(dialog)
+        instructions = QLabel(
+            "Drag freehand around each face. Draw additional lassos for additional "
+            "faces. The main preview will show each padded refinement crop after OK."
+        )
+        instructions.setWordWrap(True)
+        layout.addWidget(instructions)
+        self.face_source_preview_layout.removeWidget(preview)
+        preview.setParent(dialog)
+        layout.addWidget(preview, 1)
+        controls = QHBoxLayout()
+        undo = QPushButton("Undo lasso")
+        undo.clicked.connect(preview.undo_lasso)
+        clear = QPushButton("Clear lassos")
+        clear.clicked.connect(preview.clear_lassos)
+        controls.addWidget(undo)
+        controls.addWidget(clear)
+        controls.addStretch(1)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok
+            | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        controls.addWidget(buttons)
+        layout.addLayout(controls)
+        self._lasso_dialog_active = True
+        preview.set_lassos_visible(True)
+        preview.set_drawing_enabled(True)
+        accepted = dialog.exec() == QDialog.DialogCode.Accepted
+        preview.set_drawing_enabled(False)
+        if not accepted:
+            preview.set_lasso_paths(original_paths)
+        self._lasso_dialog_active = False
+        preview.set_lassos_visible(False)
+        layout.removeWidget(preview)
+        preview.setParent(self.face_source_panel)
+        self.face_source_preview_layout.insertWidget(1, preview, 1)
+        preview.show()
+        self._face_selection_changed()
 
     def _face_detection_settings_changed(self, _value=None) -> None:
         if not self._face_detections:
@@ -1621,6 +1940,8 @@ class MainWindow(QMainWindow):
             for target in targets
         }
         self._face_detections = []
+        self._manual_face_paths = []
+        self.face_source_preview.clear_lassos(emit=False)
         self._syncing_face_selection = True
         self.face_selection_list.clear()
         for index, face in enumerate(detections):
@@ -1684,8 +2005,18 @@ class MainWindow(QMainWindow):
             index = int(record["index"])
             region_name = record.get("region_name")
             label = f"{index + 1}" + (f" {region_name}" if region_name else "")
-            overlays.append((*map(float, box), label, index in selected))
+            if record.get("manual") and not self._lasso_dialog_active:
+                padded_box = expanded_square_crop(
+                    PixelBox(*map(float, box)),
+                    self.face_source_preview._original_pixmap.width(),
+                    self.face_source_preview._original_pixmap.height(),
+                    self.face_detail_padding_input.value(),
+                )
+                overlays.append((*map(float, padded_box), f"{label} padded", index in selected))
+            elif not record.get("manual"):
+                overlays.append((*map(float, box), label, index in selected))
         self.face_source_preview.set_overlays(overlays)
+        self.face_source_preview.set_selected_lassos(selected)
         self.face_refine_button.setEnabled(
             bool(
                 selected
@@ -1806,6 +2137,10 @@ class MainWindow(QMainWindow):
                     self.face_detail_detector_provider_input.currentData()
                 ),
                 "selected_face_indices": selected_face_indices,
+                "manual_face_paths": [
+                    [list(point) for point in path]
+                    for path in self._manual_face_paths
+                ],
                 "regions": regions,
                 "loras": loras,
                 "project_json": project_document(self._project_state()),
@@ -2039,7 +2374,8 @@ class MainWindow(QMainWindow):
         if "raw" in selected_path.name.casefold():
             self.events.addItem(
                 "Raw checkpoint selected: regional hooks are architecture-compatible, "
-                "but generation still uses the CFG-free Turbo sampling path"
+                "and generation still uses the CFG-free Turbo sampling path; apply "
+                "a Raw-to-Turbo distillation LoRA globally for that path"
             )
 
     @staticmethod
@@ -2307,12 +2643,37 @@ class MainWindow(QMainWindow):
         )
 
     def _canvas_dimensions_changed(self) -> None:
+        previous_width = max(1, self.canvas.canvas_width)
+        previous_height = max(1, self.canvas.canvas_height)
         geometry = CanvasGeometry.resolve(self.width_input.value(), self.height_input.value())
+        scale_x = geometry.aligned_width / previous_width
+        scale_y = geometry.aligned_height / previous_height
+        original_regions = tuple(self.regions)
         self.canvas.set_canvas_size(geometry.aligned_width, geometry.aligned_height)
+        scaled_regions = []
+        for region in original_regions:
+            box = PixelBox(
+                region.box.x0 * scale_x,
+                region.box.y0 * scale_y,
+                region.box.x1 * scale_x,
+                region.box.y1 * scale_y,
+            )
+            scaled_region = replace(region, box=box)
+            scaled_regions.append(scaled_region)
+            self.canvas.region_item(region.region_id).set_scene_geometry(
+                QRectF(box.x0, box.y0, box.width, box.height),
+                notify=False,
+                enforce_minimum=False,
+            )
+            item = self._region_list_item(region.region_id)
+            if item is not None:
+                item.setText(self._region_label(scaled_region))
+        self.regions = scaled_regions
         self.events.addItem(
             "Canvas resolved to "
             f"{geometry.aligned_width}×{geometry.aligned_height} px "
-            f"({geometry.patch_width}×{geometry.patch_height} image tokens)"
+            f"({geometry.patch_width}×{geometry.patch_height} image tokens); "
+            f"scaled {len(scaled_regions)} region box(es) proportionally"
         )
 
     def _browse_lora(self) -> None:
@@ -2668,6 +3029,8 @@ class MainWindow(QMainWindow):
             scheduler=str(self.scheduler_input.currentData()),
             seed=self.seed_input.value(),
             seed_mode=str(self.seed_mode_input.currentData()),
+            batch_mode=self.batch_mode_input.isChecked(),
+            batch_count=self.batch_count_input.value(),
             regional_prompting=self.regional_prompting_input.isChecked(),
             regional_prompt_strength=self.regional_prompt_strength_input.value(),
             regional_outside_penalty=self.regional_outside_penalty_input.value(),
@@ -2764,6 +3127,16 @@ class MainWindow(QMainWindow):
         )
         if selected:
             self._load_project_from(Path(selected), show_error_dialog=True)
+
+    def _import_image(self) -> None:
+        selected, _ = QFileDialog.getOpenFileName(
+            self,
+            "Import K2 Region Lab image",
+            str(self._output_directory),
+            "K2 Region Lab image (*.png);;PNG image (*.png)",
+        )
+        if selected:
+            self._load_project_image_from(Path(selected), show_error_dialog=True)
 
     def _save_project(self) -> None:
         if self._current_project_path is None:
@@ -2913,12 +3286,35 @@ class MainWindow(QMainWindow):
             self._start_worker()
         return True
 
+    def _load_project_image_from(
+        self, path: Path, *, show_error_dialog: bool = False
+    ) -> bool:
+        try:
+            state = load_project_image(path)
+        except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+            logging.getLogger(__name__).exception("project image import failed")
+            self.events.addItem(f"Project image import failed: {error}")
+            if show_error_dialog:
+                QMessageBox.warning(self, "Project image import failed", str(error))
+            return False
+
+        self._apply_project_state(state, load_latest_face_source=False)
+        imported = path.expanduser().resolve()
+        self._current_project_path = None
+        self.setWindowTitle(f"K2 Region Lab — {imported.name} (imported)")
+        self.events.addItem(f"Imported project metadata from {imported}")
+        self.statusBar().showMessage(f"Imported {imported.name}", 5000)
+        if self.settings.auto_start_worker:
+            self._start_worker()
+        return True
+
     def _apply_project_state(
         self, state: ProjectState, *, load_latest_face_source: bool
     ) -> None:
         self.worker_client.stop()
         self._pending_generation_payload = None
         self._pending_face_refinement_payload = None
+        self._clear_batch_state()
         self._active_task = None
         self._worker_bootstrap_stage = None
         self._generation_completed = False
@@ -2938,6 +3334,8 @@ class MainWindow(QMainWindow):
         self.seed_input.setValue(state.seed)
         seed_mode_index = self.seed_mode_input.findData(state.seed_mode)
         self.seed_mode_input.setCurrentIndex(max(0, seed_mode_index))
+        self.batch_count_input.setValue(state.batch_count)
+        self.batch_mode_input.setChecked(state.batch_mode)
         self.regional_prompting_input.setChecked(state.regional_prompting)
         self.regional_prompt_strength_input.setValue(state.regional_prompt_strength)
         self.regional_outside_penalty_input.setValue(state.regional_outside_penalty)
@@ -3389,6 +3787,19 @@ class MainWindow(QMainWindow):
             }
         )
         self._pending_generation_payload = payload
+        batch_count = (
+            self.batch_count_input.value()
+            if self.batch_mode_input.isChecked()
+            else 1
+        )
+        self._batch_base_payload = dict(payload) if batch_count > 1 else None
+        self._batch_runs_remaining = batch_count - 1
+        self._batch_completed = 0
+        self._batch_total = batch_count
+        if batch_count > 1:
+            self.events.addItem(
+                f"Batch generation started: run 1/{batch_count}, seed {seed}"
+            )
         self._generation_completed = False
         self._active_task = "generation"
         self._set_generation_active(True)
@@ -3443,6 +3854,50 @@ class MainWindow(QMainWindow):
         self._prompt_preview_dialog = preview
         preview.exec()
 
+    def _batch_mode_changed(self, checked: bool) -> None:
+        self.batch_count_input.setEnabled(checked)
+        fixed_index = self.seed_mode_input.findData("fixed")
+        fixed_item = self.seed_mode_input.model().item(fixed_index)
+        if fixed_item is not None:
+            fixed_item.setEnabled(not checked)
+        if checked and self.seed_mode_input.currentData() == "fixed":
+            random_index = self.seed_mode_input.findData("random")
+            self.seed_mode_input.setCurrentIndex(random_index)
+
+    def _clear_batch_state(self) -> None:
+        self._batch_base_payload = None
+        self._batch_runs_remaining = 0
+        self._batch_completed = 0
+        self._batch_total = 0
+
+    def _queue_next_batch_generation(self) -> None:
+        if self._batch_base_payload is None or self._batch_runs_remaining <= 0:
+            return
+        payload = dict(self._batch_base_payload)
+        seed_mode = str(payload["seed_mode"])
+        seed = self.seed_input.value()
+        if seed_mode == "random":
+            seed = secrets.randbelow(2_147_483_648)
+            self.seed_input.setValue(seed)
+        elif seed_mode == "increment":
+            self.seed_input.setValue((seed + 1) % 2_147_483_648)
+        else:
+            raise RuntimeError("batch generation requires random or increment seeds")
+        payload["seed"] = seed
+        payload["project_json"] = project_document(
+            replace(self._project_state(), seed=seed)
+        )
+        self._batch_runs_remaining -= 1
+        run_number = self._batch_completed + 1
+        self._pending_generation_payload = payload
+        self._generation_completed = False
+        self._active_task = "generation"
+        self._set_generation_active(True)
+        self.events.addItem(
+            f"Batch generation queued: run {run_number}/{self._batch_total}, seed {seed}"
+        )
+        self._advance_pending_generation()
+
     def _set_generation_active(self, active: bool) -> None:
         self._generation_active = active
         self.diffusion_model_input.setEnabled(not active)
@@ -3466,7 +3921,7 @@ class MainWindow(QMainWindow):
                 and self._face_source_path.is_file()
             )
         )
-        self.stop_generation_button.setEnabled(active and self.worker_client.running)
+        self.stop_generation_button.setEnabled(active)
 
     def _stop_generation(self) -> None:
         if not self._generation_active:
@@ -3474,6 +3929,7 @@ class MainWindow(QMainWindow):
         pid = self.worker_client.cancel_generation()
         self._pending_generation_payload = None
         self._pending_face_refinement_payload = None
+        self._clear_batch_state()
         self._worker_bootstrap_stage = None
         task = self._active_task or "worker task"
         self._active_task = None
@@ -3647,7 +4103,14 @@ class MainWindow(QMainWindow):
                 report.exec()
         elif message in {"Generation complete", "Baseline generation complete"}:
             self._generation_completed = True
-            self._set_generation_active(False)
+            if self._active_task == "generation":
+                self._batch_completed += 1
+                if self._batch_total > 1:
+                    self.events.addItem(
+                        f"Batch generation completed run "
+                        f"{self._batch_completed}/{self._batch_total}"
+                    )
+            self._set_generation_active(self._batch_runs_remaining > 0)
             image_path = payload.get("image_path")
             if image_path and self.canvas.set_image(image_path):
                 self._background_image_path = Path(image_path)
@@ -3691,6 +4154,7 @@ class MainWindow(QMainWindow):
         elif state == "error":
             self._pending_generation_payload = None
             self._pending_face_refinement_payload = None
+            self._clear_batch_state()
             self._worker_bootstrap_stage = None
             self._active_task = None
             self._set_generation_active(False)
@@ -3735,6 +4199,7 @@ class MainWindow(QMainWindow):
             if not completed:
                 self._pending_generation_payload = None
                 self._pending_face_refinement_payload = None
+                self._clear_batch_state()
             completed_task = self._active_task
             self._active_task = None
             self._model_loaded = False
@@ -3753,6 +4218,15 @@ class MainWindow(QMainWindow):
                     f"{(completed_task or 'task').replace('_', ' ')} worker exited; "
                     "GPU/system RAM released"
                 )
+                if completed_task == "generation" and self._batch_runs_remaining > 0:
+                    self._queue_next_batch_generation()
+                elif completed_task == "generation":
+                    if self._batch_total > 1:
+                        self.events.addItem(
+                            f"Batch generation finished: {self._batch_completed} "
+                            "runs completed"
+                        )
+                    self._clear_batch_state()
 
     def closeEvent(self, event) -> None:
         self.worker_client.stop()

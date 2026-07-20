@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import sys
+import time
 import traceback
 from pathlib import Path
 from typing import Any
@@ -173,6 +174,7 @@ def main() -> int:
             elif kind == CommandKind.GENERATE_BASELINE:
                 if runtime is None or not runtime.loaded:
                     raise RuntimeError("load the Krea 2 baseline before generating")
+                generation_started_at = time.monotonic()
                 emit(
                     WorkerState.RUNNING,
                     "Generation started",
@@ -264,6 +266,13 @@ def main() -> int:
                     progress=progress,
                     event=runtime_event,
                 )
+                duration_seconds = time.monotonic() - generation_started_at
+                emit(
+                    WorkerState.RUNNING,
+                    f"Generation run finished in {duration_seconds:.2f} seconds",
+                    command_id=command_id,
+                    payload={"duration_seconds": duration_seconds},
+                )
                 emit(
                     WorkerState.READY,
                     "Generation complete",
@@ -320,6 +329,10 @@ def main() -> int:
                         tuple(int(index) for index in payload["selected_face_indices"])
                         if payload.get("selected_face_indices") is not None
                         else None
+                    ),
+                    manual_face_paths=tuple(
+                        tuple((float(point[0]), float(point[1])) for point in path)
+                        for path in payload.get("manual_face_paths", ())
                     ),
                     project_json=(
                         dict(payload["project_json"])

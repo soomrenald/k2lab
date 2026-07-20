@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +31,7 @@ from k2_region_lab.sampling import (
 
 
 PROJECT_SCHEMA = "k2-region-lab-project"
+PNG_PROJECT_KEY = "k2lab_project"
 PROJECT_VERSION = 16
 SUPPORTED_PROJECT_VERSIONS = {
     1,
@@ -81,6 +82,8 @@ class ProjectState:
     scheduler: str = DEFAULT_SCHEDULER
     seed: int = 0
     seed_mode: str = "fixed"
+    batch_mode: bool = False
+    batch_count: int = 2
     regional_prompting: bool = True
     regional_prompt_strength: float = 1.0
     regional_outside_penalty: float = 1.0
@@ -127,6 +130,10 @@ class ProjectState:
             raise ValueError("seed must not be negative")
         if self.seed_mode not in {"fixed", "random", "increment"}:
             raise ValueError(f"unsupported seed mode: {self.seed_mode!r}")
+        if self.batch_mode and self.seed_mode not in {"random", "increment"}:
+            raise ValueError("batch mode requires random or increment seed behavior")
+        if not 1 <= self.batch_count <= 100:
+            raise ValueError("batch count must be between 1 and 100")
         if not 0.0 < self.regional_prompt_strength <= 10.0:
             raise ValueError("regional prompt strength must be in (0, 10]")
         if not 0.0 <= self.regional_outside_penalty <= 10.0:
@@ -215,6 +222,8 @@ def project_document(state: ProjectState) -> dict[str, Any]:
             "scheduler": state.scheduler,
             "seed": state.seed,
             "seed_mode": state.seed_mode,
+            "batch_mode": state.batch_mode,
+            "batch_count": state.batch_count,
             "regional_prompting": state.regional_prompting,
             "regional_prompt_strength": state.regional_prompt_strength,
             "regional_outside_penalty": state.regional_outside_penalty,
@@ -338,6 +347,8 @@ def project_state(document: dict[str, Any]) -> ProjectState:
         scheduler=str(generation.get("scheduler", DEFAULT_SCHEDULER)),
         seed=int(generation.get("seed", 0)),
         seed_mode=str(generation.get("seed_mode", "fixed")),
+        batch_mode=bool(generation.get("batch_mode", False)),
+        batch_count=int(generation.get("batch_count", 2)),
         regional_prompting=bool(generation.get("regional_prompting", True)),
         regional_prompt_strength=float(
             generation.get("regional_prompt_strength", 1.0)
@@ -422,3 +433,23 @@ def load_project(path: Path) -> ProjectState:
     if not isinstance(document, dict):
         raise ValueError("project root must be a JSON object")
     return project_state(document)
+
+
+def load_project_image(path: Path) -> ProjectState:
+    """Restore project metadata from an application-generated PNG."""
+
+    from PIL import Image
+
+    source = path.expanduser().resolve()
+    with Image.open(source) as image:
+        if image.format != "PNG":
+            raise ValueError("project image must be a PNG file")
+        encoded = image.info.get(PNG_PROJECT_KEY)
+    if not isinstance(encoded, str) or not encoded.strip():
+        raise ValueError(
+            f"PNG does not contain K2 Region Lab metadata ({PNG_PROJECT_KEY})"
+        )
+    document = json.loads(encoded)
+    if not isinstance(document, dict):
+        raise ValueError("embedded K2 project root must be a JSON object")
+    return replace(project_state(document), background_image=source)

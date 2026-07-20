@@ -186,9 +186,18 @@ class ResizableRegionItem(QGraphicsRectItem):
         super().mouseReleaseEvent(event)
         self._notify_geometry()
 
-    def set_scene_geometry(self, scene_rect: QRectF, *, notify: bool = True) -> None:
+    def set_scene_geometry(
+        self,
+        scene_rect: QRectF,
+        *,
+        notify: bool = True,
+        enforce_minimum: bool = True,
+    ) -> None:
         normalized = scene_rect.normalized()
-        if normalized.width() < self.MINIMUM_SIZE or normalized.height() < self.MINIMUM_SIZE:
+        if enforce_minimum and (
+            normalized.width() < self.MINIMUM_SIZE
+            or normalized.height() < self.MINIMUM_SIZE
+        ):
             raise ValueError("region boxes must be at least 16×16 output pixels")
         bounds = self.scene().sceneRect() if self.scene() is not None else normalized
         width = min(normalized.width(), bounds.width())
@@ -238,8 +247,16 @@ class RegionCanvas(QGraphicsView):
                 min(geometry.width(), float(width)),
                 min(geometry.height(), float(height)),
             )
-            item.set_scene_geometry(resized)
+            item.set_scene_geometry(resized, notify=False)
         self.fitInView(self.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+
+    @property
+    def canvas_width(self) -> int:
+        return self._canvas_width
+
+    @property
+    def canvas_height(self) -> int:
+        return self._canvas_height
 
     def begin_region(self) -> None:
         self._drawing_enabled = True

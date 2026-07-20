@@ -55,6 +55,10 @@ class RegionalLoraRoutingTests(unittest.TestCase):
             route.text_token_mask,
         )
         self.assertEqual(
+            route.sequence_mask(len(route.image_token_mask), text_fusion=False),
+            route.image_token_mask,
+        )
+        self.assertEqual(
             route.layerwise_text_batch_mask(bound.text_token_count * 2),
             route.text_token_mask * 2,
         )
@@ -105,6 +109,11 @@ class RegionalLoraRoutingTests(unittest.TestCase):
         self.assertTrue(
             route_allows_adapter_target(
                 route, "diffusion_model.blocks.0.mlp.down.weight"
+            )
+        )
+        self.assertFalse(
+            route_allows_adapter_target(
+                route, "diffusion_model.last.modulation.lin"
             )
         )
 
@@ -406,6 +415,84 @@ class RegionalLoraRoutingTests(unittest.TestCase):
                 bound_plan=bound,
                 event=None,
             )
+
+    def test_global_distillation_lora_patches_bare_parameter_beside_bypass_hooks(
+        self,
+    ) -> None:
+        torch = ModuleType("torch")
+        torch.Tensor = type("Tensor", (), {})
+        comfy = ModuleType("comfy")
+        comfy.__path__ = []
+        weight_adapter = ModuleType("comfy.weight_adapter")
+
+        class FakeAdapterBase:
+            pass
+
+        class FakeManager:
+            def __init__(self):
+                self.adapters = []
+
+            def add_adapter(self, key, adapter, strength):
+                self.adapters.append((key, adapter, strength))
+
+            def create_injections(self, model):
+                del model
+                return ["injection"]
+
+            def get_hook_count(self):
+                return len(self.adapters)
+
+        weight_adapter.WeightAdapterBase = FakeAdapterBase
+        weight_adapter.BypassInjectionManager = FakeManager
+        comfy.weight_adapter = weight_adapter
+
+        class FakePatcher:
+            def __init__(self, calls):
+                self.model = object()
+                self.calls = calls
+
+            def clone(self):
+                return FakePatcher(self.calls)
+
+            def add_patches(self, patches, strength_patch=1.0):
+                self.calls.append(("patch", tuple(patches), strength_patch))
+                return set(patches)
+
+            def set_injections(self, name, injections):
+                self.calls.append(("injections", name, tuple(injections)))
+
+        route = compile_lora_delta_routes(
+            [{"id": "distill", "name": "Turbo distill", "global": True}],
+            width=32,
+            height=16,
+            text_token_count=5,
+            regional_plan=None,
+            bound_plan=None,
+        )[0]
+        calls = []
+        target_entries = {
+            "diffusion_model.blocks.0.attn.wq.weight": [(FakeAdapterBase(), route)],
+            "diffusion_model.last.modulation.lin": [(FakeAdapterBase(), route)],
+        }
+
+        with patch.dict(
+            sys.modules,
+            {
+                "torch": torch,
+                "comfy": comfy,
+                "comfy.weight_adapter": weight_adapter,
+            },
+        ):
+            _model, installed = ComfyBaselineRuntime._install_routed_lora_bypass(
+                FakePatcher(calls), target_entries, object()
+            )
+
+        self.assertEqual(installed, 2)
+        self.assertIn(
+            ("patch", ("diffusion_model.last.modulation.lin",), 1.0),
+            calls,
+        )
+        self.assertIn(("injections", "k2_routed_loras", ("injection",)), calls)
 
     def test_vae_handoff_unloads_model_before_discarding_adapter_hooks(self) -> None:
         calls = []

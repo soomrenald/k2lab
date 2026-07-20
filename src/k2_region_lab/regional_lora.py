@@ -37,11 +37,14 @@ class LoraDeltaRoute:
         image_count = len(self.image_token_mask)
         if text_fusion and sequence_length == text_count:
             return self.text_token_mask
+        if not text_fusion and sequence_length == image_count:
+            return self.image_token_mask
         if not text_fusion and sequence_length == text_count + image_count:
             return self.text_token_mask + self.image_token_mask
         raise ValueError(
             f"LoRA route {self.display_name!r} expected "
-            f"{text_count} text or {text_count + image_count} combined tokens, "
+            f"{text_count} text, {image_count} image, or "
+            f"{text_count + image_count} combined tokens, "
             f"received {sequence_length}"
         )
 
@@ -82,9 +85,18 @@ def route_allows_adapter_target(route: LoraDeltaRoute, target: str) -> bool:
     unrestricted.
     """
 
-    if route.global_scope or route.routing_mode == CHARACTER_IDENTITY_LORA_ROUTING:
+    if route.global_scope:
         return True
     lowered = str(target).casefold()
+    # Krea stores this modulation matrix as a bare Parameter rather than a
+    # forward module. It can be patched globally, but there is no token-local
+    # forward invocation on which a regional mask could be applied.
+    if lowered.endswith(".last.modulation.lin") or lowered.endswith(
+        ".last.modulation.lin.weight"
+    ):
+        return False
+    if route.routing_mode == CHARACTER_IDENTITY_LORA_ROUTING:
+        return True
     if ".txtfusion." in lowered or ".txtmlp." in lowered:
         return True
     parts = lowered.split(".")

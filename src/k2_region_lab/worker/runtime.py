@@ -622,7 +622,7 @@ class ComfyBaselineRuntime:
         )
         routes_by_id = {route.lora_id: route for route in routes}
         reports: list[dict[str, Any]] = []
-        target_entries: dict[str, list[tuple[Any, LoraDeltaRoute]]] = {}
+        target_entries: dict[str, list[tuple[Any, LoraDeltaRoute | None]]] = {}
         skipped_targets: dict[str, list[str]] = {}
         metadata_items = []
         for specification in specifications:
@@ -682,6 +682,12 @@ class ComfyBaselineRuntime:
                     "can be routed locally; no LoRA was applied"
                 )
             reports.append(report)
+
+        projector_bypass = base_model.get_attachment("k2_projector_bypass_adapter")
+        if projector_bypass is not None:
+            target_entries.setdefault(projector_bypass["target"], []).insert(
+                0, (projector_bypass["adapter"], None)
+            )
 
         statistics = LoraDeltaStatistics(routes)
         if not target_entries:
@@ -811,17 +817,14 @@ class ComfyBaselineRuntime:
                         self._mask_cache[cache_key] = mask
                     return functional.linear(x, weight) * mask
 
-            manager = comfy.weight_adapter.BypassInjectionManager()
-            manager.add_adapter(
-                target,
-                TokenSelectiveProjectorDelta(delta, token_mask),
-                strength=1.0,
-            )
             patched_model = self.model.clone()
-            injections = manager.create_injections(patched_model.model)
-            if manager.get_hook_count() != 1:
-                raise RuntimeError("could not install token-selective projector delta")
-            patched_model.set_injections("k2_projector_delta", injections)
+            patched_model.set_attachments(
+                "k2_projector_bypass_adapter",
+                {
+                    "target": target,
+                    "adapter": TokenSelectiveProjectorDelta(delta, token_mask),
+                },
+            )
             summary["status"] = "applied_token_selective_diff"
             summary["protected_token_count"] = sum(
                 value < 1.0 for value in token_mask
@@ -869,7 +872,7 @@ class ComfyBaselineRuntime:
                 self._mask_cache = {}
 
             def _prepare_adapter(self, adapter, route, x) -> None:
-                adapter.multiplier = route.strength
+                adapter.multiplier = route.strength if route is not None else 1.0
                 for name in (
                     "is_conv",
                     "conv_dim",
@@ -904,7 +907,9 @@ class ComfyBaselineRuntime:
                 )
                 mask = self._mask_cache.get(key)
                 if mask is None:
-                    if self.route_kind == "text_layerwise":
+                    if route.global_scope:
+                        mask = torch.ones((), device=x.device, dtype=x.dtype)
+                    elif self.route_kind == "text_layerwise":
                         values = route.layerwise_text_batch_mask(int(x.shape[0]))
                         mask = torch.tensor(values, device=x.device, dtype=x.dtype).view(-1, 1, 1)
                     elif self.route_kind == "text_projector":
@@ -913,11 +918,34 @@ class ComfyBaselineRuntime:
                             1, -1, 1, 1
                         )
                     else:
-                        values = route.sequence_mask(
-                            int(x.shape[-2]),
-                            text_fusion=self.route_kind == "text_refiner",
+                        text_fusion = self.route_kind == "text_refiner"
+                        text_count = len(route.text_token_mask)
+                        image_count = len(route.image_token_mask)
+                        expected_counts = (
+                            {text_count}
+                            if text_fusion
+                            else {image_count, text_count + image_count}
                         )
-                        mask = torch.tensor(values, device=x.device, dtype=x.dtype).view(1, -1, 1)
+                        token_axes = [
+                            axis
+                            for axis, length in enumerate(x.shape[:-1])
+                            if int(length) in expected_counts
+                        ]
+                        if len(token_axes) != 1:
+                            raise ValueError(
+                                f"LoRA route {route.display_name!r} could not identify "
+                                f"one token axis in input shape {tuple(x.shape)}; "
+                                f"expected one of {sorted(expected_counts)}"
+                            )
+                        token_axis = token_axes[0]
+                        values = route.sequence_mask(
+                            int(x.shape[token_axis]), text_fusion=text_fusion
+                        )
+                        mask_shape = [1] * x.ndim
+                        mask_shape[token_axis] = len(values)
+                        mask = torch.tensor(
+                            values, device=x.device, dtype=x.dtype
+                        ).view(*mask_shape)
                     self._mask_cache[key] = mask
                 return mask
 
@@ -926,6 +954,9 @@ class ComfyBaselineRuntime:
                 for adapter, route in self.entries:
                     self._prepare_adapter(adapter, route, x)
                     delta = adapter.h(x, base_out)
+                    if route is None:
+                        total = total + delta
+                        continue
                     applied = delta * self._mask(route, x)
                     token_norms = torch.linalg.vector_norm(
                         applied.detach(), dim=-1, dtype=torch.float32
@@ -936,9 +967,19 @@ class ComfyBaselineRuntime:
 
         manager = comfy.weight_adapter.BypassInjectionManager()
         unsupported = []
+        parameter_entries = {}
         for key, entries in target_entries.items():
             if not all(isinstance(adapter, base_adapter_type) for adapter, _route in entries):
                 unsupported.append(key)
+                continue
+            lowered = str(key).casefold()
+            if lowered.endswith(".last.modulation.lin") or lowered.endswith(
+                ".last.modulation.lin.weight"
+            ):
+                if not all(route.global_scope for _adapter, route in entries):
+                    unsupported.append(key)
+                    continue
+                parameter_entries[key] = entries
                 continue
             manager.add_adapter(
                 key,
@@ -962,9 +1003,21 @@ class ComfyBaselineRuntime:
                 + ", ".join(map(str, unsupported[:4]))
             )
         patched_model = generation_model.clone()
+        parameter_target_count = 0
+        for key, entries in parameter_entries.items():
+            installed = True
+            for adapter, route in entries:
+                patched_keys = patched_model.add_patches(
+                    {key: adapter}, strength_patch=route.strength
+                )
+                if key not in patched_keys:
+                    installed = False
+                    break
+            parameter_target_count += int(installed)
         injections = manager.create_injections(patched_model.model)
-        patched_model.set_injections("k2_routed_loras", injections)
-        return patched_model, manager.get_hook_count()
+        if manager.get_hook_count():
+            patched_model.set_injections("k2_routed_loras", injections)
+        return patched_model, manager.get_hook_count() + parameter_target_count
 
     def _prepare_vae_handoff(
         self,
@@ -1711,6 +1764,7 @@ class ComfyBaselineRuntime:
         detector_threshold: float = 0.15,
         detector_provider: str = "auto",
         selected_face_indices: tuple[int, ...] | None = None,
+        manual_face_paths: tuple[tuple[tuple[float, float], ...], ...] = (),
         project_json: dict[str, Any] | None = None,
         output_directory: Path | None = None,
         event: Callable[[str, dict[str, Any]], None] | None = None,
@@ -1749,6 +1803,7 @@ class ComfyBaselineRuntime:
             loras=loras,
             seed=seed,
             selected_face_indices=selected_face_indices,
+            manual_face_paths=manual_face_paths,
             event=event,
         )
         destination = (output_directory or source_path.parent).expanduser().resolve()
@@ -1793,6 +1848,7 @@ class ComfyBaselineRuntime:
         loras: list[dict[str, Any]],
         seed: int,
         selected_face_indices: tuple[int, ...] | None = None,
+        manual_face_paths: tuple[tuple[tuple[float, float], ...], ...] = (),
         event: Callable[[str, dict[str, Any]], None] | None = None,
     ):
         from PIL import Image
@@ -1821,28 +1877,56 @@ class ComfyBaselineRuntime:
         if not settings.enabled:
             return image, summary
 
-        detector_path = getattr(self, "face_detector_path", None) or discover_face_detector(
-            self.comfyui_root
-        )
-        if detector_path is None:
-            raise RuntimeError(
-                "automatic face detailing is enabled, but the bundled NanoDet "
-                "face_det.onnx model was not found under the configured ComfyUI root"
+        if manual_face_paths:
+            from k2_region_lab.face_detail import DetectedFace
+            from k2_region_lab.regions import PixelBox
+
+            detections_list = []
+            for path in manual_face_paths:
+                if len(path) < 3:
+                    raise ValueError("a manual face lasso requires at least three points")
+                points = tuple(
+                    (
+                        min(max(float(x), 0.0), float(image.width)),
+                        min(max(float(y), 0.0), float(image.height)),
+                    )
+                    for x, y in path
+                )
+                x_values = [point[0] for point in points]
+                y_values = [point[1] for point in points]
+                box = PixelBox(
+                    min(x_values), min(y_values), max(x_values), max(y_values)
+                )
+                if box.width < 2.0 or box.height < 2.0:
+                    raise ValueError("a manual face lasso must enclose a visible area")
+                detections_list.append(DetectedFace(box, 1.0, points))
+            detections = tuple(detections_list)
+            summary["detector"] = "manual_lasso"
+            summary["detector_execution_provider"] = None
+        else:
+            detector_path = getattr(
+                self, "face_detector_path", None
+            ) or discover_face_detector(self.comfyui_root)
+            if detector_path is None:
+                raise RuntimeError(
+                    "automatic face detailing is enabled, but the bundled NanoDet "
+                    "face_det.onnx model was not found under the configured ComfyUI root"
+                )
+            summary["detector"] = str(detector_path)
+            detector = OnnxNanoFaceDetector(
+                detector_path,
+                threshold=settings.detector_threshold,
+                provider=settings.detector_provider,
             )
-        summary["detector"] = str(detector_path)
-        detector = OnnxNanoFaceDetector(
-            detector_path,
-            threshold=settings.detector_threshold,
-            provider=settings.detector_provider,
-        )
-        detections = detector.detect(image)
-        summary["detector_execution_provider"] = detector.execution_provider
+            detections = detector.detect(image)
+            summary["detector_execution_provider"] = detector.execution_provider
         summary["detection_count"] = len(detections)
         summary["detections"] = [
             {
                 "index": index,
                 "box": [face.box.x0, face.box.y0, face.box.x1, face.box.y1],
                 "score": face.score,
+                "manual_lasso": [list(point) for point in face.mask_points],
             }
             for index, face in enumerate(detections)
         ]
@@ -1860,7 +1944,8 @@ class ComfyBaselineRuntime:
         targets = assign_faces_to_regional_loras(selected_detections, regions, loras)
         if event is not None:
             event(
-                f"Face detector found {len(detections)} face(s); "
+                f"{'Manual lasso supplied' if manual_face_paths else 'Face detector found'} "
+                f"{len(detections)} face(s); "
                 f"{len(selected_detections)} selected; "
                 f"{len(targets)} matched a regional LoRA",
                 {
@@ -1949,6 +2034,7 @@ class ComfyBaselineRuntime:
                 crop_box,
                 settings.feather,
                 settings.blend,
+                target.face.mask_points,
             )
             report = {
                 "region_id": target.region_id,
@@ -1960,6 +2046,7 @@ class ComfyBaselineRuntime:
                     target.face.box.y1,
                 ],
                 "detector_score": target.face.score,
+                "manual_lasso": [list(point) for point in target.face.mask_points],
                 "crop_box": list(crop_box),
                 "seed": detail_seed,
                 "prompt": detail_prompt,
