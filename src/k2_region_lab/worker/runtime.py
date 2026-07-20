@@ -15,9 +15,11 @@ from k2_region_lab.config import ModelDirectories
 from k2_region_lab.image_edit import (
     composite_regional_edit,
     edge_pad_to_krea,
+    edit_global_conditioning_prompt,
     load_source_image,
     regional_composite_mask,
     regional_edit_conditioning,
+    regional_reference_emphases,
 )
 from k2_region_lab.face_detail import (
     BACKEND as FACE_DETAIL_BACKEND,
@@ -1857,13 +1859,12 @@ class ComfyBaselineRuntime:
                 "a blank image-edit global prompt requires at least one active regional prompt"
             )
 
-        conditioned_global_prompt = reference_prompt.strip()
-        if edit_entire_image:
-            conditioned_global_prompt = ". ".join(
-                part.strip().rstrip(".!? ")
-                for part in (reference_prompt, prompt)
-                if part.strip()
-            )
+        conditioned_global_prompt = edit_global_conditioning_prompt(
+            reference_prompt,
+            prompt,
+            edit_entire_image=edit_entire_image,
+        )
+        conditioned_emphases = regional_reference_emphases(prompt_emphases)
 
         regional_plan = (
             compile_regional_prompt_plan(
@@ -1877,7 +1878,7 @@ class ComfyBaselineRuntime:
                 subject_competition=regional_subject_competition,
                 subject_fill=regional_subject_fill,
                 late_step_scale=regional_late_step_scale,
-                emphases=prompt_emphases,
+                emphases=conditioned_emphases,
                 character_identity_triggers=character_identity_triggers(filtered_loras),
             )
             if conditioning_regions
@@ -2102,6 +2103,7 @@ class ComfyBaselineRuntime:
             "edit_entire_image": edit_entire_image,
             "preserve_identity": preserve_identity,
             "reference_description_retention": reference_description_retention,
+            "reference_global_conditioning_applied": False,
             "composite_bounds": list(changed_bounds) if changed_bounds else None,
             "regional_prompting": regional_summary,
             "projector": projector_summary,

@@ -8,7 +8,7 @@ from PIL import Image, ImageChops, ImageDraw, ImageOps
 
 from k2_region_lab.regions import CanvasGeometry, RegionDefinition
 from k2_region_lab.projector import DEFAULT_PROJECTOR_PRESET, PROJECTOR_PRESETS
-from k2_region_lab.regional_prompting import PromptEmphasis
+from k2_region_lab.regional_prompting import GLOBAL_EMPHASIS_SCOPE, PromptEmphasis
 from k2_region_lab.sampling import (
     DEFAULT_SAMPLER,
     DEFAULT_SCHEDULER,
@@ -227,6 +227,37 @@ def regional_edit_conditioning(
             )
         )
     return references + tuple(edits)
+
+
+def edit_global_conditioning_prompt(
+    reference_prompt: str,
+    edit_instruction: str,
+    *,
+    edit_entire_image: bool,
+) -> str:
+    """Return global text that describes the requested delta, not the source scene.
+
+    The source-global prompt commonly names content that a replacement or removal edit
+    is trying to change. Repeating it during denoising makes the two instructions fight.
+    Local edits already preserve the source outside their latent mask, while reference
+    regions retain the useful subject/layout conditioning inside it. Whole-image edits
+    therefore use only the new instruction and localized edits use regional clauses.
+    """
+
+    del reference_prompt
+    return edit_instruction.strip() if edit_entire_image else ""
+
+
+def regional_reference_emphases(
+    emphases: tuple[PromptEmphasis, ...],
+) -> tuple[PromptEmphasis, ...]:
+    """Keep reference-region emphases after source-global text is omitted."""
+
+    return tuple(
+        emphasis
+        for emphasis in emphases
+        if emphasis.scope_id != GLOBAL_EMPHASIS_SCOPE
+    )
 
 
 def composite_regional_edit(

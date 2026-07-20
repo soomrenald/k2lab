@@ -11,9 +11,11 @@ from k2_region_lab.image_edit import (
     ImageEditState,
     composite_regional_edit,
     edge_pad_to_krea,
+    edit_global_conditioning_prompt,
     load_source_image,
     regional_composite_mask,
     regional_edit_conditioning,
+    regional_reference_emphases,
 )
 from k2_region_lab.project import (
     ProjectState,
@@ -23,6 +25,7 @@ from k2_region_lab.project import (
     project_state,
 )
 from k2_region_lab.regions import PixelBox, RegionDefinition
+from k2_region_lab.regional_prompting import GLOBAL_EMPHASIS_SCOPE, PromptEmphasis
 
 
 class ImageEditGeometryTests(unittest.TestCase):
@@ -101,6 +104,37 @@ class ImageEditGeometryTests(unittest.TestCase):
             "change the clothing. embroidered gold cuffs",
         )
         self.assertEqual(combined[1].box, target.box)
+
+    def test_edit_global_conditioning_excludes_conflicting_source_scene(self) -> None:
+        source_prompt = "two people reclining on a bed"
+        edit_prompt = "remove the people and continue the bedding"
+
+        self.assertEqual(
+            edit_global_conditioning_prompt(
+                source_prompt,
+                edit_prompt,
+                edit_entire_image=False,
+            ),
+            "",
+        )
+        self.assertEqual(
+            edit_global_conditioning_prompt(
+                source_prompt,
+                edit_prompt,
+                edit_entire_image=True,
+            ),
+            edit_prompt,
+        )
+
+    def test_reference_emphases_drop_only_the_omitted_global_scope(self) -> None:
+        emphases = (
+            PromptEmphasis(GLOBAL_EMPHASIS_SCOPE, "two people"),
+            PromptEmphasis("person", "blue coat"),
+        )
+
+        retained = regional_reference_emphases(emphases)
+
+        self.assertEqual(retained, (emphases[1],))
 
 
 class ImageEditProjectTests(unittest.TestCase):

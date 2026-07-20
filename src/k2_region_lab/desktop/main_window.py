@@ -789,12 +789,17 @@ class MainWindow(QMainWindow):
 
         reference_prompt_page = QWidget()
         reference_layout = QVBoxLayout(reference_prompt_page)
-        reference_layout.addWidget(QLabel("Original global prompt"))
+        reference_layout.addWidget(QLabel("Original global prompt (reference only)"))
         self.edit_reference_global_prompt = QTextEdit()
         self.edit_reference_global_prompt.setMinimumHeight(75)
         self.edit_reference_global_prompt.setMaximumHeight(75)
         self.edit_reference_global_prompt.setPlaceholderText(
-            "Loaded from the source project; editable reference conditioning…"
+            "Loaded from the source project for inspection and project round-tripping…"
+        )
+        self.edit_reference_global_prompt.setToolTip(
+            "The original scene prompt is retained in the project but excluded from "
+            "edit denoising so it cannot conflict with a replacement or removal. "
+            "Original regional prompts, identity prompts, and LoRAs remain active."
         )
         reference_layout.addWidget(self.edit_reference_global_prompt)
         reference_actions = QHBoxLayout()
@@ -984,7 +989,9 @@ class MainWindow(QMainWindow):
         result_layout.addWidget(self.edit_run_button)
         note = QLabel(
             "Edit boxes control the denoise mask. Pixels outside their feathered union "
-            "are restored exactly from the source unless Edit entire image is enabled."
+            "are restored exactly from the source unless Edit entire image is enabled. "
+            "Boxed edits are strongly recommended: whole-image denoising can change "
+            "identity and scene details."
         )
         note.setWordWrap(True)
         result_layout.addWidget(note)
