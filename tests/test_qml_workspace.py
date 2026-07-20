@@ -14,7 +14,7 @@ PYSIDE_AVAILABLE = importlib.util.find_spec("PySide6") is not None
 if PYSIDE_AVAILABLE:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     from PySide6.QtCore import QMetaObject, QObject, QUrl
-    from PySide6.QtQml import QQmlApplicationEngine
+    from PySide6.QtQml import QQmlApplicationEngine, QQmlComponent
     from PySide6.QtWidgets import QApplication
     from PIL import Image
 
@@ -90,6 +90,35 @@ class QmlWorkspaceTests(unittest.TestCase):
             setup_window = root_object.findChild(QObject, "setupWindow")
             self.assertIsNotNone(setup_window)
             self.assertTrue(setup_window.property("visible"))
+
+            cpu_vae = setup_window.findChild(QObject, "cpuVaeCheckBox")
+            apply_button = setup_window.findChild(QObject, "applySettingsButton")
+            self.assertFalse(controller.setupController.dirty)
+            self.assertFalse(apply_button.property("enabled"))
+            self.assertTrue(QMetaObject.invokeMethod(cpu_vae, "click"))
+            self.application.processEvents()
+            self.assertTrue(controller.setupController.dirty)
+            self.assertTrue(apply_button.property("enabled"))
+            controller.setupController.reset()
+            self.application.processEvents()
+
+            reserve_slider = setup_window.findChild(QObject, "reserveVramSlider")
+            slider_track = reserve_slider.findChild(QObject, "valueSliderTrack")
+            value_input = reserve_slider.findChild(QObject, "valueSliderInput")
+            slider_track.setProperty("value", 6.5)
+            self.assertTrue(QMetaObject.invokeMethod(slider_track, "moved"))
+            self.application.processEvents()
+            self.assertEqual(reserve_slider.property("currentValue"), 6.5)
+            self.assertEqual(value_input.property("text"), "6.5")
+            self.assertEqual(controller.setupController.value("reserveVram"), 6.5)
+            value_input.setProperty("text", "7.5")
+            self.assertTrue(QMetaObject.invokeMethod(reserve_slider, "commitText"))
+            self.application.processEvents()
+            self.assertEqual(slider_track.property("value"), 7.5)
+            self.assertEqual(controller.setupController.value("reserveVram"), 7.5)
+            controller.setupController.reset()
+            self.application.processEvents()
+
             self.assertTrue(QMetaObject.invokeMethod(setup_window, "requestClose"))
             self.application.processEvents()
             self.assertFalse(setup_window.property("visible"))
@@ -131,6 +160,46 @@ class QmlWorkspaceTests(unittest.TestCase):
             self.assertEqual(backend.lora_list.count(), 0)
             controller.deleteLater()
             backend.close()
+
+    def test_non_live_value_slider_stays_draggable_and_commits_on_release(self) -> None:
+        engine = QQmlApplicationEngine()
+        component = QQmlComponent(engine)
+        components = (
+            Path(__file__).parents[1]
+            / "src"
+            / "k2_region_lab"
+            / "qml"
+            / "ui"
+            / "components"
+        )
+        component.setData(
+            b'import QtQuick\nimport "."\nValueSlider {'
+            b' objectName: "testSlider"; from: -4; to: 4; value: 1.25; decimals: 2 }',
+            QUrl.fromLocalFile(str(components / "SliderHarness.qml")),
+        )
+        slider = component.create()
+        self.assertIsNotNone(slider, component.errorString())
+        commits: list[float] = []
+        slider.valueEdited.connect(commits.append)
+        slider_track = slider.findChild(QObject, "valueSliderTrack")
+        value_input = slider.findChild(QObject, "valueSliderInput")
+
+        slider_track.setProperty("value", 1.5)
+        self.assertTrue(QMetaObject.invokeMethod(slider_track, "moved"))
+        self.application.processEvents()
+        self.assertEqual(slider.property("currentValue"), 1.5)
+        self.assertEqual(value_input.property("text"), "1.50")
+        self.assertEqual(commits, [])
+
+        self.assertTrue(QMetaObject.invokeMethod(slider_track, "pressedChanged"))
+        self.application.processEvents()
+        self.assertEqual(commits, [1.5])
+        value_input.setProperty("text", "2.25")
+        self.assertTrue(QMetaObject.invokeMethod(slider, "commitText"))
+        self.application.processEvents()
+        self.assertEqual(slider_track.property("value"), 2.25)
+        self.assertEqual(commits, [1.5, 2.25])
+        slider.deleteLater()
 
     def test_edit_canvas_source_remains_the_original_when_a_result_exists(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

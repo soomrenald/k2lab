@@ -319,24 +319,34 @@ Window {
                             SectionLabel { text: "Keep VRAM free" }
                             SectionLabel { text: "Minimum free RAM" }
                             ValueSlider {
+                                objectName: "reserveVramSlider"
                                 Layout.fillWidth: true
                                 from: 0.5
                                 to: 128
                                 stepSize: 0.5
                                 decimals: 1
                                 suffix: "GB"
-                                value: Number(setupWindow.controller.value("reserveVram"))
+                                liveUpdate: true
+                                value: {
+                                    let revision = setupWindow.controller.revision
+                                    return Number(setupWindow.controller.value("reserveVram"))
+                                }
                                 onValueEdited: value => setupWindow.controller.setValue(
                                                    "reserveVram", value)
                             }
                             ValueSlider {
+                                objectName: "minimumRamSlider"
                                 Layout.fillWidth: true
                                 from: 4
                                 to: 256
                                 stepSize: 1
                                 decimals: 0
                                 suffix: "GB"
-                                value: Number(setupWindow.controller.value("minimumRam"))
+                                liveUpdate: true
+                                value: {
+                                    let revision = setupWindow.controller.revision
+                                    return Number(setupWindow.controller.value("minimumRam"))
+                                }
                                 onValueEdited: value => setupWindow.controller.setValue(
                                                    "minimumRam", value)
                             }
@@ -344,14 +354,23 @@ Window {
                         RowLayout {
                             Layout.fillWidth: true
                             CheckBox {
+                                objectName: "cpuVaeCheckBox"
                                 text: "Decode with CPU VAE"
-                                checked: Boolean(setupWindow.controller.value("cpuVae"))
-                                onToggled: setupWindow.controller.setValue("cpuVae", checked)
+                                checked: {
+                                    let revision = setupWindow.controller.revision
+                                    return Boolean(setupWindow.controller.value("cpuVae"))
+                                }
+                                onClicked: setupWindow.controller.setValue("cpuVae", checked)
                             }
                             CheckBox {
+                                objectName: "oomRecoveryCheckBox"
                                 text: "Retry once after OOM"
-                                checked: Boolean(setupWindow.controller.value("oomRecovery"))
-                                onToggled: setupWindow.controller.setValue("oomRecovery", checked)
+                                checked: {
+                                    let revision = setupWindow.controller.revision
+                                    return Boolean(setupWindow.controller.value("oomRecovery"))
+                                }
+                                onClicked: setupWindow.controller.setValue(
+                                               "oomRecovery", checked)
                             }
                             Item { Layout.fillWidth: true }
                         }
@@ -460,6 +479,7 @@ Window {
                     onClicked: setupWindow.requestClose()
                 }
                 SetupButton {
+                    objectName: "applySettingsButton"
                     text: "Apply settings"
                     primary: true
                     enabled: setupWindow.controller.dirty

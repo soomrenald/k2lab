@@ -9,39 +9,69 @@ RowLayout {
     property real to: 1
     property real stepSize: 0.01
     property real value: 0
+    property real currentValue: bounded(value)
     property int decimals: 2
     property string suffix: ""
+    property bool liveUpdate: false
     signal valueEdited(real value)
+
+    function bounded(candidate) {
+        return Math.max(root.from, Math.min(root.to, Number(candidate)))
+    }
+
+    function updateFromUser(candidate, commit) {
+        currentValue = bounded(candidate)
+        syncText()
+        if (root.liveUpdate || commit)
+            root.valueEdited(currentValue)
+    }
+
+    function syncText() {
+        if (!valueInput.activeFocus)
+            valueInput.text = Number(currentValue).toFixed(root.decimals)
+    }
 
     function commitText() {
         let parsed = Number(valueInput.text)
         if (isNaN(parsed)) {
-            valueInput.text = Number(root.value).toFixed(root.decimals)
+            valueInput.text = Number(root.currentValue).toFixed(root.decimals)
             return
         }
-        let bounded = Math.max(root.from, Math.min(root.to, parsed))
-        root.valueEdited(bounded)
-        valueInput.text = Number(bounded).toFixed(root.decimals)
+        root.updateFromUser(parsed, true)
+        valueInput.text = Number(root.currentValue).toFixed(root.decimals)
     }
+
+    onValueChanged: {
+        currentValue = bounded(value)
+        syncText()
+    }
+    onCurrentValueChanged: syncText()
+    Component.onCompleted: syncText()
 
     spacing: 8
 
     Slider {
         id: slider
+        objectName: "valueSliderTrack"
         Layout.fillWidth: true
         from: root.from
         to: root.to
         stepSize: root.stepSize
-        value: root.value
+        value: root.currentValue
         live: true
-        onMoved: root.valueEdited(value)
+        onMoved: root.updateFromUser(value, false)
+        onPressedChanged: {
+            if (!pressed)
+                root.updateFromUser(value, true)
+        }
     }
 
     TextField {
         id: valueInput
+        objectName: "valueSliderInput"
         Layout.preferredWidth: root.suffix.length > 0 ? 76 : 62
         implicitHeight: 30
-        text: Number(root.value).toFixed(root.decimals)
+        text: Number(root.currentValue).toFixed(root.decimals)
         color: "#e8ebf4"
         selectionColor: "#6578ff"
         selectedTextColor: "white"

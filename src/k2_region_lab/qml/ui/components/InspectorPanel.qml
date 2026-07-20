@@ -152,6 +152,7 @@ Rectangle {
 
         TabBar {
             id: inspectorTabs
+            objectName: "inspectorTabs"
             Layout.fillWidth: true
             Layout.leftMargin: 10
             Layout.rightMargin: 10
@@ -527,6 +528,7 @@ Rectangle {
                                     Layout.fillWidth: true
                                 }
                                 ValueSlider {
+                                    objectName: "loraStrengthSlider-" + loraCard.loraId
                                     Layout.fillWidth: true
                                     from: -4
                                     to: 4
