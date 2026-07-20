@@ -129,6 +129,16 @@ Inspect configured model artifacts without launching Qt:
 PYTHONPATH=src python -m k2_region_lab --check-models
 ```
 
+Run the preserved localized/global image-edit failures through the real ComfyUI GPU
+worker and write comparisons, amplified difference images, boundary crops, and exact
+outside-mask metrics under `outputs/gpu-tests/`:
+
+```bash
+K2LAB_DATA_DIR=/tmp/k2-region-lab-gpu-tests \
+PYTHONPATH=src:/opt/ComfyUI \
+/opt/ComfyUI/venv_rocm7/bin/python \
+```
+
 After installing the desktop dependencies, launch the application with:
 
 ```bash
