@@ -62,7 +62,7 @@ The implementation is at the foundation milestone. It currently provides:
 - discovery and safetensors-header validation for local Krea 2 components;
 - exact output-pixel to 16×16 Krea image-token geometry;
 - area-fraction box rasterization and immutable spatial layouts;
-- a PySide6 desktop shell with movable, corner-resizable, and deletable pixel-space boxes;
+- a PySide6/Qt Quick workspace with movable, corner-resizable, and deletable pixel-space boxes;
 - drag-ordered front-to-back region depth with explicit overlap/occlusion prompting;
 - editable, unique region names propagated through region and LoRA scope controls;
 - an explicit Auto/Subject/Background role selector on every region;
@@ -143,6 +143,17 @@ After installing the desktop dependencies, launch the application with:
 k2lab
 ```
 
+The default interface is the Qt Quick workspace. It keeps the image canvas large,
+uses a fixed contextual inspector for prompts, regions, LoRAs, and advanced controls,
+and keeps progress plus the active Run/Stop action visible along the bottom. During
+the QML migration, model/runtime configuration and research diagnostics remain in
+the compatibility settings window opened with the gear button. To launch the entire
+previous Qt Widgets interface directly, use:
+
+```bash
+k2lab --legacy-widgets
+```
+
 Do not resolve or replace the ComfyUI worker interpreter symlink: its venv path is required so Python finds that CUDA or ROCm environment's `pyvenv.cfg`. The application preserves this path automatically.
 
 The desktop automatically selects a common GPU-enabled environment under the configured ComfyUI checkout. Override the runtime without changing GUI dependencies using:
@@ -187,9 +198,28 @@ Memory settings can be selected in **Model & memory** or set before launch. A po
 
 These controls make allocation behavior tunable; they cannot make an unsupported Torch/ComfyUI build or an arbitrarily large render fit a particular card. On smaller GPUs, start with `low_8gb` or `safe_12gb`, keep OOM recovery enabled, and reduce the canvas from 1024×1024 if necessary. Smaller-VRAM profiles require more system RAM because ComfyUI offloads more weights to the CPU. The custom policy is also useful for cards between the named sizes.
 
-The right-side **Model and generation settings** pane contains **Model & memory**, **Generation & spatial**, **LoRA library & scope**, **Token emphasis**, and **Projector** tabs, so LoRA setup no longer occupies a separate dock. **Model & memory** can select the ComfyUI checkout and its CUDA- or ROCm-enabled Python interpreter. The **Krea checkpoint** selector lists every `krea*.safetensors` transformer in the configured ComfyUI diffusion-model directory; selecting one pins its exact path in worker payloads and saved projects. The transformer, text encoder, and VAE also retain **Choose…** and **Auto** controls for selecting files outside the list or returning to compatible name-based discovery. The face detector is selectable too; it must retain the compatible NanoDet input/output architecture even though ONNX execution can use CPU or NVIDIA CUDA. Use **Validate tensors** before **Load selected Krea 2 model**. Validation reads only safetensors headers and writes complete manifests under the configured K2 Lab data directory. Changing the runtime or primary model selection stops an idle worker so the next load cannot accidentally retain the previous weights. The Raw and Turbo checkpoints share the architecture targeted by regional attention and routed LoRAs, but the current generation path remains the eight-step, CFG-free Turbo path; selecting Raw alone does not add Raw's recommended full-step CFG sampling. A Raw-to-Turbo distillation LoRA can instead be loaded at strength 1.0 for this Turbo path, but it must remain **Global** because regionalizing the distillation delta would create a hybrid checkpoint rather than Turbo behavior. After loading, **Generate image** displays the saved image behind the editable region boxes. **Sampler** selects the denoising integration algorithm and **Scheduler** selects its noise/sigma schedule; both dropdowns reproduce the ordered `KSampler.SAMPLERS` and `KSampler.SCHEDULERS` registries from current ComfyUI. The worker validates the selection against the configured ComfyUI installation before sampling. Both values are saved in project JSON, embedded PNG project metadata, and separate PNG text fields. Project Open/Save dialogs start in the checkout's `prompts/` folder, and new generations default to the sibling `outputs/` folder. The generation tab provides an output-folder browser and editable filename prefix; both are saved in project JSON. The unified-prompt preview is a resizable, selectable-text dialog. The event viewer follows new messages only while its scrollbar is already at the latest event.
+The Qt Quick workspace uses three task modes on the left: **Generate**, **Edit**, and
+**Faces**. The center is a single image stage with direct box selection, movement,
+and resize handles. The fixed-width inspector on the right changes with the active
+mode and groups controls into **Prompt**, **Regions**, **LoRAs**, and **Advanced**.
+In image editing, **Reference layer** and **Edit targets** switch the semantic box
+layer without splitting or duplicating the canvas. Source/result comparison is
+available directly over the canvas. The inspector can be hidden to maximize canvas
+space, while the bottom action bar always retains status, memory telemetry, progress,
+and the relevant generation action.
 
-Drag the inner right edge of the left prompt pane or the inner left edge of the right settings pane to resize it. The two side panes are independent: resizing the right pane takes space from or returns space to the center workspace without changing the left pane. Drag the top edge of the bottom Events pane upward to make Events taller and shrink everything above it, or downward to restore height to the upper panes. The bottom pane owns both lower corners and therefore resizes the complete upper row consistently. Each dock can also be floated, closed, and restored from the checkable **View** menu; **View → Restore default pane layout** docks and shows all panes again.
+The compatibility setup window contains **Model & memory**, **Generation & spatial**,
+**LoRA library & scope**, **Token emphasis**, and **Projector** tabs. It can select the
+ComfyUI checkout and its CUDA- or ROCm-enabled Python interpreter. The **Krea
+checkpoint** selector lists every `krea*.safetensors` transformer in the configured
+ComfyUI diffusion-model directory; selecting one pins its exact path in worker
+payloads and saved projects. The transformer, text encoder, and VAE retain
+**Choose…** and **Auto** controls, and the compatible NanoDet face detector is also
+selectable. Use **Validate tensors** before **Load selected Krea 2 model**. The Raw
+and Turbo checkpoints share the architecture targeted by regional attention and
+routed LoRAs, but the current generation path remains the eight-step, CFG-free Turbo
+path. **Sampler** and **Scheduler** reproduce the ordered ComfyUI registries, are
+validated by the worker, and round-trip through project JSON and PNG metadata.
 
 The **Projector** tab controls Krea's 12-column `txtfusion.projector` delta. It provides the `FilterBypass2`, `FilterBypass3`, `skc3vo`, and `z0jglf` reference presets, twelve editable vector fields, and one multiplier that scales the entire vector. The control is off by default and is saved in project JSON and PNG metadata. Each subject region also has a separate **Face identity prompt** for the character trigger and stable face/hair description. **Face identity protection** scales the projector delta only on that field's exact Qwen token span: `0` applies the complete preset, while `1` retains the baseline projector mixture for those identity tokens. Body, pose, action, and scene tokens continue receiving the complete preset, and there is no image-space exclusion mask. K2 Lab installs this token-selective projector delta before regional LoRA hooks, preserving regional LoRA routing unchanged.
 
@@ -233,3 +263,7 @@ Launch with `DEBUG=1 k2lab` to write bounded rotating logs under `~/.local/share
 
 The original local stack uses PyTorch 2.9.1 with ROCm 6.4. Because scaled FP8 execution is native only on ROCm 6.5 or newer, the worker automatically uses ComfyUI's low-VRAM fallback on ROCm 6.4. CUDA workers enable the same native FP8 model option on NVIDIA compute capability 8.9 or 9.x-and-newer devices; older CUDA devices retain ComfyUI's compatible fallback. **Safe 16 GB** remains the default policy: neither its 4 GiB VRAM floor nor its 14 GiB available-system-RAM floor can be reduced by an older saved project, and it reports memory at each generation boundary and denoising step. If free VRAM crosses the critical floor between denoising steps, the worker stops before the next allocation and makes one deterministic retry with CPU VAE decode and a reserve increase proportional to the detected GPU capacity; the original 16 GiB setup still moves from 4 GiB to 5 GiB. Memory controls are locked while a model is loaded so the active worker configuration remains explicit. The worker also enables PyTorch expandable allocator segments and ROCm's experimental AOTriton attention backend when the environment does not explicitly configure them. A 1024×1024 eight-step run does not fit reliably on the tested 16 GB GPU under ROCm 6.4's BF16 dequantization fallback. The same baseline completed on PyTorch 2.10.0 with ROCm 7.1 and native scaled FP8/AOTriton, keeping about 2.8 GiB free during denoising. GPU VAE decode may exhaust its regular allocation and use ComfyUI's tiled fallback; K2 Lab keeps that fallback inside PyTorch inference mode for PyTorch 2.10 compatibility. Auto-discovery still selects that ROCm 7.1 environment on the original installation, while CUDA installations normally resolve `.venv` or `venv`; the GUI and `K2LAB_WORKER_PYTHON` can select any other compatible environment. The application-owned worker choice takes precedence over paths stored by older projects.
 
+the current product and engineering contracts. The future browser client and RunPod
+deployment architecture is specified independently in
+[`docs/runpod_web_workspace_spec.md`](docs/runpod_web_workspace_spec.md), including
+the phase-one persistent-Pod mode and phase-two portable-workspace migration.
