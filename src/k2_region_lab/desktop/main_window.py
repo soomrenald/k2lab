@@ -384,6 +384,7 @@ class MainWindow(QMainWindow):
         self._edit_reference_loading_form = False
         self._edit_associated_project_path: Path | None = None
         self._edit_associated_lora_ids: set[str] = set()
+        self._edit_associated_reused_lora_ids: set[str] = set()
         self._edit_reference_projector_enabled = False
         self._edit_reference_projector_preset = DEFAULT_PROJECTOR_PRESET
         self._edit_reference_projector_values = PROJECTOR_PRESETS[
@@ -2501,6 +2502,20 @@ class MainWindow(QMainWindow):
         return True
 
     def _clear_edit_reference_project(self) -> None:
+        for lora_id in tuple(self._edit_associated_reused_lora_ids):
+            try:
+                entry = self.lora_library.get(lora_id)
+                generation_binding = self.lora_library.binding_for(lora_id)
+            except KeyError:
+                continue
+            self._edit_reference_lora_bindings[lora_id] = LoraBinding(
+                lora_id=lora_id,
+                global_scope=False,
+                region_ids=(),
+                strength=generation_binding.strength,
+                trigger_phrase=entry.path.stem,
+            )
+        self._edit_associated_reused_lora_ids.clear()
         for lora_id in tuple(self._edit_associated_lora_ids):
             item = self._lora_list_item(lora_id)
             if item is not None:
@@ -2689,16 +2704,34 @@ class MainWindow(QMainWindow):
             if use_saved_edit_reference
             else state.loras
         )
+        used_lora_ids: set[str] = set()
         for saved_lora in reference_loras:
-            if not self._add_lora_path(saved_lora.path):
-                missing_loras += 1
-                continue
-            item = self.lora_list.currentItem()
-            if item is None:
-                continue
-            lora_id = str(item.data(Qt.ItemDataRole.UserRole))
-            self._edit_associated_lora_ids.add(lora_id)
-            self.lora_library.set_strength(lora_id, saved_lora.strength)
+            saved_path = saved_lora.path.expanduser().resolve()
+            existing_entry = next(
+                (
+                    entry
+                    for entry in self.lora_library.entries()
+                    if entry.path == saved_path and entry.lora_id not in used_lora_ids
+                ),
+                None,
+            )
+            if existing_entry is None:
+                if not self._add_lora_path(saved_path):
+                    missing_loras += 1
+                    continue
+                item = self.lora_list.currentItem()
+                if item is None:
+                    continue
+                lora_id = str(item.data(Qt.ItemDataRole.UserRole))
+                self._edit_associated_lora_ids.add(lora_id)
+                self.lora_library.set_strength(lora_id, saved_lora.strength)
+            else:
+                lora_id = existing_entry.lora_id
+                self._edit_associated_reused_lora_ids.add(lora_id)
+                item = self._lora_list_item(lora_id)
+                if item is not None:
+                    self.lora_list.setCurrentItem(item)
+            used_lora_ids.add(lora_id)
             self._edit_reference_lora_bindings[lora_id] = LoraBinding(
                 lora_id=lora_id,
                 global_scope=(
@@ -4976,6 +5009,7 @@ class MainWindow(QMainWindow):
         self._edit_lora_bindings = {}
         self._edit_reference_lora_bindings = {}
         self._edit_associated_lora_ids = set()
+        self._edit_associated_reused_lora_ids = set()
         self.lora_list.clear()
         for saved_lora in state.loras:
             if not self._add_lora_path(saved_lora.path):

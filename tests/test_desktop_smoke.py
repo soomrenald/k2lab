@@ -264,6 +264,63 @@ class DesktopSmokeTests(unittest.TestCase):
             self.assertEqual(state.regions[0].region_id, "edit")
             window.close()
 
+    def test_image_edit_reuses_an_already_loaded_lora_without_duplicate_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "generated.png"
+            plain_source = root / "plain.png"
+            lora_path = root / "identity.safetensors"
+            write_lora(lora_path)
+            state = ProjectState(
+                canvas_width=320,
+                canvas_height=320,
+                global_prompt="a portrait",
+                regions=(
+                    RegionDefinition(
+                        "person",
+                        "Person",
+                        PixelBox(20, 20, 280, 300),
+                        "a person",
+                    ),
+                ),
+                loras=(
+                    SavedLora(
+                        path=lora_path,
+                        global_scope=False,
+                        region_ids=("person",),
+                        strength=0.7,
+                    ),
+                ),
+            )
+            metadata = PngImagePlugin.PngInfo()
+            metadata.add_text("k2lab_project", json.dumps(project_document(state)))
+            Image.new("RGB", (320, 320), "navy").save(source, pnginfo=metadata)
+            Image.new("RGB", (320, 320), "black").save(plain_source)
+            window = self.make_window(root)
+            self.assertTrue(window._add_lora_path(lora_path))
+            lora_id = window._current_lora_id()
+            window.lora_library.set_strength(lora_id, 1.25)
+
+            self.assertTrue(window._set_edit_source(source, confirm_reset=False))
+
+            self.assertEqual(window.lora_list.count(), 1)
+            self.assertEqual(window.lora_library.binding_for(lora_id).strength, 1.25)
+            self.assertEqual(
+                window._edit_reference_lora_bindings[lora_id].strength,
+                0.7,
+            )
+            self.assertEqual(
+                window._edit_reference_lora_bindings[lora_id].region_ids,
+                ("person",),
+            )
+
+            self.assertTrue(window._set_edit_source(plain_source, confirm_reset=False))
+            self.assertEqual(window.lora_list.count(), 1)
+            self.assertEqual(window._current_lora_id(), lora_id)
+            self.assertFalse(window._edit_reference_lora_bindings[lora_id].global_scope)
+            self.assertEqual(window._edit_reference_lora_bindings[lora_id].region_ids, ())
+            window.close()
+
     def test_reediting_output_prefers_saved_reference_layer(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
