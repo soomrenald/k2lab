@@ -43,6 +43,10 @@ Item {
                                     / Math.max(1, paintedHeight)))
     }
 
+    function regionItemAt(index) {
+        return regionRepeater.itemAt(index)
+    }
+
     Rectangle {
         id: stage
         objectName: "canvasStage"
@@ -136,10 +140,81 @@ Item {
                 required property bool regionEnabled
                 required property int index
 
-                x: root.imageX(x0)
-                y: root.imageY(y0)
-                width: Math.max(2, root.imageX(x1) - root.imageX(x0))
-                height: Math.max(2, root.imageY(y1) - root.imageY(y0))
+                objectName: "regionBox-" + regionId
+                property bool resizePreviewActive: false
+                property real resizePreviewX: 0
+                property real resizePreviewY: 0
+                property real resizePreviewWidth: 0
+                property real resizePreviewHeight: 0
+                property real resizeStartLeft: 0
+                property real resizeStartTop: 0
+                property real resizeStartRight: 0
+                property real resizeStartBottom: 0
+                readonly property real minimumResizeWidth: 16 * root.paintedWidth
+                                                           / Math.max(1, controller.canvasWidth)
+                readonly property real minimumResizeHeight: 16 * root.paintedHeight
+                                                            / Math.max(1, controller.canvasHeight)
+
+                function beginResize() {
+                    resizeStartLeft = regionBox.x
+                    resizeStartTop = regionBox.y
+                    resizeStartRight = regionBox.x + regionBox.width
+                    resizeStartBottom = regionBox.y + regionBox.height
+                    resizePreviewX = resizeStartLeft
+                    resizePreviewY = resizeStartTop
+                    resizePreviewWidth = resizeStartRight - resizeStartLeft
+                    resizePreviewHeight = resizeStartBottom - resizeStartTop
+                    resizePreviewActive = true
+                }
+
+                function updateResize(horizontalEdge, verticalEdge, deltaX, deltaY) {
+                    if (!resizePreviewActive)
+                        return
+                    let left = resizeStartLeft
+                    let top = resizeStartTop
+                    let right = resizeStartRight
+                    let bottom = resizeStartBottom
+                    if (horizontalEdge < 0)
+                        left = Math.max(root.paintedX,
+                                        Math.min(resizeStartRight - minimumResizeWidth,
+                                                 resizeStartLeft + deltaX))
+                    else if (horizontalEdge > 0)
+                        right = Math.min(root.paintedX + root.paintedWidth,
+                                         Math.max(resizeStartLeft + minimumResizeWidth,
+                                                  resizeStartRight + deltaX))
+                    if (verticalEdge < 0)
+                        top = Math.max(root.paintedY,
+                                      Math.min(resizeStartBottom - minimumResizeHeight,
+                                               resizeStartTop + deltaY))
+                    else if (verticalEdge > 0)
+                        bottom = Math.min(root.paintedY + root.paintedHeight,
+                                          Math.max(resizeStartTop + minimumResizeHeight,
+                                                   resizeStartBottom + deltaY))
+                    resizePreviewX = left
+                    resizePreviewY = top
+                    resizePreviewWidth = right - left
+                    resizePreviewHeight = bottom - top
+                }
+
+                function finishResize() {
+                    if (!resizePreviewActive)
+                        return
+                    let left = root.pixelX(resizePreviewX)
+                    let top = root.pixelY(resizePreviewY)
+                    let right = root.pixelX(resizePreviewX + resizePreviewWidth)
+                    let bottom = root.pixelY(resizePreviewY + resizePreviewHeight)
+                    resizePreviewActive = false
+                    controller.updateRegionGeometry(regionId, left, top, right, bottom)
+                }
+
+                x: resizePreviewActive ? resizePreviewX : root.imageX(x0)
+                y: resizePreviewActive ? resizePreviewY : root.imageY(y0)
+                width: resizePreviewActive
+                       ? resizePreviewWidth
+                       : Math.max(2, root.imageX(x1) - root.imageX(x0))
+                height: resizePreviewActive
+                        ? resizePreviewHeight
+                        : Math.max(2, root.imageY(y1) - root.imageY(y0))
                 color: Qt.alpha(root.layerColor, regionEnabled ? 0.15 : 0.05)
                 border.color: controller.selectedRegionId === regionId
                               ? "white" : root.layerColor
@@ -213,21 +288,15 @@ Item {
                     HoverHandler { cursorShape: Qt.SizeFDiagCursor }
 
                     DragHandler {
-                        target: bottomRightHandle
-                        xAxis.minimum: 18
-                        xAxis.maximum: root.paintedX + root.paintedWidth - regionBox.x - 6.5
-                        yAxis.minimum: 18
-                        yAxis.maximum: root.paintedY + root.paintedHeight - regionBox.y - 6.5
+                        target: null
                         onActiveChanged: {
-                            if (!active) {
-                                controller.updateRegionGeometry(
-                                    regionId,
-                                    root.pixelX(regionBox.x),
-                                    root.pixelY(regionBox.y),
-                                    root.pixelX(regionBox.x + bottomRightHandle.x + 6.5),
-                                    root.pixelY(regionBox.y + bottomRightHandle.y + 6.5))
-                            }
+                            if (active)
+                                regionBox.beginResize()
+                            else
+                                regionBox.finishResize()
                         }
+                        onTranslationChanged: if (active)
+                            regionBox.updateResize(1, 1, translation.x, translation.y)
                     }
                 }
 
@@ -246,21 +315,15 @@ Item {
                     HoverHandler { cursorShape: Qt.SizeFDiagCursor }
 
                     DragHandler {
-                        target: topLeftHandle
-                        xAxis.minimum: root.paintedX - regionBox.x - 6.5
-                        xAxis.maximum: regionBox.width - 18
-                        yAxis.minimum: root.paintedY - regionBox.y - 6.5
-                        yAxis.maximum: regionBox.height - 18
+                        target: null
                         onActiveChanged: {
-                            if (!active) {
-                                controller.updateRegionGeometry(
-                                    regionId,
-                                    root.pixelX(regionBox.x + topLeftHandle.x + 6.5),
-                                    root.pixelY(regionBox.y + topLeftHandle.y + 6.5),
-                                    root.pixelX(regionBox.x + regionBox.width),
-                                    root.pixelY(regionBox.y + regionBox.height))
-                            }
+                            if (active)
+                                regionBox.beginResize()
+                            else
+                                regionBox.finishResize()
                         }
+                        onTranslationChanged: if (active)
+                            regionBox.updateResize(-1, -1, translation.x, translation.y)
                     }
                 }
 
@@ -278,19 +341,15 @@ Item {
                     y: -6
                     HoverHandler { cursorShape: Qt.SizeBDiagCursor }
                     DragHandler {
-                        target: topRightHandle
-                        xAxis.minimum: 18
-                        xAxis.maximum: root.paintedX + root.paintedWidth - regionBox.x - 6.5
-                        yAxis.minimum: root.paintedY - regionBox.y - 6.5
-                        yAxis.maximum: regionBox.height - 18
-                        onActiveChanged: if (!active) {
-                            controller.updateRegionGeometry(
-                                regionId,
-                                root.pixelX(regionBox.x),
-                                root.pixelY(regionBox.y + topRightHandle.y + 6.5),
-                                root.pixelX(regionBox.x + topRightHandle.x + 6.5),
-                                root.pixelY(regionBox.y + regionBox.height))
+                        target: null
+                        onActiveChanged: {
+                            if (active)
+                                regionBox.beginResize()
+                            else
+                                regionBox.finishResize()
                         }
+                        onTranslationChanged: if (active)
+                            regionBox.updateResize(1, -1, translation.x, translation.y)
                     }
                 }
 
@@ -308,19 +367,15 @@ Item {
                     y: parent.height - 6
                     HoverHandler { cursorShape: Qt.SizeBDiagCursor }
                     DragHandler {
-                        target: bottomLeftHandle
-                        xAxis.minimum: root.paintedX - regionBox.x - 6.5
-                        xAxis.maximum: regionBox.width - 18
-                        yAxis.minimum: 18
-                        yAxis.maximum: root.paintedY + root.paintedHeight - regionBox.y - 6.5
-                        onActiveChanged: if (!active) {
-                            controller.updateRegionGeometry(
-                                regionId,
-                                root.pixelX(regionBox.x + bottomLeftHandle.x + 6.5),
-                                root.pixelY(regionBox.y),
-                                root.pixelX(regionBox.x + regionBox.width),
-                                root.pixelY(regionBox.y + bottomLeftHandle.y + 6.5))
+                        target: null
+                        onActiveChanged: {
+                            if (active)
+                                regionBox.beginResize()
+                            else
+                                regionBox.finishResize()
                         }
+                        onTranslationChanged: if (active)
+                            regionBox.updateResize(-1, 1, translation.x, translation.y)
                     }
                 }
 
@@ -335,18 +390,15 @@ Item {
                     color: "transparent"
                     HoverHandler { cursorShape: Qt.SizeHorCursor }
                     DragHandler {
-                        target: leftEdge
-                        xAxis.minimum: root.paintedX - regionBox.x - 5
-                        xAxis.maximum: regionBox.width - 21
-                        yAxis.enabled: false
-                        onActiveChanged: if (!active) {
-                            controller.updateRegionGeometry(
-                                regionId,
-                                root.pixelX(regionBox.x + leftEdge.x + 5),
-                                root.pixelY(regionBox.y),
-                                root.pixelX(regionBox.x + regionBox.width),
-                                root.pixelY(regionBox.y + regionBox.height))
+                        target: null
+                        onActiveChanged: {
+                            if (active)
+                                regionBox.beginResize()
+                            else
+                                regionBox.finishResize()
                         }
+                        onTranslationChanged: if (active)
+                            regionBox.updateResize(-1, 0, translation.x, translation.y)
                     }
                 }
 
@@ -361,18 +413,15 @@ Item {
                     color: "transparent"
                     HoverHandler { cursorShape: Qt.SizeHorCursor }
                     DragHandler {
-                        target: rightEdge
-                        xAxis.minimum: 11
-                        xAxis.maximum: root.paintedX + root.paintedWidth - regionBox.x - 5
-                        yAxis.enabled: false
-                        onActiveChanged: if (!active) {
-                            controller.updateRegionGeometry(
-                                regionId,
-                                root.pixelX(regionBox.x),
-                                root.pixelY(regionBox.y),
-                                root.pixelX(regionBox.x + rightEdge.x + 5),
-                                root.pixelY(regionBox.y + regionBox.height))
+                        target: null
+                        onActiveChanged: {
+                            if (active)
+                                regionBox.beginResize()
+                            else
+                                regionBox.finishResize()
                         }
+                        onTranslationChanged: if (active)
+                            regionBox.updateResize(1, 0, translation.x, translation.y)
                     }
                 }
 
@@ -387,18 +436,15 @@ Item {
                     color: "transparent"
                     HoverHandler { cursorShape: Qt.SizeVerCursor }
                     DragHandler {
-                        target: topEdge
-                        xAxis.enabled: false
-                        yAxis.minimum: root.paintedY - regionBox.y - 5
-                        yAxis.maximum: regionBox.height - 21
-                        onActiveChanged: if (!active) {
-                            controller.updateRegionGeometry(
-                                regionId,
-                                root.pixelX(regionBox.x),
-                                root.pixelY(regionBox.y + topEdge.y + 5),
-                                root.pixelX(regionBox.x + regionBox.width),
-                                root.pixelY(regionBox.y + regionBox.height))
+                        target: null
+                        onActiveChanged: {
+                            if (active)
+                                regionBox.beginResize()
+                            else
+                                regionBox.finishResize()
                         }
+                        onTranslationChanged: if (active)
+                            regionBox.updateResize(0, -1, translation.x, translation.y)
                     }
                 }
 
@@ -413,18 +459,15 @@ Item {
                     color: "transparent"
                     HoverHandler { cursorShape: Qt.SizeVerCursor }
                     DragHandler {
-                        target: bottomEdge
-                        xAxis.enabled: false
-                        yAxis.minimum: 11
-                        yAxis.maximum: root.paintedY + root.paintedHeight - regionBox.y - 5
-                        onActiveChanged: if (!active) {
-                            controller.updateRegionGeometry(
-                                regionId,
-                                root.pixelX(regionBox.x),
-                                root.pixelY(regionBox.y),
-                                root.pixelX(regionBox.x + regionBox.width),
-                                root.pixelY(regionBox.y + bottomEdge.y + 5))
+                        target: null
+                        onActiveChanged: {
+                            if (active)
+                                regionBox.beginResize()
+                            else
+                                regionBox.finishResize()
                         }
+                        onTranslationChanged: if (active)
+                            regionBox.updateResize(0, 1, translation.x, translation.y)
                     }
                 }
             }

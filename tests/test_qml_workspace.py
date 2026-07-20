@@ -14,7 +14,7 @@ PYSIDE_AVAILABLE = importlib.util.find_spec("PySide6") is not None
 if PYSIDE_AVAILABLE:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     from PySide6.QtCore import QMetaObject, QObject, QUrl
-    from PySide6.QtQml import QQmlApplicationEngine, QQmlComponent
+    from PySide6.QtQml import QQmlApplicationEngine, QQmlComponent, QQmlExpression
     from PySide6.QtWidgets import QApplication
     from PIL import Image
 
@@ -182,6 +182,58 @@ class QmlWorkspaceTests(unittest.TestCase):
             self.assertEqual(backend.lora_library.entries(), ())
             self.assertEqual(backend.lora_list.count(), 0)
             controller.deleteLater()
+            backend.close()
+
+    def test_region_boundary_preview_resizes_continuously_before_commit(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            backend = self.make_window(Path(directory))
+            engine = QQmlApplicationEngine()
+            controller = QmlWorkspaceController(backend, engine)
+            region_id = controller.createRegion(100, 120, 360, 420)
+            engine.rootContext().setContextProperty("controller", controller)
+            qml_path = (
+                Path(__file__).parents[1]
+                / "src"
+                / "k2_region_lab"
+                / "qml"
+                / "ui"
+                / "Main.qml"
+            )
+
+            engine.load(QUrl.fromLocalFile(str(qml_path)))
+            self.application.processEvents()
+            root_object = engine.rootObjects()[0]
+            canvas = root_object.findChild(QObject, "mainRegionCanvas")
+            region_item = QQmlExpression(
+                engine.rootContext(), canvas, "regionItemAt(0)"
+            )
+            region_box, is_undefined = region_item.evaluate()
+            self.assertFalse(region_item.hasError(), region_item.error())
+            self.assertFalse(is_undefined)
+            self.assertIsNotNone(region_box)
+            self.assertEqual(region_box.property("regionId"), region_id)
+            initial_width = region_box.property("width")
+            initial_height = region_box.property("height")
+
+            preview = QQmlExpression(
+                engine.rootContext(),
+                region_box,
+                "beginResize(); updateResize(1, 1, 40, 30)",
+            )
+            preview.evaluate()
+            self.assertFalse(preview.hasError(), preview.error())
+            self.application.processEvents()
+            self.assertTrue(region_box.property("resizePreviewActive"))
+            self.assertAlmostEqual(region_box.property("width"), initial_width + 40)
+            self.assertAlmostEqual(region_box.property("height"), initial_height + 30)
+
+            finish = QQmlExpression(engine.rootContext(), region_box, "finishResize()")
+            finish.evaluate()
+            self.assertFalse(finish.hasError(), finish.error())
+            self.application.processEvents()
+            self.assertGreater(backend.regions[0].box.x1, 360)
+            self.assertGreater(backend.regions[0].box.y1, 420)
+            root_object.close()
             backend.close()
 
     def test_non_live_value_slider_stays_draggable_and_commits_on_release(self) -> None:
