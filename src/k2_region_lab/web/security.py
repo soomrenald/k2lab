@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hmac
+import ipaddress
 import os
 import secrets
 from dataclasses import dataclass
@@ -22,6 +23,7 @@ CSRF_COOKIE = "k2lab-csrf"
 @dataclass(frozen=True)
 class ControlPlaneSecuritySettings:
     enabled: bool = False
+    loopback_only: bool = False
     trusted_proxy_secret: str = ""
     allowed_subject: str = ""
     allowed_origins: tuple[str, ...] = (
@@ -36,6 +38,8 @@ class ControlPlaneSecuritySettings:
     max_request_bytes: int = 65 * 1024 * 1024
 
     def __post_init__(self) -> None:
+        if self.enabled and self.loopback_only:
+            raise RuntimeError("Hosted authentication and loopback-only mode are mutually exclusive")
         if not self.enabled:
             return
         if len(self.trusted_proxy_secret) < 32:
@@ -68,6 +72,16 @@ class ControlPlaneSecuritySettings:
             require_mfa=os.environ.get("K2LAB_REQUIRE_MFA", "true").casefold()
             not in {"0", "false", "no"},
             session_ttl_seconds=int(os.environ.get("K2LAB_SESSION_TTL_SECONDS", "3600")),
+        )
+
+    @classmethod
+    def local_single_user(cls, *, port: int) -> ControlPlaneSecuritySettings:
+        return cls(
+            loopback_only=True,
+            allowed_origins=(
+                f"http://127.0.0.1:{port}",
+                f"http://localhost:{port}",
+            ),
         )
 
 
@@ -206,7 +220,9 @@ class ControlPlaneSecurityMiddleware(BaseHTTPMiddleware):
     async def dispatch(
         self, request: Request, call_next: RequestResponseEndpoint
     ) -> Response:
-        error = self._request_size_error(request)
+        error = self._loopback_error(request)
+        if error is None:
+            error = self._request_size_error(request)
         session: _Session | None = None
         if error is None and self.settings.enabled and request.url.path not in self._PUBLIC_PATHS:
             session = self.sessions.authenticate(request)
@@ -216,6 +232,19 @@ class ControlPlaneSecurityMiddleware(BaseHTTPMiddleware):
                 )
             elif request.method not in self._SAFE_METHODS:
                 error = self._validate_mutation(request, session)
+        if (
+            error is None
+            and self.settings.loopback_only
+            and request.method not in self._SAFE_METHODS
+            and request.url.path not in self._PUBLIC_PATHS
+        ):
+            origin = request.headers.get("Origin", "").rstrip("/")
+            if origin not in self.settings.allowed_origins:
+                error = self._error(
+                    "origin_forbidden",
+                    "Local control-plane changes require the K2 Region Lab browser origin.",
+                    403,
+                )
         identity = session.subject if session else request.client.host if request.client else "unknown"
         if error is None:
             limit = self._rate_limit(request)
@@ -236,6 +265,23 @@ class ControlPlaneSecurityMiddleware(BaseHTTPMiddleware):
         response = await call_next(request)
         self._secure(response)
         return response
+
+    def _loopback_error(self, request: Request) -> JSONResponse | None:
+        if not self.settings.loopback_only:
+            return None
+        client_host = request.client.host if request.client else ""
+        try:
+            client_is_loopback = ipaddress.ip_address(client_host).is_loopback
+        except ValueError:
+            client_is_loopback = False
+        request_host = (request.url.hostname or "").casefold()
+        if client_is_loopback and request_host in {"127.0.0.1", "localhost", "::1"}:
+            return None
+        return self._error(
+            "loopback_required",
+            "The single-user control plane is available only from this computer.",
+            403,
+        )
 
     def _request_size_error(self, request: Request) -> JSONResponse | None:
         try:

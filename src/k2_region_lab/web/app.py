@@ -5,11 +5,13 @@ import asyncio
 import os
 from collections.abc import Sequence
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import AsyncIterator
 
 from fastapi import FastAPI, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from k2_region_lab.agent.domain import (
@@ -104,6 +106,7 @@ def create_app(
     backend: WorkspaceBackend | None = None,
     *,
     security: ControlPlaneSecuritySettings | None = None,
+    static_directory: Path | None = None,
 ) -> FastAPI:
     workspace_backend = backend or DevelopmentWorkspaceBackend()
     security_settings = security or ControlPlaneSecuritySettings()
@@ -465,15 +468,38 @@ def create_app(
             headers=output.headers,
         )
 
+    if static_directory is not None:
+        application.mount(
+            "/",
+            StaticFiles(directory=static_directory, html=True, check_dir=True),
+            name="studio",
+        )
+
     return application
 
 
 _configured_backend = backend_from_environment()
+_local_single_user = os.environ.get("K2LAB_LOCAL_SINGLE_USER", "").casefold() in {
+    "1",
+    "true",
+    "yes",
+}
+_local_port = int(os.environ.get("K2LAB_LOCAL_PORT", "8000"))
+_static_directory = (
+    Path(__file__).with_name("static")
+    if os.environ.get("K2LAB_SERVE_WEB_UI", "").casefold() in {"1", "true", "yes"}
+    else None
+)
 app = create_app(
     _configured_backend,
-    security=ControlPlaneSecuritySettings.from_environment(
-        production=not isinstance(_configured_backend, DevelopmentWorkspaceBackend)
+    security=(
+        ControlPlaneSecuritySettings.local_single_user(port=_local_port)
+        if _local_single_user
+        else ControlPlaneSecuritySettings.from_environment(
+            production=not isinstance(_configured_backend, DevelopmentWorkspaceBackend)
+        )
     ),
+    static_directory=_static_directory,
 )
 
 

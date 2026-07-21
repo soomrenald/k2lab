@@ -46,6 +46,7 @@ dev = [
 k2lab = "k2_region_lab.app:main"
 k2lab-agent = "k2_region_lab.agent.app:main"
 k2lab-web = "k2_region_lab.web.app:main"
+k2lab-runpod = "k2_region_lab.web.local_runpod:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/k2_region_lab"]

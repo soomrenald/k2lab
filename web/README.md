@@ -54,6 +54,45 @@ disabled so it cannot be confused with a connected GPU worker.
 The default remains the non-billing development backend. The RunPod backend must be
 selected explicitly and requires an immutable runtime image plus a Fernet encryption key:
 
+### Personal computer: one-command launcher
+
+From a checkout, the recommended single-user path is:
+
+```bash
+./scripts/k2lab-runpod \
+  --image 'ghcr.io/OWNER/k2-region-lab-workspace@sha256:64_HEX_DIGEST'
+```
+
+The launcher uses `uv` to install the web dependencies when needed. It generates a persistent
+Fernet key, creates a SQLite control-plane database, serves the bundled React interface and API
+at `http://127.0.0.1:8000`, and opens the browser. The image digest is saved, so subsequent runs
+are just:
+
+```bash
+./scripts/k2lab-runpod
+```
+
+By default, configuration, encrypted credentials, workspace records, and provider-resource
+mappings are stored under `${XDG_STATE_HOME:-~/.local/state}/k2-region-lab`. Use `--state-dir`
+to select another private directory, `--port` to change the loopback port, or `--no-open` to
+leave the browser closed. Back up `credential.key` together with `state.sqlite3`; losing the key
+makes the stored RunPod credential unreadable.
+
+Local mode is intentionally bound to `127.0.0.1`, disables proxy-header trust, rejects
+non-loopback clients and unrecognized Host headers, and requires a same-origin browser for
+mutations. Do not forward or publicly proxy its port. The workspace image must be public and
+must contain this repository's versioned agent. The release workflow in
+`.github/workflows/workspace-image.yml` publishes that image when a version tag is pushed; copy
+the resulting GHCR `image@sha256:digest` value into the first-run command. Until an image has
+actually been published, there is no valid default digest to embed safely.
+
+After the browser opens, create a restricted user-owned RunPod key, paste it into **RunPod
+account**, and choose **Validate and continue**. Select a Persistent Pod or portable network
+volume, order the GPU fallbacks, set the storage and idle timeout, review the cost, and create
+the workspace. This can create billable resources.
+
+### Hosted deployment
+
 ```bash
 export K2LAB_WEB_BACKEND=runpod
 export K2LAB_CREDENTIAL_FERNET_KEY="<persisted-secret-from-your-KMS-bootstrap>"

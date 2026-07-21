@@ -142,6 +142,29 @@ the production persistent-Pod and portable-workspace requirements. Operational l
 migration recovery are documented in
 [`docs/runpod_workspace_operations.md`](docs/runpod_workspace_operations.md).
 
+### Single-user RunPod launcher
+
+For a real RunPod account on a trusted personal computer, use the loopback-only launcher.
+The first run needs the immutable public workspace-image digest; it saves that selection,
+generates the credential-encryption key, creates the local database, starts the API and bundled
+browser interface, and opens the studio:
+
+```bash
+./scripts/k2lab-runpod \
+  --image 'ghcr.io/OWNER/k2-region-lab-workspace@sha256:64_HEX_DIGEST'
+```
+
+On later runs, the saved image selection makes the command simply:
+
+```bash
+./scripts/k2lab-runpod
+```
+
+Paste a restricted RunPod API key into the browser, review the GPU/storage estimate, and create
+the workspace. This command binds only to `127.0.0.1`; it is not a multi-user or hosted
+deployment. Provisioned resources are billable. See [`web/README.md`](web/README.md) for image
+publishing and state-location details.
+
 The model execution environment targets Python 3.12. The geometry and discovery tests intentionally use only the standard library so they can run before GPU dependencies are installed:
 
 ```bash
