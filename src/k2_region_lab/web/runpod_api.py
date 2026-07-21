@@ -33,10 +33,50 @@ class RunPodGpuType(BaseModel):
     community_price: RunPodPrice | None = Field(default=None, alias="communityPrice")
 
 
+class RunPodGpuAvailability(BaseModel):
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    gpu_type_id: str = Field(alias="gpuTypeId")
+    display_name: str = Field(alias="displayName")
+    stock_status: str = Field(alias="stockStatus")
+
+
+class RunPodDatacenter(BaseModel):
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    id: str
+    name: str
+    location: str
+    gpu_availability: list[RunPodGpuAvailability] = Field(
+        default_factory=list, alias="gpuAvailability"
+    )
+
+
+class RunPodNetworkVolume(BaseModel):
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    id: str
+    name: str
+    size_gb: int = Field(alias="size")
+    datacenter_id: str = Field(alias="dataCenterId")
+
+
 class RunPodApi(Protocol):
     async def validate_credentials(self) -> None: ...
 
     async def list_gpu_types(self) -> list[RunPodGpuType]: ...
+
+    async def list_datacenters(self) -> list[RunPodDatacenter]: ...
+
+    async def list_network_volumes(self) -> list[RunPodNetworkVolume]: ...
+
+    async def get_network_volume(self, volume_id: str) -> RunPodNetworkVolume: ...
+
+    async def create_network_volume(
+        self, *, name: str, size_gb: int, datacenter_id: str
+    ) -> RunPodNetworkVolume: ...
+
+    async def delete_network_volume(self, volume_id: str) -> None: ...
 
     async def create_pod(self, request: Mapping[str, Any]) -> dict[str, Any]: ...
 
@@ -71,6 +111,20 @@ class RunPodApiClient:
               stockStatus
               uninterruptablePrice
               availableGpuCounts
+            }
+          }
+        }
+    """
+    DATACENTER_QUERY = """
+        query K2LabDatacenterInventory {
+          dataCenters {
+            id
+            name
+            location
+            gpuAvailability {
+              gpuTypeId
+              displayName
+              stockStatus
             }
           }
         }
@@ -119,6 +173,64 @@ class RunPodApiClient:
                 status_code=502,
             ) from error
 
+    async def list_datacenters(self) -> list[RunPodDatacenter]:
+        payload = await self._request(
+            "POST",
+            self.GRAPHQL_URL,
+            json={"query": self.DATACENTER_QUERY},
+        )
+        if not isinstance(payload, dict) or payload.get("errors"):
+            raise WorkspaceError(
+                "provider_inventory_failed",
+                "RunPod could not return datacenter inventory for this API key.",
+                status_code=502,
+            )
+        try:
+            return [
+                RunPodDatacenter.model_validate(item) for item in payload["data"]["dataCenters"]
+            ]
+        except (KeyError, TypeError, ValueError) as error:
+            raise WorkspaceError(
+                "provider_response_invalid",
+                "RunPod returned an unexpected datacenter inventory response.",
+                status_code=502,
+            ) from error
+
+    async def list_network_volumes(self) -> list[RunPodNetworkVolume]:
+        payload = await self._rest_request("GET", "/networkvolumes")
+        if not isinstance(payload, list):
+            raise WorkspaceError(
+                "provider_response_invalid",
+                "RunPod returned an unexpected network-volume response.",
+                status_code=502,
+            )
+        try:
+            return [RunPodNetworkVolume.model_validate(item) for item in payload]
+        except ValueError as error:
+            raise WorkspaceError(
+                "provider_response_invalid",
+                "RunPod returned an unexpected network-volume response.",
+                status_code=502,
+            ) from error
+
+    async def get_network_volume(self, volume_id: str) -> RunPodNetworkVolume:
+        return RunPodNetworkVolume.model_validate(
+            await self._rest_request("GET", f"/networkvolumes/{volume_id}")
+        )
+
+    async def create_network_volume(
+        self, *, name: str, size_gb: int, datacenter_id: str
+    ) -> RunPodNetworkVolume:
+        payload = await self._rest_request(
+            "POST",
+            "/networkvolumes",
+            json={"name": name, "size": size_gb, "dataCenterId": datacenter_id},
+        )
+        return RunPodNetworkVolume.model_validate(payload)
+
+    async def delete_network_volume(self, volume_id: str) -> None:
+        await self._rest_request("DELETE", f"/networkvolumes/{volume_id}", expected={204})
+
     async def create_pod(self, request: Mapping[str, Any]) -> dict[str, Any]:
         payload = await self._rest_request("POST", "/pods", json=dict(request), expected={201})
         return self._object_response(payload)
@@ -127,9 +239,7 @@ class RunPodApiClient:
         return self._object_response(await self._rest_request("GET", f"/pods/{pod_id}"))
 
     async def start_pod(self, pod_id: str) -> dict[str, Any]:
-        return self._object_response(
-            await self._rest_request("POST", f"/pods/{pod_id}/start")
-        )
+        return self._object_response(await self._rest_request("POST", f"/pods/{pod_id}/start"))
 
     async def stop_pod(self, pod_id: str) -> dict[str, Any]:
         return self._object_response(await self._rest_request("POST", f"/pods/{pod_id}/stop"))

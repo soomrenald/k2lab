@@ -228,7 +228,9 @@ export function WorkspaceStudio({ workspace, developmentBackend, onWorkspace, on
                 : null}
             <button className="danger-text-button" onClick={() => setShowDelete(true)}>Delete cloud workspace</button>
           </div>
-          <p className="field-help">Stopping retains the attached volume. Deleting permanently removes it.</p>
+          <p className="field-help">{workspace.mode === "portable_workspace"
+            ? "Stopping terminates the Pod and retains the network volume. Deleting this workspace also retains that volume for safety."
+            : "Stopping retains the attached volume. Deleting permanently removes it."}</p>
         </div>
       )}
 
@@ -300,11 +302,13 @@ export function WorkspaceStudio({ workspace, developmentBackend, onWorkspace, on
             <div className="danger-icon"><Icon name="trash" /></div>
             <p className="kicker">Permanent action</p>
             <h2 id="delete-title">Delete cloud workspace?</h2>
-            <p>This removes the Pod and its regular persistent volume. Models, projects, inputs, and outputs on that volume cannot be recovered.</p>
+            <p>{workspace.mode === "portable_workspace"
+              ? "This removes the workspace and any active ephemeral Pod. The network volume is retained to prevent accidental data loss and continues to incur storage cost."
+              : "This removes the Pod and its regular persistent volume. Models, projects, inputs, and outputs on that volume cannot be recovered."}</p>
             <label className="field-label" htmlFor="delete-confirmation">Type <strong>{workspace.name}</strong> to confirm</label>
             <input id="delete-confirmation" className="text-input" value={deleteConfirmation} onChange={(event) => setDeleteConfirmation(event.target.value)} />
             {message && <div className="error-banner">{message}</div>}
-            <div className="modal-actions"><button className="quiet-button" onClick={() => { setShowDelete(false); setDeleteConfirmation(""); }}>Cancel</button><button className="danger-button" disabled={busy || deleteConfirmation !== workspace.name} onClick={terminate}>Delete workspace and files</button></div>
+            <div className="modal-actions"><button className="quiet-button" onClick={() => { setShowDelete(false); setDeleteConfirmation(""); }}>Cancel</button><button className="danger-button" disabled={busy || deleteConfirmation !== workspace.name} onClick={terminate}>{workspace.mode === "portable_workspace" ? "Delete workspace; retain volume" : "Delete workspace and files"}</button></div>
           </section>
         </div>
       )}

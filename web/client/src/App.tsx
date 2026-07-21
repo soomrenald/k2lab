@@ -2,7 +2,9 @@ import { useEffect, useState } from "react";
 import type {
   CapabilityManifest,
   CredentialStatus,
+  DatacenterOption,
   GpuOption,
+  NetworkVolumeOption,
   WorkspaceRecord,
 } from "./api";
 import { controlPlane } from "./api";
@@ -14,6 +16,8 @@ interface BootstrapState {
   capabilities: CapabilityManifest;
   credential: CredentialStatus;
   gpus: GpuOption[];
+  datacenters: DatacenterOption[];
+  networkVolumes: NetworkVolumeOption[];
   workspace: WorkspaceRecord | null;
 }
 
@@ -31,12 +35,20 @@ export function App() {
           controlPlane.credentialStatus(),
           controlPlane.workspaces(),
         ]);
-        const gpus = credential.configured ? await controlPlane.gpus() : [];
+        const [gpus, datacenters, networkVolumes] = credential.configured
+          ? await Promise.all([
+              controlPlane.gpus(),
+              controlPlane.datacenters(),
+              controlPlane.networkVolumes(),
+            ])
+          : [[], [], []];
         if (!cancelled) {
           setState({
             capabilities,
             credential,
             gpus,
+            datacenters,
+            networkVolumes,
             workspace: workspaces.find((item) => item.state !== "deleted") ?? null,
           });
         }
@@ -76,13 +88,16 @@ export function App() {
       <div className="entry-shell">
         <header className="entry-header">
           <div className="brand-lockup"><span className="brand-mark">K2</span><span><strong>Region Lab</strong><small>Cloud studio</small></span></div>
-          <div className="entry-meta"><span>Project schema v{state.capabilities.project_schema_version}</span><span className="divider" /> Persistent-Pod preview</div>
+          <div className="entry-meta"><span>Project schema v{state.capabilities.project_schema_version}</span><span className="divider" /> Persistent or portable cloud workspace</div>
         </header>
         <CloudOnboarding
           capabilities={state.capabilities}
           credential={state.credential}
           gpus={state.gpus}
-          onCredential={(credential, gpus) => setState({ ...state, credential, gpus })}
+          datacenters={state.datacenters}
+          networkVolumes={state.networkVolumes}
+          onCredential={(credential, gpus, datacenters, networkVolumes) =>
+            setState({ ...state, credential, gpus, datacenters, networkVolumes })}
           onWorkspace={(workspace) => setState({ ...state, workspace })}
         />
       </div>

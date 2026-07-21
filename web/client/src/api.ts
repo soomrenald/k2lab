@@ -36,7 +36,7 @@ export interface GpuOption {
 }
 
 export interface WorkspacePlanRequest {
-  mode: "persistent_pod";
+  mode: "persistent_pod" | "portable_workspace";
   gpu_priority_ids: string[];
   cloud_type: "secure" | "community";
   interruptible: boolean;
@@ -44,6 +44,28 @@ export interface WorkspacePlanRequest {
   workspace_disk_gb: number;
   idle_timeout_seconds: number;
   hard_deadline_seconds: number;
+  network_volume_id: string | null;
+  datacenter_priority_ids: string[];
+}
+
+export interface GpuAvailability {
+  gpu_type_id: string;
+  display_name: string;
+  stock_status: string;
+}
+
+export interface DatacenterOption {
+  id: string;
+  name: string;
+  location: string;
+  gpu_availability: GpuAvailability[];
+}
+
+export interface NetworkVolumeOption {
+  id: string;
+  name: string;
+  size_gb: number;
+  datacenter_id: string;
 }
 
 export interface WorkspacePlan {
@@ -53,6 +75,9 @@ export interface WorkspacePlan {
   estimated_compute_per_hour: number;
   estimated_storage_per_month: number;
   image_digest: string;
+  selected_datacenter_id: string | null;
+  selected_network_volume: NetworkVolumeOption | null;
+  create_network_volume: boolean;
   warnings: string[];
   created_at: string;
 }
@@ -60,7 +85,7 @@ export interface WorkspacePlan {
 export interface WorkspaceRecord {
   id: string;
   name: string;
-  mode: "persistent_pod";
+  mode: "persistent_pod" | "portable_workspace";
   state: WorkspaceState;
   gpu: GpuOption;
   cloud_type: "secure" | "community";
@@ -79,6 +104,10 @@ export interface WorkspaceRecord {
   readiness: Record<string, boolean>;
   error_code: string | null;
   error_message: string | null;
+  gpu_priority_ids: string[];
+  network_volume_id: string | null;
+  datacenter_id: string | null;
+  owns_network_volume: boolean;
 }
 
 export interface ApiErrorBody {
@@ -258,6 +287,8 @@ export const controlPlane = {
       method: "DELETE",
     }),
   gpus: () => request<GpuOption[]>("/api/v1/gpus"),
+  datacenters: () => request<DatacenterOption[]>("/api/v1/datacenters"),
+  networkVolumes: () => request<NetworkVolumeOption[]>("/api/v1/network-volumes"),
   workspaces: () => request<WorkspaceRecord[]>("/api/v1/workspaces"),
   workspace: (workspaceId: string) =>
     request<WorkspaceRecord>(`/api/v1/workspaces/${workspaceId}`),

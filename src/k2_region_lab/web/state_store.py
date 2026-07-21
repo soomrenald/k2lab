@@ -9,7 +9,12 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from uuid import uuid4
 
 from sqlalchemy import DateTime, ForeignKey, Integer, JSON, LargeBinary, String, select
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from k2_region_lab.agent.domain import GenerationJob, JobEvent, RemoteTransfer
@@ -45,9 +50,7 @@ class RunPodStateStore(Protocol):
 
     async def consume_plan(self, plan_id: str) -> WorkspacePlan | None: ...
 
-    async def save_workspace(
-        self, workspace: WorkspaceRecord, *, image_digest: str
-    ) -> None: ...
+    async def save_workspace(self, workspace: WorkspaceRecord, *, image_digest: str) -> None: ...
 
     async def get_workspace(self, workspace_id: str) -> WorkspaceRecord | None: ...
 
@@ -90,21 +93,13 @@ class RunPodStateStore(Protocol):
 
     async def incomplete_operations(self) -> list[dict[str, Any]]: ...
 
-    async def save_transfer(
-        self, workspace_id: str, transfer: RemoteTransfer
-    ) -> None: ...
+    async def save_transfer(self, workspace_id: str, transfer: RemoteTransfer) -> None: ...
 
-    async def get_transfer(
-        self, transfer_id: str
-    ) -> tuple[str, RemoteTransfer] | None: ...
+    async def get_transfer(self, transfer_id: str) -> tuple[str, RemoteTransfer] | None: ...
 
-    async def save_generation_job(
-        self, workspace_id: str, job: GenerationJob
-    ) -> None: ...
+    async def save_generation_job(self, workspace_id: str, job: GenerationJob) -> None: ...
 
-    async def get_generation_job(
-        self, job_id: str
-    ) -> tuple[str, GenerationJob] | None: ...
+    async def get_generation_job(self, job_id: str) -> tuple[str, GenerationJob] | None: ...
 
     async def save_job_events(self, job_id: str, events: list[JobEvent]) -> None: ...
 
@@ -366,9 +361,7 @@ class SqlRunPodStateStore:
             await session.delete(entity)
             return plan
 
-    async def save_workspace(
-        self, workspace: WorkspaceRecord, *, image_digest: str
-    ) -> None:
+    async def save_workspace(self, workspace: WorkspaceRecord, *, image_digest: str) -> None:
         await self.initialize()
         async with self._sessions.begin() as session:
             entity = await session.get(WorkspaceEntity, workspace.id)
@@ -405,9 +398,7 @@ class SqlRunPodStateStore:
         allowed = set(allowed_states)
         async with self._sessions.begin() as session:
             result = await session.execute(
-                select(WorkspaceEntity)
-                .where(WorkspaceEntity.id == workspace_id)
-                .with_for_update()
+                select(WorkspaceEntity).where(WorkspaceEntity.id == workspace_id).with_for_update()
             )
             entity = result.scalar_one_or_none()
             if entity is None:
@@ -423,9 +414,7 @@ class SqlRunPodStateStore:
                     f"A {workspace.state.value} workspace cannot enter {claimed_state.value}.",
                     status_code=409,
                 )
-            claimed = workspace.model_copy(
-                update={"state": claimed_state, "updated_at": utc_now()}
-            )
+            claimed = workspace.model_copy(update={"state": claimed_state, "updated_at": utc_now()})
             self._update_workspace_entity(entity, claimed, entity.image_digest)
             return claimed
 
@@ -534,9 +523,7 @@ class SqlRunPodStateStore:
                 if entity.state not in terminal
             ]
 
-    async def save_transfer(
-        self, workspace_id: str, transfer: RemoteTransfer
-    ) -> None:
+    async def save_transfer(self, workspace_id: str, transfer: RemoteTransfer) -> None:
         await self.initialize()
         async with self._sessions.begin() as session:
             entity = await session.get(TransferEntity, transfer.id)
@@ -561,9 +548,7 @@ class SqlRunPodStateStore:
             entity.created_at = transfer.created_at
             entity.updated_at = transfer.updated_at
 
-    async def get_transfer(
-        self, transfer_id: str
-    ) -> tuple[str, RemoteTransfer] | None:
+    async def get_transfer(self, transfer_id: str) -> tuple[str, RemoteTransfer] | None:
         await self.initialize()
         async with self._sessions() as session:
             entity = await session.get(TransferEntity, transfer_id)
@@ -571,9 +556,7 @@ class SqlRunPodStateStore:
                 return None
             return entity.workspace_id, RemoteTransfer.model_validate(entity.payload)
 
-    async def save_generation_job(
-        self, workspace_id: str, job: GenerationJob
-    ) -> None:
+    async def save_generation_job(self, workspace_id: str, job: GenerationJob) -> None:
         await self.initialize()
         async with self._sessions.begin() as session:
             entity = await session.get(GenerationJobEntity, job.id)
@@ -598,9 +581,7 @@ class SqlRunPodStateStore:
             entity.created_at = job.created_at
             entity.updated_at = job.updated_at
 
-    async def get_generation_job(
-        self, job_id: str
-    ) -> tuple[str, GenerationJob] | None:
+    async def get_generation_job(self, job_id: str) -> tuple[str, GenerationJob] | None:
         await self.initialize()
         async with self._sessions() as session:
             entity = await session.get(GenerationJobEntity, job_id)
@@ -667,15 +648,17 @@ class SqlRunPodStateStore:
         entity.updated_at = workspace.updated_at
 
     @staticmethod
-    async def _upsert_resource(
-        session: AsyncSession, workspace: WorkspaceRecord
-    ) -> None:
+    async def _upsert_resource(session: AsyncSession, workspace: WorkspaceRecord) -> None:
         resource = await session.get(RunPodResourceEntity, workspace.id)
         if resource is None:
             resource = RunPodResourceEntity(workspace_id=workspace.id)
             session.add(resource)
         resource.pod_id = workspace.provider_resource_id
-        resource.volume_kind = "pod_volume"
+        resource.volume_kind = (
+            "network_volume" if workspace.mode.value == "portable_workspace" else "pod_volume"
+        )
+        resource.volume_id = workspace.network_volume_id
+        resource.datacenter_id = workspace.datacenter_id
         resource.gpu_type_id = workspace.gpu.id
         resource.cloud_type = workspace.cloud_type.value
         resource.container_disk_gb = workspace.container_disk_gb

@@ -2,7 +2,9 @@ import { useMemo, useState } from "react";
 import type {
   CapabilityManifest,
   CredentialStatus,
+  DatacenterOption,
   GpuOption,
+  NetworkVolumeOption,
   WorkspacePlan,
   WorkspacePlanRequest,
   WorkspaceRecord,
@@ -14,7 +16,14 @@ interface Props {
   capabilities: CapabilityManifest;
   credential: CredentialStatus;
   gpus: GpuOption[];
-  onCredential: (credential: CredentialStatus, gpus: GpuOption[]) => void;
+  datacenters: DatacenterOption[];
+  networkVolumes: NetworkVolumeOption[];
+  onCredential: (
+    credential: CredentialStatus,
+    gpus: GpuOption[],
+    datacenters: DatacenterOption[],
+    networkVolumes: NetworkVolumeOption[],
+  ) => void;
   onWorkspace: (workspace: WorkspaceRecord) => void;
 }
 
@@ -27,12 +36,16 @@ const defaultRequest: WorkspacePlanRequest = {
   workspace_disk_gb: 200,
   idle_timeout_seconds: 900,
   hard_deadline_seconds: 28_800,
+  network_volume_id: null,
+  datacenter_priority_ids: [],
 };
 
 export function CloudOnboarding({
   capabilities,
   credential,
   gpus,
+  datacenters,
+  networkVolumes,
   onCredential,
   onWorkspace,
 }: Props) {
@@ -52,13 +65,34 @@ export function CloudOnboarding({
       .filter((gpu): gpu is GpuOption => Boolean(gpu)),
     [gpus, request.gpu_priority_ids],
   );
+  const portable = request.mode === "portable_workspace";
+  const selectedVolume = networkVolumes.find(
+    (item) => item.id === request.network_volume_id,
+  );
+  const selectedDatacenterId =
+    selectedVolume?.datacenter_id ?? request.datacenter_priority_ids[0];
+  const selectedDatacenter = datacenters.find(
+    (item) => item.id === selectedDatacenterId,
+  );
+  const portableGpuIds = new Set(
+    selectedDatacenter?.gpu_availability
+      .filter(
+        (item) =>
+          !["", "none", "unavailable"].includes(item.stock_status.toLowerCase()),
+      )
+      .map((item) => item.gpu_type_id) ?? [],
+  );
 
   async function connect() {
     setBusy(true);
     setError("");
     try {
       const nextCredential = await controlPlane.connectRunPod(apiKey);
-      const nextGpus = await controlPlane.gpus();
+      const [nextGpus, nextDatacenters, nextVolumes] = await Promise.all([
+        controlPlane.gpus(),
+        controlPlane.datacenters(),
+        controlPlane.networkVolumes(),
+      ]);
       setRequest((current) => ({
         ...current,
         gpu_priority_ids: nextGpus
@@ -66,7 +100,7 @@ export function CloudOnboarding({
           .slice(0, 2)
           .map((gpu) => gpu.id),
       }));
-      onCredential(nextCredential, nextGpus);
+      onCredential(nextCredential, nextGpus, nextDatacenters, nextVolumes);
       setApiKey("");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Could not connect account");
@@ -187,15 +221,51 @@ export function CloudOnboarding({
     <main className="provision-shell">
       <header className="provision-heading">
         <div>
-          <p className="kicker">Persistent-Pod mode · phase one</p>
+          <p className="kicker">Cloud workspace storage</p>
           <h1>Configure your workspace</h1>
-          <p>GPU priority is used for initial provisioning. Storage remains attached to this Pod.</p>
+          <p>{portable
+            ? "Each session gets a fresh Pod attached to one datacenter-bound network volume."
+            : "GPU priority is used for initial provisioning. Storage remains attached to this Pod."}</p>
         </div>
         <span className="account-chip"><span className="status-dot online" /> RunPod {credential.key_hint}</span>
       </header>
 
       <div className="provision-grid">
         <section className="config-column">
+          <div className="setup-section glass-card">
+            <div className="section-title-row">
+              <span className="section-number">0</span>
+              <div><p className="kicker">Workspace type</p><h2>Choose storage behavior</h2></div>
+            </div>
+            <div className="segmented-control">
+              <button
+                className={!portable ? "active" : ""}
+                onClick={() => {
+                  setPlan(null);
+                  setRequest({
+                    ...request,
+                    mode: "persistent_pod",
+                    network_volume_id: null,
+                    datacenter_priority_ids: [],
+                  });
+                }}
+              >Persistent Pod</button>
+              <button
+                className={portable ? "active" : ""}
+                onClick={() => {
+                  setPlan(null);
+                  setRequest({
+                    ...request,
+                    mode: "portable_workspace",
+                    cloud_type: "secure",
+                    datacenter_priority_ids: datacenters[0] ? [datacenters[0].id] : [],
+                  });
+                }}
+              >Portable workspace</button>
+            </div>
+            <p className="field-help">Persistent Pods keep a regular volume tied to one Pod. Portable workspaces retain an independent network volume and reselect compatible compute each session.</p>
+          </div>
+
           <div className="setup-section glass-card">
             <div className="section-title-row">
               <span className="section-number">1</span>
@@ -208,6 +278,7 @@ export function CloudOnboarding({
               >Secure Cloud</button>
               <button
                 className={request.cloud_type === "community" ? "active" : ""}
+                disabled={portable}
                 onClick={() => { setPlan(null); setRequest({ ...request, cloud_type: "community" }); }}
               >Community Cloud</button>
             </div>
@@ -216,11 +287,12 @@ export function CloudOnboarding({
                 const rank = request.gpu_priority_ids.indexOf(gpu.id);
                 const cloudAvailable = request.cloud_type === "secure"
                   ? gpu.secure_available : gpu.community_available;
+                const datacenterAvailable = !portable || portableGpuIds.has(gpu.id);
                 return (
-                  <div className={`gpu-row ${rank >= 0 ? "selected" : ""} ${!cloudAvailable ? "unavailable" : ""}`} key={gpu.id}>
+                  <div className={`gpu-row ${rank >= 0 ? "selected" : ""} ${!cloudAvailable || !datacenterAvailable ? "unavailable" : ""}`} key={gpu.id}>
                     <button
                       className="gpu-select"
-                      disabled={!cloudAvailable}
+                      disabled={rank < 0 && (!cloudAvailable || !datacenterAvailable)}
                       onClick={() => toggleGpu(gpu)}
                     >
                       <span className="rank-box">{rank >= 0 ? rank + 1 : "+"}</span>
@@ -258,6 +330,52 @@ export function CloudOnboarding({
               <NumberField label="Workspace volume" suffix="GB" value={request.workspace_disk_gb} min={50} max={4000}
                 onChange={(value) => { setPlan(null); setRequest({ ...request, workspace_disk_gb: value }); }} />
             </div>
+            {portable && (
+              <div className="two-fields">
+                <label className="number-field">
+                  <span>Network volume</span>
+                  <select
+                    className="text-input"
+                    value={request.network_volume_id ?? ""}
+                    onChange={(event) => {
+                      const volume = networkVolumes.find((item) => item.id === event.target.value);
+                      setPlan(null);
+                      setRequest({
+                        ...request,
+                        network_volume_id: volume?.id ?? null,
+                        workspace_disk_gb: volume?.size_gb ?? request.workspace_disk_gb,
+                        datacenter_priority_ids: volume ? [volume.datacenter_id] : request.datacenter_priority_ids,
+                      });
+                    }}
+                  >
+                    <option value="">Create a new network volume</option>
+                    {networkVolumes.map((volume) => (
+                      <option key={volume.id} value={volume.id}>
+                        {volume.name} · {volume.size_gb} GB · {volume.datacenter_id}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="number-field">
+                  <span>Datacenter</span>
+                  <select
+                    className="text-input"
+                    disabled={Boolean(selectedVolume)}
+                    value={selectedDatacenterId ?? ""}
+                    onChange={(event) => {
+                      setPlan(null);
+                      setRequest({ ...request, datacenter_priority_ids: [event.target.value] });
+                    }}
+                  >
+                    {datacenters.map((datacenter) => (
+                      <option key={datacenter.id} value={datacenter.id}>
+                        {datacenter.name} · {datacenter.location}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+            )}
             <div className="two-fields">
               <NumberField label="Idle stop" suffix="min" value={request.idle_timeout_seconds / 60} min={5} max={1440}
                 onChange={(value) => { setPlan(null); setRequest({ ...request, idle_timeout_seconds: value * 60 }); }} />
@@ -265,7 +383,7 @@ export function CloudOnboarding({
                 onChange={(value) => { setPlan(null); setRequest({ ...request, hard_deadline_seconds: value * 3600 }); }} />
             </div>
             <div className="storage-note"><Icon name="folder" />
-              <span><strong>Stop keeps files. Delete removes them.</strong> Storage continues to incur cost while the GPU is stopped.</span>
+              <span><strong>{portable ? "Stop terminates the Pod and keeps the network volume." : "Stop keeps files. Delete removes them."}</strong> Storage continues to incur cost while the GPU is stopped.</span>
             </div>
           </div>
         </section>
@@ -277,7 +395,7 @@ export function CloudOnboarding({
           <input id="workspace-name" className="text-input" value={workspaceName}
             onChange={(event) => setWorkspaceName(event.target.value)} />
           <dl className="summary-list">
-            <div><dt>Mode</dt><dd>Persistent Pod</dd></div>
+            <div><dt>Mode</dt><dd>{portable ? "Portable workspace" : "Persistent Pod"}</dd></div>
             <div><dt>Preferred GPU</dt><dd>{plan?.selected_gpu.display_name ?? selectedGpus[0]?.display_name ?? "Select one"}</dd></div>
             <div><dt>Compute</dt><dd>{plan ? `$${plan.estimated_compute_per_hour.toFixed(2)}/hr` : "Calculated on review"}</dd></div>
             <div><dt>Persistent storage</dt><dd>{plan ? `$${plan.estimated_storage_per_month.toFixed(2)}/mo` : `${request.workspace_disk_gb} GB`}</dd></div>
@@ -294,7 +412,9 @@ export function CloudOnboarding({
               {busy ? "Creating workspace…" : capabilities.development_backend ? "Create preview workspace" : "Create cloud workspace"}
             </button>
           )}
-          <p className="destructive-note">A persistent Pod may not regain the same GPU immediately after it is stopped.</p>
+          <p className="destructive-note">{portable
+            ? "The network volume stays in one datacenter; stopping terminates only its ephemeral Pod."
+            : "A persistent Pod may not regain the same GPU immediately after it is stopped."}</p>
         </aside>
       </div>
     </main>

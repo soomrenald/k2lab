@@ -37,13 +37,16 @@ from k2_region_lab.web.domain import (
     CapabilityManifest,
     CostSnapshot,
     CredentialStatus,
+    DatacenterOption,
     GpuOption,
+    NetworkVolumeOption,
     WorkspaceBackend,
     WorkspaceCreateRequest,
     WorkspaceError,
     WorkspacePlan,
     WorkspacePlanRequest,
     WorkspaceRecord,
+    WorkspaceMode,
     WorkspaceTerminateRequest,
 )
 from k2_region_lab.web.security import (
@@ -149,9 +152,7 @@ def create_app(
     )
 
     @application.exception_handler(WorkspaceError)
-    async def workspace_error_handler(
-        _request: Request, error: WorkspaceError
-    ) -> JSONResponse:
+    async def workspace_error_handler(_request: Request, error: WorkspaceError) -> JSONResponse:
         return JSONResponse(
             status_code=error.status_code,
             content=ErrorBody(code=error.code, message=error.message).model_dump(),
@@ -171,9 +172,7 @@ def create_app(
         return {"status": "ok", "backend": type(workspace_backend).__name__}
 
     @application.post("/api/v1/auth/session", response_model=BrowserSession)
-    async def open_browser_session(
-        request: Request, response: Response
-    ) -> BrowserSession:
+    async def open_browser_session(request: Request, response: Response) -> BrowserSession:
         return session_manager.open(request, response)
 
     @application.delete("/api/v1/auth/session", status_code=204)
@@ -182,9 +181,13 @@ def create_app(
 
     @application.get("/api/v1/capabilities", response_model=CapabilityManifest)
     async def capabilities() -> CapabilityManifest:
-        return CapabilityManifest(development_backend=isinstance(
-            workspace_backend, DevelopmentWorkspaceBackend
-        ))
+        return CapabilityManifest(
+            development_backend=isinstance(workspace_backend, DevelopmentWorkspaceBackend),
+            workspace_modes=[
+                WorkspaceMode.PERSISTENT_POD,
+                WorkspaceMode.PORTABLE_WORKSPACE,
+            ],
+        )
 
     @application.get("/api/v1/credentials/runpod", response_model=CredentialStatus)
     async def credential_status() -> CredentialStatus:
@@ -202,6 +205,14 @@ def create_app(
     async def list_gpus() -> list[GpuOption]:
         return await workspace_backend.list_gpu_options()
 
+    @application.get("/api/v1/datacenters", response_model=list[DatacenterOption])
+    async def list_datacenters() -> list[DatacenterOption]:
+        return await workspace_backend.list_datacenters()
+
+    @application.get("/api/v1/network-volumes", response_model=list[NetworkVolumeOption])
+    async def list_network_volumes() -> list[NetworkVolumeOption]:
+        return await workspace_backend.list_network_volumes()
+
     @application.post("/api/v1/workspace-plans", response_model=WorkspacePlan)
     async def plan_workspace(request: WorkspacePlanRequest) -> WorkspacePlan:
         return await workspace_backend.plan_workspace(request)
@@ -218,43 +229,29 @@ def create_app(
     async def workspace_status(workspace_id: str) -> WorkspaceRecord:
         return await workspace_backend.get_workspace_status(workspace_id)
 
-    @application.post(
-        "/api/v1/workspaces/{workspace_id}/start", response_model=WorkspaceRecord
-    )
+    @application.post("/api/v1/workspaces/{workspace_id}/start", response_model=WorkspaceRecord)
     async def start_workspace(workspace_id: str) -> WorkspaceRecord:
         return await workspace_backend.start_workspace(workspace_id)
 
-    @application.post(
-        "/api/v1/workspaces/{workspace_id}/stop", response_model=WorkspaceRecord
-    )
+    @application.post("/api/v1/workspaces/{workspace_id}/stop", response_model=WorkspaceRecord)
     async def stop_workspace(workspace_id: str) -> WorkspaceRecord:
         return await workspace_backend.stop_workspace(workspace_id)
 
-    @application.post(
-        "/api/v1/workspaces/{workspace_id}/terminate", response_model=WorkspaceRecord
-    )
+    @application.post("/api/v1/workspaces/{workspace_id}/terminate", response_model=WorkspaceRecord)
     async def terminate_workspace(
         workspace_id: str, request: WorkspaceTerminateRequest
     ) -> WorkspaceRecord:
-        return await workspace_backend.terminate_workspace(
-            workspace_id, request.confirmation
-        )
+        return await workspace_backend.terminate_workspace(workspace_id, request.confirmation)
 
-    @application.post(
-        "/api/v1/workspaces/{workspace_id}/lease", response_model=WorkspaceRecord
-    )
+    @application.post("/api/v1/workspaces/{workspace_id}/lease", response_model=WorkspaceRecord)
     async def extend_lease(workspace_id: str) -> WorkspaceRecord:
         return await workspace_backend.extend_lease(workspace_id)
 
-    @application.get(
-        "/api/v1/workspaces/{workspace_id}/cost", response_model=CostSnapshot
-    )
+    @application.get("/api/v1/workspaces/{workspace_id}/cost", response_model=CostSnapshot)
     async def cost_snapshot(workspace_id: str) -> CostSnapshot:
         return await workspace_backend.get_cost_snapshot(workspace_id)
 
-    @application.get(
-        "/api/v1/workspaces/{workspace_id}/files", response_model=FilePage
-    )
+    @application.get("/api/v1/workspaces/{workspace_id}/files", response_model=FilePage)
     async def file_inventory(
         workspace_id: str,
         kind: FileKind,
@@ -267,9 +264,7 @@ def create_app(
         response_model=UploadSession,
         status_code=201,
     )
-    async def create_upload(
-        workspace_id: str, request: UploadCreateRequest
-    ) -> UploadSession:
+    async def create_upload(workspace_id: str, request: UploadCreateRequest) -> UploadSession:
         return await workspace_backend.create_upload(workspace_id, request)
 
     @application.get(
@@ -302,34 +297,24 @@ def create_app(
         "/api/v1/workspaces/{workspace_id}/uploads/{upload_id}/complete",
         response_model=UploadCompleteResponse,
     )
-    async def complete_upload(
-        workspace_id: str, upload_id: str
-    ) -> UploadCompleteResponse:
+    async def complete_upload(workspace_id: str, upload_id: str) -> UploadCompleteResponse:
         return await workspace_backend.complete_upload(workspace_id, upload_id)
 
-    @application.delete(
-        "/api/v1/workspaces/{workspace_id}/uploads/{upload_id}", status_code=204
-    )
+    @application.delete("/api/v1/workspaces/{workspace_id}/uploads/{upload_id}", status_code=204)
     async def cancel_upload(workspace_id: str, upload_id: str) -> None:
         await workspace_backend.cancel_upload(workspace_id, upload_id)
 
-    @application.get(
-        "/api/v1/credentials/downloads/{provider}", response_model=CredentialStatus
-    )
+    @application.get("/api/v1/credentials/downloads/{provider}", response_model=CredentialStatus)
     async def download_credential_status(provider: RemoteProvider) -> CredentialStatus:
         return await workspace_backend.download_credential_status(provider)
 
-    @application.post(
-        "/api/v1/credentials/downloads/{provider}", response_model=CredentialStatus
-    )
+    @application.post("/api/v1/credentials/downloads/{provider}", response_model=CredentialStatus)
     async def store_download_credential(
         provider: RemoteProvider, request: ProviderTokenRequest
     ) -> CredentialStatus:
         return await workspace_backend.store_download_credential(provider, request.token)
 
-    @application.delete(
-        "/api/v1/credentials/downloads/{provider}", response_model=CredentialStatus
-    )
+    @application.delete("/api/v1/credentials/downloads/{provider}", response_model=CredentialStatus)
     async def clear_download_credential(provider: RemoteProvider) -> CredentialStatus:
         return await workspace_backend.clear_download_credential(provider)
 
@@ -390,9 +375,7 @@ def create_app(
         response_model=GenerationJob,
         status_code=202,
     )
-    async def submit_job(
-        workspace_id: str, request: JobSubmitRequest
-    ) -> GenerationJob:
+    async def submit_job(workspace_id: str, request: JobSubmitRequest) -> GenerationJob:
         return await workspace_backend.submit_job(workspace_id, request)
 
     @application.get(
@@ -406,9 +389,7 @@ def create_app(
         "/api/v1/workspaces/{workspace_id}/jobs/{job_id}/events",
         response_model=JobEventPage,
     )
-    async def job_events(
-        workspace_id: str, job_id: str, cursor: str | None = None
-    ) -> JobEventPage:
+    async def job_events(workspace_id: str, job_id: str, cursor: str | None = None) -> JobEventPage:
         return await workspace_backend.get_job_events(workspace_id, job_id, cursor)
 
     @application.post(
@@ -424,9 +405,7 @@ def create_app(
         file_id: str,
         range_header: str | None = Header(default=None, alias="Range"),
     ) -> Response:
-        output = await workspace_backend.get_output(
-            workspace_id, file_id, range_header
-        )
+        output = await workspace_backend.get_output(workspace_id, file_id, range_header)
         return Response(
             content=output.content,
             status_code=output.status_code,

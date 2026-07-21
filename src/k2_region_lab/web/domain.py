@@ -73,6 +73,26 @@ class CredentialStatus(BaseModel):
     development_only: bool = False
 
 
+class GpuAvailability(BaseModel):
+    gpu_type_id: str
+    display_name: str
+    stock_status: str
+
+
+class DatacenterOption(BaseModel):
+    id: str
+    name: str
+    location: str
+    gpu_availability: list[GpuAvailability] = Field(default_factory=list)
+
+
+class NetworkVolumeOption(BaseModel):
+    id: str
+    name: str
+    size_gb: int = Field(ge=1, le=4_000)
+    datacenter_id: str
+
+
 class WorkspacePlanRequest(BaseModel):
     mode: WorkspaceMode = WorkspaceMode.PERSISTENT_POD
     gpu_priority_ids: list[str] = Field(min_length=1, max_length=12)
@@ -82,12 +102,23 @@ class WorkspacePlanRequest(BaseModel):
     workspace_disk_gb: int = Field(default=200, ge=50, le=4_000)
     idle_timeout_seconds: int = Field(default=900, ge=300, le=86_400)
     hard_deadline_seconds: int = Field(default=28_800, ge=900, le=604_800)
+    network_volume_id: str | None = Field(
+        default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,190}$"
+    )
+    datacenter_priority_ids: list[str] = Field(default_factory=list, max_length=12)
 
     @field_validator("gpu_priority_ids")
     @classmethod
     def unique_gpu_priorities(cls, value: list[str]) -> list[str]:
         if len(set(value)) != len(value):
             raise ValueError("GPU priorities must not contain duplicates")
+        return value
+
+    @field_validator("datacenter_priority_ids")
+    @classmethod
+    def unique_datacenter_priorities(cls, value: list[str]) -> list[str]:
+        if len(set(value)) != len(value):
+            raise ValueError("Datacenter priorities must not contain duplicates")
         return value
 
 
@@ -99,6 +130,9 @@ class WorkspacePlan(BaseModel):
     estimated_storage_per_month: float
     image_digest: str
     provider_gpu_priority_ids: list[str] = Field(default_factory=list)
+    selected_datacenter_id: str | None = None
+    selected_network_volume: NetworkVolumeOption | None = None
+    create_network_volume: bool = False
     warnings: list[str] = Field(default_factory=list)
     created_at: datetime
 
@@ -134,6 +168,10 @@ class WorkspaceRecord(BaseModel):
     readiness: dict[str, bool] = Field(default_factory=dict)
     error_code: str | None = None
     error_message: str | None = None
+    gpu_priority_ids: list[str] = Field(default_factory=list)
+    network_volume_id: str | None = None
+    datacenter_id: str | None = None
+    owns_network_volume: bool = False
 
 
 class CostSnapshot(BaseModel):
@@ -182,6 +220,12 @@ class WorkspaceBackend(Protocol):
 
     @abstractmethod
     async def list_gpu_options(self) -> list[GpuOption]: ...
+
+    @abstractmethod
+    async def list_datacenters(self) -> list[DatacenterOption]: ...
+
+    @abstractmethod
+    async def list_network_volumes(self) -> list[NetworkVolumeOption]: ...
 
     @abstractmethod
     async def plan_workspace(self, request: WorkspacePlanRequest) -> WorkspacePlan: ...
@@ -237,17 +281,13 @@ class WorkspaceBackend(Protocol):
 
     async def cancel_upload(self, workspace_id: str, upload_id: str) -> None: ...
 
-    async def download_credential_status(
-        self, provider: RemoteProvider
-    ) -> CredentialStatus: ...
+    async def download_credential_status(self, provider: RemoteProvider) -> CredentialStatus: ...
 
     async def store_download_credential(
         self, provider: RemoteProvider, token: str
     ) -> CredentialStatus: ...
 
-    async def clear_download_credential(
-        self, provider: RemoteProvider
-    ) -> CredentialStatus: ...
+    async def clear_download_credential(self, provider: RemoteProvider) -> CredentialStatus: ...
 
     async def preview_civitai_download(
         self, workspace_id: str, request: CivitaiPreviewRequest
@@ -265,17 +305,11 @@ class WorkspaceBackend(Protocol):
         self, workspace_id: str, request: HuggingFaceDownloadRequest
     ) -> RemoteTransfer: ...
 
-    async def get_transfer(
-        self, workspace_id: str, transfer_id: str
-    ) -> RemoteTransfer: ...
+    async def get_transfer(self, workspace_id: str, transfer_id: str) -> RemoteTransfer: ...
 
-    async def cancel_transfer(
-        self, workspace_id: str, transfer_id: str
-    ) -> RemoteTransfer: ...
+    async def cancel_transfer(self, workspace_id: str, transfer_id: str) -> RemoteTransfer: ...
 
-    async def submit_job(
-        self, workspace_id: str, request: JobSubmitRequest
-    ) -> GenerationJob: ...
+    async def submit_job(self, workspace_id: str, request: JobSubmitRequest) -> GenerationJob: ...
 
     async def get_job(self, workspace_id: str, job_id: str) -> GenerationJob: ...
 

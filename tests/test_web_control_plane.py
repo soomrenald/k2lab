@@ -51,7 +51,10 @@ class WebControlPlaneTests(unittest.IsolatedAsyncioTestCase):
         response = await self.client.get("/api/v1/capabilities")
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.json()["development_backend"])
-        self.assertEqual(response.json()["workspace_modes"], ["persistent_pod"])
+        self.assertEqual(
+            response.json()["workspace_modes"],
+            ["persistent_pod", "portable_workspace"],
+        )
 
     async def test_credentials_are_required_and_never_echoed(self) -> None:
         blocked = await self.client.get("/api/v1/gpus")
@@ -82,9 +85,7 @@ class WebControlPlaneTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(workspace["state"], "ready")
         self.assertTrue(workspace["readiness"]["storage"])
 
-        inventory = await self.client.get(
-            f"/api/v1/workspaces/{workspace['id']}/files?kind=inputs"
-        )
+        inventory = await self.client.get(f"/api/v1/workspaces/{workspace['id']}/files?kind=inputs")
         self.assertEqual(inventory.status_code, 200)
         self.assertEqual(inventory.json(), {"items": [], "next_cursor": None})
         unavailable_upload = await self.client.post(
@@ -98,12 +99,8 @@ class WebControlPlaneTests(unittest.IsolatedAsyncioTestCase):
             },
         )
         self.assertEqual(unavailable_upload.status_code, 501)
-        self.assertEqual(
-            unavailable_upload.json()["code"], "development_feature_unavailable"
-        )
-        provider_status = await self.client.get(
-            "/api/v1/credentials/downloads/huggingface"
-        )
+        self.assertEqual(unavailable_upload.json()["code"], "development_feature_unavailable")
+        provider_status = await self.client.get("/api/v1/credentials/downloads/huggingface")
         self.assertEqual(provider_status.status_code, 200)
         self.assertFalse(provider_status.json()["configured"])
         rejected_token = await self.client.post(
@@ -131,18 +128,14 @@ class WebControlPlaneTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(rejected_job.status_code, 501)
 
-        stopped = await self.client.post(
-            f"/api/v1/workspaces/{workspace['id']}/stop"
-        )
+        stopped = await self.client.post(f"/api/v1/workspaces/{workspace['id']}/stop")
         self.assertEqual(stopped.status_code, 200)
         self.assertEqual(stopped.json()["state"], "stopped")
         cost = await self.client.get(f"/api/v1/workspaces/{workspace['id']}/cost")
         self.assertEqual(cost.json()["compute_per_hour"], 0.0)
         self.assertEqual(cost.json()["storage_per_month"], 20.0)
 
-        started = await self.client.post(
-            f"/api/v1/workspaces/{workspace['id']}/start"
-        )
+        started = await self.client.post(f"/api/v1/workspaces/{workspace['id']}/start")
         self.assertEqual(started.status_code, 200)
         self.assertEqual(started.json()["state"], "ready")
 
@@ -169,6 +162,46 @@ class WebControlPlaneTests(unittest.IsolatedAsyncioTestCase):
         duplicate = await self.client.post("/api/v1/workspaces", json=payload)
         self.assertEqual(duplicate.status_code, 409)
         self.assertEqual(duplicate.json()["code"], "workspace_plan_missing")
+
+    async def test_portable_workspace_inventory_and_ephemeral_lifecycle(self) -> None:
+        await self.connect()
+        datacenters = await self.client.get("/api/v1/datacenters")
+        volumes = await self.client.get("/api/v1/network-volumes")
+        self.assertEqual(datacenters.status_code, 200)
+        self.assertEqual(volumes.status_code, 200)
+        self.assertEqual(volumes.json()[0]["datacenter_id"], "US-GA-2")
+
+        planned = await self.client.post(
+            "/api/v1/workspace-plans",
+            json={
+                "mode": "portable_workspace",
+                "gpu_priority_ids": ["NVIDIA RTX A6000"],
+                "cloud_type": "secure",
+                "workspace_disk_gb": 100,
+                "datacenter_priority_ids": ["US-GA-2"],
+            },
+        )
+        self.assertEqual(planned.status_code, 200, planned.text)
+        self.assertTrue(planned.json()["create_network_volume"])
+        created = await self.client.post(
+            "/api/v1/workspaces",
+            json={"plan_id": planned.json()["id"], "name": "Portable preview"},
+        )
+        self.assertEqual(created.status_code, 200, created.text)
+        workspace = created.json()
+        self.assertIsNotNone(workspace["network_volume_id"])
+
+        stopped = await self.client.post(f"/api/v1/workspaces/{workspace['id']}/stop")
+        self.assertIsNone(stopped.json()["provider_resource_id"])
+        restarted = await self.client.post(f"/api/v1/workspaces/{workspace['id']}/start")
+        self.assertIsNotNone(restarted.json()["provider_resource_id"])
+        deleted = await self.client.post(
+            f"/api/v1/workspaces/{workspace['id']}/terminate",
+            json={"confirmation": "Portable preview"},
+        )
+        self.assertEqual(deleted.status_code, 200)
+        cost = await self.client.get(f"/api/v1/workspaces/{workspace['id']}/cost")
+        self.assertEqual(cost.json()["storage_per_month"], 7.0)
 
 
 @unittest.skipUnless(FASTAPI_AVAILABLE, "web dependencies are not installed")

@@ -28,7 +28,10 @@ from k2_region_lab.web.domain import (
     CloudType,
     CostSnapshot,
     CredentialStatus,
+    DatacenterOption,
     GpuOption,
+    GpuAvailability,
+    NetworkVolumeOption,
     WorkspaceCreateRequest,
     WorkspaceError,
     WorkspaceMode,
@@ -81,6 +84,42 @@ class DevelopmentWorkspaceBackend:
                 interruptible_price_per_hour=0.19,
             ),
         ]
+        self._datacenters = [
+            DatacenterOption(
+                id="US-GA-2",
+                name="US-GA-2",
+                location="United States",
+                gpu_availability=[
+                    GpuAvailability(
+                        gpu_type_id=gpu.id,
+                        display_name=gpu.display_name,
+                        stock_status="High",
+                    )
+                    for gpu in self._gpus
+                    if gpu.secure_available
+                ],
+            ),
+            DatacenterOption(
+                id="EU-RO-1",
+                name="EU-RO-1",
+                location="Europe",
+                gpu_availability=[
+                    GpuAvailability(
+                        gpu_type_id="NVIDIA A40",
+                        display_name="A40",
+                        stock_status="Medium",
+                    )
+                ],
+            ),
+        ]
+        self._network_volumes = [
+            NetworkVolumeOption(
+                id="dev-volume-existing",
+                name="Existing development volume",
+                size_gb=200,
+                datacenter_id="US-GA-2",
+            )
+        ]
 
     async def credential_status(self) -> CredentialStatus:
         return self._credential.model_copy(deep=True)
@@ -109,14 +148,67 @@ class DevelopmentWorkspaceBackend:
         self._require_credentials()
         return [gpu.model_copy(deep=True) for gpu in self._gpus]
 
+    async def list_datacenters(self) -> list[DatacenterOption]:
+        self._require_credentials()
+        return [item.model_copy(deep=True) for item in self._datacenters]
+
+    async def list_network_volumes(self) -> list[NetworkVolumeOption]:
+        self._require_credentials()
+        return [item.model_copy(deep=True) for item in self._network_volumes]
+
     async def plan_workspace(self, request: WorkspacePlanRequest) -> WorkspacePlan:
         self._require_credentials()
-        if request.mode != WorkspaceMode.PERSISTENT_POD:
+        if (
+            request.mode == WorkspaceMode.PORTABLE_WORKSPACE
+            and request.cloud_type != CloudType.SECURE
+        ):
             raise WorkspaceError(
-                "workspace_mode_unavailable",
-                "Portable workspaces are reserved for phase two.",
+                "portable_secure_cloud_required",
+                "Portable network volumes are available only in Secure Cloud.",
             )
-        available = {gpu.id: gpu for gpu in self._gpus if gpu.available}
+        selected_volume = next(
+            (item for item in self._network_volumes if item.id == request.network_volume_id),
+            None,
+        )
+        if request.network_volume_id and selected_volume is None:
+            raise WorkspaceError(
+                "network_volume_not_found",
+                "The selected development network volume does not exist.",
+                status_code=404,
+            )
+        if (
+            request.mode == WorkspaceMode.PORTABLE_WORKSPACE
+            and selected_volume
+            and selected_volume.size_gb < request.workspace_disk_gb
+        ):
+            raise WorkspaceError(
+                "network_volume_too_small",
+                "The selected network volume is smaller than the requested workspace.",
+                status_code=409,
+            )
+        if request.mode == WorkspaceMode.PORTABLE_WORKSPACE and selected_volume:
+            request = request.model_copy(update={"workspace_disk_gb": selected_volume.size_gb})
+        selected_datacenter_id = (
+            selected_volume.datacenter_id
+            if selected_volume
+            else request.datacenter_priority_ids[0]
+            if request.datacenter_priority_ids
+            else self._datacenters[0].id
+        )
+        datacenter = next(
+            (item for item in self._datacenters if item.id == selected_datacenter_id),
+            None,
+        )
+        datacenter_gpu_ids = (
+            {item.gpu_type_id for item in datacenter.gpu_availability}
+            if request.mode == WorkspaceMode.PORTABLE_WORKSPACE and datacenter
+            else None
+        )
+        available = {
+            gpu.id: gpu
+            for gpu in self._gpus
+            if gpu.available and (datacenter_gpu_ids is None or gpu.id in datacenter_gpu_ids)
+        }
         selected = None
         for gpu_id in request.gpu_priority_ids:
             candidate = available.get(gpu_id)
@@ -152,10 +244,13 @@ class DevelopmentWorkspaceBackend:
             else selected.on_demand_price_per_hour
         )
         assert compute_price is not None
-        warnings = [
-            "Development preview only: no RunPod resource will be created.",
-            "Stopping releases GPU compute but persistent storage continues to incur cost.",
-        ]
+        warnings = ["Development preview only: no RunPod resource will be created."]
+        if request.mode == WorkspaceMode.PORTABLE_WORKSPACE:
+            warnings.append("Stopping terminates ephemeral compute; the network volume remains.")
+        else:
+            warnings.append(
+                "Stopping releases GPU compute but persistent storage continues to incur cost."
+            )
         if request.interruptible:
             warnings.append("Interruptible Pods may stop without notice.")
         plan = WorkspacePlan(
@@ -163,11 +258,20 @@ class DevelopmentWorkspaceBackend:
             request=request,
             selected_gpu=selected,
             estimated_compute_per_hour=compute_price,
-            estimated_storage_per_month=(
-                request.workspace_disk_gb * self.STORAGE_PRICE_PER_GB_MONTH
+            estimated_storage_per_month=round(
+                request.workspace_disk_gb
+                * (0.07 if request.mode == WorkspaceMode.PORTABLE_WORKSPACE else 0.10),
+                2,
             ),
             image_digest=self.IMAGE_DIGEST,
             provider_gpu_priority_ids=[selected.id],
+            selected_datacenter_id=(
+                selected_datacenter_id if request.mode == WorkspaceMode.PORTABLE_WORKSPACE else None
+            ),
+            selected_network_volume=selected_volume,
+            create_network_volume=(
+                request.mode == WorkspaceMode.PORTABLE_WORKSPACE and selected_volume is None
+            ),
             warnings=warnings,
             created_at=utc_now(),
         )
@@ -186,6 +290,15 @@ class DevelopmentWorkspaceBackend:
                     status_code=409,
                 )
             now = utc_now()
+            network_volume = plan.selected_network_volume
+            if plan.create_network_volume:
+                network_volume = NetworkVolumeOption(
+                    id=f"dev-volume-{uuid4().hex[:8]}",
+                    name=request.name.strip(),
+                    size_gb=plan.request.workspace_disk_gb,
+                    datacenter_id=plan.selected_datacenter_id or "US-GA-2",
+                )
+                self._network_volumes.append(network_volume)
             workspace = WorkspaceRecord(
                 id=uuid4().hex,
                 name=request.name.strip(),
@@ -200,10 +313,8 @@ class DevelopmentWorkspaceBackend:
                 estimated_storage_per_month=plan.estimated_storage_per_month,
                 idle_timeout_seconds=plan.request.idle_timeout_seconds,
                 hard_deadline_seconds=plan.request.hard_deadline_seconds,
-                lease_expires_at=now
-                + timedelta(seconds=plan.request.idle_timeout_seconds),
-                hard_expires_at=now
-                + timedelta(seconds=plan.request.hard_deadline_seconds),
+                lease_expires_at=now + timedelta(seconds=plan.request.idle_timeout_seconds),
+                hard_expires_at=now + timedelta(seconds=plan.request.hard_deadline_seconds),
                 created_at=now,
                 updated_at=now,
                 provider_resource_id=f"dev-pod-{uuid4().hex[:8]}",
@@ -214,6 +325,10 @@ class DevelopmentWorkspaceBackend:
                     "models": False,
                     "worker": False,
                 },
+                gpu_priority_ids=plan.provider_gpu_priority_ids,
+                network_volume_id=network_volume.id if network_volume else None,
+                datacenter_id=plan.selected_datacenter_id,
+                owns_network_volume=plan.create_network_volume,
             )
             self._workspaces[workspace.id] = workspace
         return workspace.model_copy(deep=True)
@@ -238,10 +353,9 @@ class DevelopmentWorkspaceBackend:
                 update={
                     "state": WorkspaceState.READY,
                     "updated_at": now,
-                    "lease_expires_at": now
-                    + timedelta(seconds=workspace.idle_timeout_seconds),
-                    "hard_expires_at": now
-                    + timedelta(seconds=workspace.hard_deadline_seconds),
+                    "lease_expires_at": now + timedelta(seconds=workspace.idle_timeout_seconds),
+                    "hard_expires_at": now + timedelta(seconds=workspace.hard_deadline_seconds),
+                    "provider_resource_id": f"dev-pod-{uuid4().hex[:8]}",
                 }
             )
             self._workspaces[workspace_id] = workspace
@@ -257,14 +371,20 @@ class DevelopmentWorkspaceBackend:
                     status_code=409,
                 )
             workspace = workspace.model_copy(
-                update={"state": WorkspaceState.STOPPED, "updated_at": utc_now()}
+                update={
+                    "state": WorkspaceState.STOPPED,
+                    "updated_at": utc_now(),
+                    "provider_resource_id": (
+                        None
+                        if workspace.mode == WorkspaceMode.PORTABLE_WORKSPACE
+                        else workspace.provider_resource_id
+                    ),
+                }
             )
             self._workspaces[workspace_id] = workspace
         return workspace.model_copy(deep=True)
 
-    async def terminate_workspace(
-        self, workspace_id: str, confirmation: str
-    ) -> WorkspaceRecord:
+    async def terminate_workspace(self, workspace_id: str, confirmation: str) -> WorkspaceRecord:
         async with self._lock:
             workspace = self._workspace(workspace_id)
             if workspace.state == WorkspaceState.DELETED:
@@ -321,7 +441,9 @@ class DevelopmentWorkspaceBackend:
                 else 0.0
             ),
             storage_per_month=(
-                0.0
+                workspace.estimated_storage_per_month
+                if workspace.network_volume_id
+                else 0.0
                 if workspace.state == WorkspaceState.DELETED
                 else workspace.estimated_storage_per_month
             ),
@@ -336,9 +458,7 @@ class DevelopmentWorkspaceBackend:
         self._workspace(workspace_id)
         return FilePage(items=[])
 
-    async def create_upload(
-        self, workspace_id: str, request: UploadCreateRequest
-    ) -> UploadSession:
+    async def create_upload(self, workspace_id: str, request: UploadCreateRequest) -> UploadSession:
         del request
         self._transfer_unavailable(workspace_id)
 
@@ -357,9 +477,7 @@ class DevelopmentWorkspaceBackend:
         del upload_id, index, content, sha256
         self._transfer_unavailable(workspace_id)
 
-    async def complete_upload(
-        self, workspace_id: str, upload_id: str
-    ) -> UploadCompleteResponse:
+    async def complete_upload(self, workspace_id: str, upload_id: str) -> UploadCompleteResponse:
         del upload_id
         self._transfer_unavailable(workspace_id)
 
@@ -375,9 +493,7 @@ class DevelopmentWorkspaceBackend:
             status_code=501,
         )
 
-    async def download_credential_status(
-        self, provider: RemoteProvider
-    ) -> CredentialStatus:
+    async def download_credential_status(self, provider: RemoteProvider) -> CredentialStatus:
         del provider
         return CredentialStatus(configured=False, development_only=True)
 
@@ -391,9 +507,7 @@ class DevelopmentWorkspaceBackend:
             status_code=501,
         )
 
-    async def clear_download_credential(
-        self, provider: RemoteProvider
-    ) -> CredentialStatus:
+    async def clear_download_credential(self, provider: RemoteProvider) -> CredentialStatus:
         return await self.download_credential_status(provider)
 
     async def preview_civitai_download(
@@ -420,21 +534,15 @@ class DevelopmentWorkspaceBackend:
         del request
         self._transfer_unavailable(workspace_id)
 
-    async def get_transfer(
-        self, workspace_id: str, transfer_id: str
-    ) -> RemoteTransfer:
+    async def get_transfer(self, workspace_id: str, transfer_id: str) -> RemoteTransfer:
         del transfer_id
         self._transfer_unavailable(workspace_id)
 
-    async def cancel_transfer(
-        self, workspace_id: str, transfer_id: str
-    ) -> RemoteTransfer:
+    async def cancel_transfer(self, workspace_id: str, transfer_id: str) -> RemoteTransfer:
         del transfer_id
         self._transfer_unavailable(workspace_id)
 
-    async def submit_job(
-        self, workspace_id: str, request: JobSubmitRequest
-    ) -> GenerationJob:
+    async def submit_job(self, workspace_id: str, request: JobSubmitRequest) -> GenerationJob:
         del request
         self._transfer_unavailable(workspace_id)
 

@@ -33,6 +33,9 @@ Implemented:
 - generation, image-edit, and face-refinement jobs using the canonical project document,
   durable summaries/events, cursor-based reconnect, cancellation, progress display, and
   authenticated output retrieval through opaque file IDs.
+- persistent-Pod and portable-workspace onboarding, RunPod datacenter/network-volume
+  inventory, compatible GPU filtering, independent storage pricing, and ephemeral Pod
+  termination/recreation around a retained network volume.
 
 Not yet implemented:
 

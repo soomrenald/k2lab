@@ -32,7 +32,10 @@ from k2_region_lab.web.domain import (
     CloudType,
     CostSnapshot,
     CredentialStatus,
+    DatacenterOption,
     GpuOption,
+    GpuAvailability,
+    NetworkVolumeOption,
     WorkspaceCreateRequest,
     WorkspaceError,
     WorkspaceMode,
@@ -48,16 +51,12 @@ from k2_region_lab.web.state_store import RunPodStateStore
 
 
 class RunPodPersistentPodBackend:
-    """Phase-one RunPod lifecycle backend.
-
-    Provider credentials and agent secrets are held by the injected encrypted vault. Plans
-    and workspace records remain process-local in this milestone; therefore production
-    activation is explicit and documented as experimental until the durable repository and
-    reconciler land.
-    """
+    """Durable RunPod backend for persistent Pods and portable network volumes."""
 
     PROVIDER_CREDENTIAL_ID = "provider:runpod"
     STORAGE_PRICE_PER_GB_MONTH = 0.10
+    NETWORK_VOLUME_PRICE_UNDER_1TB = 0.07
+    NETWORK_VOLUME_PRICE_OVER_1TB = 0.05
 
     def __init__(
         self,
@@ -103,14 +102,13 @@ class RunPodPersistentPodBackend:
             key_hint=status.key_hint,
             validated_at=status.validated_at,
         )
-        await self.state_store.append_audit(
-            action="runpod.credentials.validate", result="success"
-        )
+        await self.state_store.append_audit(action="runpod.credentials.validate", result="success")
         return status
 
     async def clear_credentials(self) -> CredentialStatus:
         active = any(
-            workspace.state != WorkspaceState.DELETED and workspace.provider_resource_id
+            workspace.state != WorkspaceState.DELETED
+            and (workspace.provider_resource_id or workspace.network_volume_id)
             for workspace in await self.state_store.list_workspaces()
         )
         if active:
@@ -120,9 +118,7 @@ class RunPodPersistentPodBackend:
                 status_code=409,
             )
         await self._vault.delete(self.PROVIDER_CREDENTIAL_ID)
-        await self.state_store.append_audit(
-            action="runpod.credentials.revoke", result="success"
-        )
+        await self.state_store.append_audit(action="runpod.credentials.revoke", result="success")
         return CredentialStatus(configured=False)
 
     async def list_gpu_options(self) -> list[GpuOption]:
@@ -131,22 +127,93 @@ class RunPodPersistentPodBackend:
         options = [self._gpu_option(item) for item in inventory if item.memory_gb >= 24]
         return sorted(options, key=lambda item: (-item.memory_gb, item.display_name))
 
+    async def list_datacenters(self) -> list[DatacenterOption]:
+        items = await (await self._api()).list_datacenters()
+        return [
+            DatacenterOption(
+                id=item.id,
+                name=item.name,
+                location=item.location,
+                gpu_availability=[
+                    GpuAvailability(
+                        gpu_type_id=gpu.gpu_type_id,
+                        display_name=gpu.display_name,
+                        stock_status=gpu.stock_status,
+                    )
+                    for gpu in item.gpu_availability
+                ],
+            )
+            for item in items
+        ]
+
+    async def list_network_volumes(self) -> list[NetworkVolumeOption]:
+        items = await (await self._api()).list_network_volumes()
+        return [
+            NetworkVolumeOption(
+                id=item.id,
+                name=item.name,
+                size_gb=item.size_gb,
+                datacenter_id=item.datacenter_id,
+            )
+            for item in items
+        ]
+
     async def plan_workspace(self, request: WorkspacePlanRequest) -> WorkspacePlan:
-        if request.mode != WorkspaceMode.PERSISTENT_POD:
+        if (
+            request.mode == WorkspaceMode.PORTABLE_WORKSPACE
+            and request.cloud_type != CloudType.SECURE
+        ):
             raise WorkspaceError(
-                "workspace_mode_unavailable",
-                "Portable workspaces are reserved for phase two.",
+                "portable_secure_cloud_required",
+                "Portable network volumes are available only in Secure Cloud.",
             )
         options = {item.id: item for item in await self.list_gpu_options()}
-        eligible = [
-            options[gpu_id]
-            for gpu_id in request.gpu_priority_ids
-            if gpu_id in options
-            and self._cloud_available(options[gpu_id], request.cloud_type)
-            and self._price(options[gpu_id], request.cloud_type, request.interruptible)
-            is not None
-        ]
-        selected = eligible[0] if eligible else None
+        selected_datacenter_id: str | None = None
+        selected_network_volume: NetworkVolumeOption | None = None
+        create_network_volume = False
+        if request.mode == WorkspaceMode.PORTABLE_WORKSPACE:
+            datacenters = await self.list_datacenters()
+            if request.network_volume_id:
+                volumes = {volume.id: volume for volume in await self.list_network_volumes()}
+                selected_network_volume = volumes.get(request.network_volume_id)
+                if selected_network_volume is None:
+                    raise WorkspaceError(
+                        "network_volume_not_found",
+                        "The selected RunPod network volume no longer exists.",
+                        status_code=404,
+                    )
+                if selected_network_volume.size_gb < request.workspace_disk_gb:
+                    raise WorkspaceError(
+                        "network_volume_too_small",
+                        "The selected network volume is smaller than the requested workspace.",
+                        status_code=409,
+                    )
+                request = request.model_copy(
+                    update={"workspace_disk_gb": selected_network_volume.size_gb}
+                )
+                selected_datacenter_id = selected_network_volume.datacenter_id
+            candidates = self._portable_candidates(
+                request, options, datacenters, selected_datacenter_id
+            )
+            if not candidates:
+                raise WorkspaceError(
+                    "portable_capacity_unavailable",
+                    "None of the preferred GPUs is available in a compatible datacenter.",
+                    status_code=409,
+                )
+            selected, selected_datacenter_id = candidates[0]
+            eligible = [item for item, _datacenter in candidates]
+            create_network_volume = selected_network_volume is None
+        else:
+            eligible = [
+                options[gpu_id]
+                for gpu_id in request.gpu_priority_ids
+                if gpu_id in options
+                and self._cloud_available(options[gpu_id], request.cloud_type)
+                and self._price(options[gpu_id], request.cloud_type, request.interruptible)
+                is not None
+            ]
+            selected = eligible[0] if eligible else None
         if selected is None:
             raise WorkspaceError(
                 "requested_gpu_unavailable",
@@ -161,10 +228,23 @@ class RunPodPersistentPodBackend:
                 f"{kind} pricing is unavailable for the selected GPU and cloud type.",
                 status_code=409,
             )
-        warnings = [
-            "Stopping releases GPU compute but persistent storage continues to incur cost.",
-            "Persistent Pod storage is deleted permanently when this workspace is deleted.",
-        ]
+        if request.mode == WorkspaceMode.PORTABLE_WORKSPACE:
+            unavailable = [
+                gpu_id
+                for gpu_id in request.gpu_priority_ids
+                if gpu_id not in {item.id for item in eligible}
+            ]
+            warnings = [
+                "Stopping terminates the ephemeral Pod; the network volume remains billable.",
+                "Network volumes are datacenter-bound and are not a permanent backup.",
+            ]
+            if unavailable:
+                warnings.append("Unavailable in the selected datacenter: " + ", ".join(unavailable))
+        else:
+            warnings = [
+                "Stopping releases GPU compute but persistent storage continues to incur cost.",
+                "Persistent Pod storage is deleted permanently when this workspace is deleted.",
+            ]
         if request.interruptible:
             warnings.append("Interruptible Pods may stop without notice.")
         plan = WorkspacePlan(
@@ -172,11 +252,12 @@ class RunPodPersistentPodBackend:
             request=request,
             selected_gpu=selected,
             estimated_compute_per_hour=price,
-            estimated_storage_per_month=(
-                request.workspace_disk_gb * self.STORAGE_PRICE_PER_GB_MONTH
-            ),
+            estimated_storage_per_month=self._storage_price(request),
             image_digest=self._image_digest,
             provider_gpu_priority_ids=[item.id for item in eligible],
+            selected_datacenter_id=selected_datacenter_id,
+            selected_network_volume=selected_network_volume,
+            create_network_volume=create_network_volume,
             warnings=warnings,
             created_at=utc_now(),
         )
@@ -196,14 +277,39 @@ class RunPodPersistentPodBackend:
         operation_id = await self.state_store.begin_operation(
             operation="runpod.workspace.create",
             workspace_id=workspace_id,
-            context={"plan_id": plan.id},
+            context={"plan_id": plan.id, "mode": plan.request.mode.value},
         )
         secret_id = f"agent:{workspace_id}"
         agent_secret = secrets.token_urlsafe(32)
         await self._vault.store(secret_id, agent_secret)
         api = await self._api()
-        payload = self._create_payload(workspace_id, request.name.strip(), plan, agent_secret)
+        network_volume = plan.selected_network_volume
         try:
+            if plan.create_network_volume:
+                assert plan.selected_datacenter_id is not None
+                network_volume_api = await api.create_network_volume(
+                    name=f"k2lab-{workspace_id[:8]}-{request.name.strip()}"[:191],
+                    size_gb=plan.request.workspace_disk_gb,
+                    datacenter_id=plan.selected_datacenter_id,
+                )
+                network_volume = NetworkVolumeOption(
+                    id=network_volume_api.id,
+                    name=network_volume_api.name,
+                    size_gb=network_volume_api.size_gb,
+                    datacenter_id=network_volume_api.datacenter_id,
+                )
+                await self.state_store.update_operation(
+                    operation_id,
+                    state="volume_created",
+                    context={"network_volume_id": network_volume.id},
+                )
+            payload = self._create_payload(
+                workspace_id,
+                request.name.strip(),
+                plan,
+                agent_secret,
+                network_volume_id=network_volume.id if network_volume else None,
+            )
             provider = await api.create_pod(payload)
             provider_id = self._required_string(provider, "id")
         except Exception:
@@ -213,7 +319,12 @@ class RunPodPersistentPodBackend:
                 action="runpod.workspace.create",
                 result="failure",
                 workspace_id=workspace_id,
-                context={"plan_id": plan.id},
+                context={
+                    "plan_id": plan.id,
+                    "retained_network_volume_id": (
+                        network_volume.id if plan.create_network_volume and network_volume else None
+                    ),
+                },
             )
             raise
         await self.state_store.update_operation(
@@ -248,6 +359,10 @@ class RunPodPersistentPodBackend:
             updated_at=now,
             provider_resource_id=provider_id,
             readiness=self._readiness(provider_status),
+            gpu_priority_ids=plan.provider_gpu_priority_ids,
+            network_volume_id=network_volume.id if network_volume else None,
+            datacenter_id=plan.selected_datacenter_id,
+            owns_network_volume=plan.create_network_volume,
         )
         await self.state_store.save_workspace(workspace, image_digest=self._image_digest)
         await self.state_store.update_operation(operation_id, state="completed")
@@ -264,7 +379,10 @@ class RunPodPersistentPodBackend:
 
     async def get_workspace_status(self, workspace_id: str) -> WorkspaceRecord:
         workspace = await self._workspace(workspace_id)
-        if workspace.state == WorkspaceState.DELETED:
+        if workspace.state == WorkspaceState.DELETED or (
+            workspace.mode == WorkspaceMode.PORTABLE_WORKSPACE
+            and workspace.state == WorkspaceState.STOPPED
+        ):
             return workspace.model_copy(deep=True)
         provider_id = self._provider_id(workspace)
         provider = await (await self._api()).get_pod(provider_id)
@@ -278,9 +396,19 @@ class RunPodPersistentPodBackend:
             allowed_states={WorkspaceState.STOPPED, WorkspaceState.ERROR},
             claimed_state=WorkspaceState.STARTING,
         )
+        agent_secret: str | None = None
         try:
-            provider = await (await self._api()).start_pod(self._provider_id(workspace))
+            if workspace.mode == WorkspaceMode.PORTABLE_WORKSPACE:
+                agent_secret = secrets.token_urlsafe(32)
+                await self._vault.store(f"agent:{workspace.id}", agent_secret)
+                provider = await (await self._api()).create_pod(
+                    self._portable_create_payload(workspace, agent_secret)
+                )
+            else:
+                provider = await (await self._api()).start_pod(self._provider_id(workspace))
         except Exception as error:
+            if agent_secret is not None:
+                await self._vault.delete(f"agent:{workspace.id}")
             await self._record_provider_failure(workspace, "runpod.workspace.start", error)
             raise
         now = utc_now()
@@ -294,6 +422,7 @@ class RunPodPersistentPodBackend:
                 "readiness": self._readiness(status),
                 "error_code": None,
                 "error_message": None,
+                "provider_resource_id": self._required_string(provider, "id"),
             }
         )
         await self.state_store.save_workspace(updated, image_digest=self._image_digest)
@@ -314,7 +443,11 @@ class RunPodPersistentPodBackend:
             claimed_state=WorkspaceState.STOPPING,
         )
         try:
-            await (await self._api()).stop_pod(self._provider_id(workspace))
+            if workspace.mode == WorkspaceMode.PORTABLE_WORKSPACE:
+                await (await self._api()).delete_pod(self._provider_id(workspace))
+                await self._vault.delete(f"agent:{workspace.id}")
+            else:
+                await (await self._api()).stop_pod(self._provider_id(workspace))
         except Exception as error:
             await self._record_provider_failure(workspace, "runpod.workspace.stop", error)
             raise
@@ -325,6 +458,11 @@ class RunPodPersistentPodBackend:
                 "readiness": {},
                 "error_code": None,
                 "error_message": None,
+                "provider_resource_id": (
+                    None
+                    if workspace.mode == WorkspaceMode.PORTABLE_WORKSPACE
+                    else workspace.provider_resource_id
+                ),
             }
         )
         await self.state_store.save_workspace(updated, image_digest=self._image_digest)
@@ -333,9 +471,7 @@ class RunPodPersistentPodBackend:
         )
         return updated.model_copy(deep=True)
 
-    async def terminate_workspace(
-        self, workspace_id: str, confirmation: str
-    ) -> WorkspaceRecord:
+    async def terminate_workspace(self, workspace_id: str, confirmation: str) -> WorkspaceRecord:
         workspace = await self._workspace(workspace_id)
         if workspace.state == WorkspaceState.DELETED:
             return workspace.model_copy(deep=True)
@@ -360,10 +496,11 @@ class RunPodPersistentPodBackend:
         operation_id = await self.state_store.begin_operation(
             operation="runpod.workspace.delete",
             workspace_id=workspace_id,
-            context={"provider_resource_id": self._provider_id(workspace)},
+            context={"provider_resource_id": workspace.provider_resource_id},
         )
         try:
-            await (await self._api()).delete_pod(self._provider_id(workspace))
+            if workspace.provider_resource_id:
+                await (await self._api()).delete_pod(self._provider_id(workspace))
         except Exception as error:
             await self.state_store.update_operation(operation_id, state="failed")
             await self._record_provider_failure(workspace, "runpod.workspace.delete", error)
@@ -420,15 +557,14 @@ class RunPodPersistentPodBackend:
             WorkspaceState.STOPPING,
         }
         elapsed = max(0.0, (utc_now() - workspace.created_at).total_seconds())
+        storage_billable = (
+            workspace.network_volume_id is not None or workspace.state != WorkspaceState.DELETED
+        )
         return CostSnapshot(
             workspace_id=workspace.id,
             state=workspace.state,
             compute_per_hour=workspace.estimated_compute_per_hour if running else 0.0,
-            storage_per_month=(
-                0.0
-                if workspace.state == WorkspaceState.DELETED
-                else workspace.estimated_storage_per_month
-            ),
+            storage_per_month=(workspace.estimated_storage_per_month if storage_billable else 0.0),
             accrued_compute_estimate=(
                 elapsed / 3600 * workspace.estimated_compute_per_hour if running else 0.0
             ),
@@ -450,12 +586,22 @@ class RunPodPersistentPodBackend:
                 status = str(provider.get("desiredStatus", ""))
                 updated = await self._workspace_from_provider(workspace, provider)
                 state = updated.state
-                if state == WorkspaceState.DELETED:
+                if (
+                    state == WorkspaceState.DELETED
+                    and workspace.mode == WorkspaceMode.PORTABLE_WORKSPACE
+                ):
+                    updated = updated.model_copy(
+                        update={
+                            "state": WorkspaceState.STOPPED,
+                            "provider_resource_id": None,
+                            "readiness": {},
+                        }
+                    )
+                    await self._vault.delete(f"agent:{workspace.id}")
+                elif state == WorkspaceState.DELETED:
                     updated = updated.model_copy(update={"provider_resource_id": None})
                     await self._vault.delete(f"agent:{workspace.id}")
-                await self.state_store.save_workspace(
-                    updated, image_digest=self._image_digest
-                )
+                await self.state_store.save_workspace(updated, image_digest=self._image_digest)
                 await self.state_store.append_audit(
                     action="runpod.workspace.reconcile",
                     result="success",
@@ -464,9 +610,7 @@ class RunPodPersistentPodBackend:
                 )
                 reconciled.append(updated)
             except Exception as error:
-                await self._record_provider_failure(
-                    workspace, "runpod.workspace.reconcile", error
-                )
+                await self._record_provider_failure(workspace, "runpod.workspace.reconcile", error)
         return reconciled
 
     async def _reconcile_operation_journal(self, api: RunPodApi) -> None:
@@ -476,20 +620,24 @@ class RunPodPersistentPodBackend:
             context = operation.get("context", {})
             provider_id = context.get("provider_resource_id")
             workspace = (
-                await self.state_store.get_workspace(str(workspace_id))
-                if workspace_id
-                else None
+                await self.state_store.get_workspace(str(workspace_id)) if workspace_id else None
             )
             if operation["operation"] == "runpod.workspace.create":
                 if workspace is not None:
-                    await self.state_store.update_operation(
-                        operation_id, state="completed"
-                    )
+                    await self.state_store.update_operation(operation_id, state="completed")
                     continue
                 if isinstance(provider_id, str) and provider_id:
-                    await api.stop_pod(provider_id)
+                    portable = context.get("mode") == WorkspaceMode.PORTABLE_WORKSPACE.value
+                    if portable:
+                        await api.delete_pod(provider_id)
+                    else:
+                        await api.stop_pod(provider_id)
                     await self.state_store.append_audit(
-                        action="runpod.workspace.orphan_stop",
+                        action=(
+                            "runpod.workspace.orphan_delete"
+                            if portable
+                            else "runpod.workspace.orphan_stop"
+                        ),
                         result="success",
                         workspace_id=str(workspace_id) if workspace_id else None,
                         context={"provider_resource_id": provider_id},
@@ -514,23 +662,15 @@ class RunPodPersistentPodBackend:
                     }
                 )
                 await self._vault.delete(f"agent:{workspace.id}")
-                await self.state_store.save_workspace(
-                    deleted, image_digest=self._image_digest
-                )
-                await self.state_store.update_operation(
-                    operation_id, state="completed"
-                )
+                await self.state_store.save_workspace(deleted, image_digest=self._image_digest)
+                await self.state_store.update_operation(operation_id, state="completed")
 
     async def get_file_inventory(
         self, workspace_id: str, kind: FileKind, cursor: str | None = None
     ) -> FilePage:
-        return await (await self._workspace_agent(workspace_id)).inventory(
-            kind, cursor=cursor
-        )
+        return await (await self._workspace_agent(workspace_id)).inventory(kind, cursor=cursor)
 
-    async def create_upload(
-        self, workspace_id: str, request: UploadCreateRequest
-    ) -> UploadSession:
+    async def create_upload(self, workspace_id: str, request: UploadCreateRequest) -> UploadSession:
         return await (await self._workspace_agent(workspace_id)).create_upload(request)
 
     async def get_upload(self, workspace_id: str, upload_id: str) -> UploadSession:
@@ -548,17 +688,13 @@ class RunPodPersistentPodBackend:
             upload_id, index, content, sha256
         )
 
-    async def complete_upload(
-        self, workspace_id: str, upload_id: str
-    ) -> UploadCompleteResponse:
+    async def complete_upload(self, workspace_id: str, upload_id: str) -> UploadCompleteResponse:
         return await (await self._workspace_agent(workspace_id)).complete_upload(upload_id)
 
     async def cancel_upload(self, workspace_id: str, upload_id: str) -> None:
         await (await self._workspace_agent(workspace_id)).cancel_upload(upload_id)
 
-    async def download_credential_status(
-        self, provider: RemoteProvider
-    ) -> CredentialStatus:
+    async def download_credential_status(self, provider: RemoteProvider) -> CredentialStatus:
         return await self._vault.status(self._download_credential_id(provider))
 
     async def store_download_credential(
@@ -583,9 +719,7 @@ class RunPodPersistentPodBackend:
         )
         return await self.download_credential_status(provider)
 
-    async def clear_download_credential(
-        self, provider: RemoteProvider
-    ) -> CredentialStatus:
+    async def clear_download_credential(self, provider: RemoteProvider) -> CredentialStatus:
         await self._vault.delete(self._download_credential_id(provider))
         await self.state_store.append_audit(
             action="download_credential.delete",
@@ -598,17 +732,13 @@ class RunPodPersistentPodBackend:
         self, workspace_id: str, request: CivitaiPreviewRequest
     ) -> CivitaiPreview:
         token = await self._download_token(RemoteProvider.CIVITAI)
-        return await (await self._workspace_agent(workspace_id)).preview_civitai(
-            request, token
-        )
+        return await (await self._workspace_agent(workspace_id)).preview_civitai(request, token)
 
     async def start_civitai_download(
         self, workspace_id: str, request: CivitaiDownloadRequest
     ) -> RemoteTransfer:
         token = await self._download_token(RemoteProvider.CIVITAI)
-        transfer = await (await self._workspace_agent(workspace_id)).start_civitai(
-            request, token
-        )
+        transfer = await (await self._workspace_agent(workspace_id)).start_civitai(request, token)
         await self.state_store.save_transfer(workspace_id, transfer)
         await self._touch_workspace_lease(workspace_id)
         await self.state_store.append_audit(
@@ -623,9 +753,7 @@ class RunPodPersistentPodBackend:
         self, workspace_id: str, request: HuggingFacePreviewRequest
     ) -> HuggingFacePreview:
         token = await self._download_token(RemoteProvider.HUGGINGFACE)
-        return await (await self._workspace_agent(workspace_id)).preview_huggingface(
-            request, token
-        )
+        return await (await self._workspace_agent(workspace_id)).preview_huggingface(request, token)
 
     async def start_huggingface_download(
         self, workspace_id: str, request: HuggingFaceDownloadRequest
@@ -644,23 +772,15 @@ class RunPodPersistentPodBackend:
         )
         return transfer
 
-    async def get_transfer(
-        self, workspace_id: str, transfer_id: str
-    ) -> RemoteTransfer:
-        transfer = await (await self._workspace_agent(workspace_id)).transfer_status(
-            transfer_id
-        )
+    async def get_transfer(self, workspace_id: str, transfer_id: str) -> RemoteTransfer:
+        transfer = await (await self._workspace_agent(workspace_id)).transfer_status(transfer_id)
         await self.state_store.save_transfer(workspace_id, transfer)
         if transfer.state.value in {"pending", "resolving", "downloading", "verifying"}:
             await self._touch_workspace_lease(workspace_id)
         return transfer
 
-    async def cancel_transfer(
-        self, workspace_id: str, transfer_id: str
-    ) -> RemoteTransfer:
-        transfer = await (await self._workspace_agent(workspace_id)).cancel_transfer(
-            transfer_id
-        )
+    async def cancel_transfer(self, workspace_id: str, transfer_id: str) -> RemoteTransfer:
+        transfer = await (await self._workspace_agent(workspace_id)).cancel_transfer(transfer_id)
         await self.state_store.save_transfer(workspace_id, transfer)
         await self.state_store.append_audit(
             action="download.cancel",
@@ -693,9 +813,7 @@ class RunPodPersistentPodBackend:
         )
         await self.state_store.save_workspace(updated, image_digest=self._image_digest)
 
-    async def submit_job(
-        self, workspace_id: str, request: JobSubmitRequest
-    ) -> GenerationJob:
+    async def submit_job(self, workspace_id: str, request: JobSubmitRequest) -> GenerationJob:
         job = await (await self._workspace_agent(workspace_id)).submit_job(request)
         await self.state_store.save_generation_job(workspace_id, job)
         await self._touch_workspace_lease(workspace_id)
@@ -717,9 +835,7 @@ class RunPodPersistentPodBackend:
     async def get_job_events(
         self, workspace_id: str, job_id: str, cursor: str | None = None
     ) -> JobEventPage:
-        events = await (await self._workspace_agent(workspace_id)).job_events(
-            job_id, cursor=cursor
-        )
+        events = await (await self._workspace_agent(workspace_id)).job_events(job_id, cursor=cursor)
         await self.state_store.save_job_events(job_id, events.items)
         return events
 
@@ -764,8 +880,14 @@ class RunPodPersistentPodBackend:
         status = str(provider.get("desiredStatus", ""))
         state = self._state_from_provider(status)
         readiness = self._readiness(status)
+        provider_resource_id = workspace.provider_resource_id
         error_code = None
         error_message = None
+        if state == WorkspaceState.DELETED and workspace.mode == WorkspaceMode.PORTABLE_WORKSPACE:
+            state = WorkspaceState.STOPPED
+            readiness = {}
+            provider_resource_id = None
+            await self._vault.delete(f"agent:{workspace.id}")
         if status == "RUNNING":
             secret = await self._vault.retrieve(f"agent:{workspace.id}")
             if not secret:
@@ -806,6 +928,7 @@ class RunPodPersistentPodBackend:
                 "readiness": readiness,
                 "error_code": error_code,
                 "error_message": error_message,
+                "provider_resource_id": provider_resource_id,
             }
         )
 
@@ -860,9 +983,7 @@ class RunPodPersistentPodBackend:
         return gpu.secure_available if cloud_type == CloudType.SECURE else gpu.community_available
 
     @staticmethod
-    def _price(
-        gpu: GpuOption, cloud_type: CloudType, interruptible: bool
-    ) -> float | None:
+    def _price(gpu: GpuOption, cloud_type: CloudType, interruptible: bool) -> float | None:
         if cloud_type == CloudType.SECURE:
             return (
                 gpu.secure_interruptible_price_per_hour
@@ -881,8 +1002,10 @@ class RunPodPersistentPodBackend:
         name: str,
         plan: WorkspacePlan,
         agent_secret: str,
+        *,
+        network_volume_id: str | None = None,
     ) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "name": f"k2lab-{workspace_id[:8]}-{name}"[:191],
             "imageName": self._image_digest,
             "cloudType": plan.request.cloud_type.value.upper(),
@@ -891,7 +1014,6 @@ class RunPodPersistentPodBackend:
             "gpuTypePriority": "custom",
             "gpuCount": 1,
             "containerDiskInGb": plan.request.container_disk_gb,
-            "volumeInGb": plan.request.workspace_disk_gb,
             "volumeMountPath": "/workspace",
             "interruptible": plan.request.interruptible,
             "locked": False,
@@ -902,6 +1024,109 @@ class RunPodPersistentPodBackend:
                 "K2LAB_IMAGE_VERSION": self._image_version,
             },
         }
+        if plan.request.mode == WorkspaceMode.PORTABLE_WORKSPACE:
+            if not network_volume_id or not plan.selected_datacenter_id:
+                raise WorkspaceError(
+                    "portable_plan_invalid",
+                    "The portable workspace plan is missing its network volume.",
+                    status_code=409,
+                )
+            payload.update(
+                {
+                    "networkVolumeId": network_volume_id,
+                    "dataCenterIds": [plan.selected_datacenter_id],
+                    "dataCenterPriority": "custom",
+                }
+            )
+        else:
+            payload["volumeInGb"] = plan.request.workspace_disk_gb
+        return payload
+
+    def _portable_create_payload(
+        self, workspace: WorkspaceRecord, agent_secret: str
+    ) -> dict[str, Any]:
+        if not workspace.network_volume_id or not workspace.datacenter_id:
+            raise WorkspaceError(
+                "portable_workspace_invalid",
+                "The portable workspace has no attached network volume.",
+                status_code=409,
+            )
+        return {
+            "name": f"k2lab-{workspace.id[:8]}-{workspace.name}"[:191],
+            "imageName": self._image_digest,
+            "cloudType": "SECURE",
+            "computeType": "GPU",
+            "gpuTypeIds": workspace.gpu_priority_ids or [workspace.gpu.id],
+            "gpuTypePriority": "custom",
+            "gpuCount": 1,
+            "containerDiskInGb": workspace.container_disk_gb,
+            "networkVolumeId": workspace.network_volume_id,
+            "dataCenterIds": [workspace.datacenter_id],
+            "dataCenterPriority": "custom",
+            "volumeMountPath": "/workspace",
+            "interruptible": workspace.interruptible,
+            "locked": False,
+            "ports": ["8080/http"],
+            "env": {
+                "K2LAB_AGENT_SESSION_TOKEN": agent_secret,
+                "K2LAB_WORKSPACE_ID": workspace.id,
+                "K2LAB_IMAGE_VERSION": self._image_version,
+            },
+        }
+
+    def _portable_candidates(
+        self,
+        request: WorkspacePlanRequest,
+        options: dict[str, GpuOption],
+        datacenters: list[DatacenterOption],
+        fixed_datacenter_id: str | None,
+    ) -> list[tuple[GpuOption, str]]:
+        by_id = {item.id: item for item in datacenters}
+        datacenter_ids = (
+            [fixed_datacenter_id]
+            if fixed_datacenter_id
+            else request.datacenter_priority_ids or sorted(by_id)
+        )
+
+        def available(datacenter_id: str, gpu_id: str) -> bool:
+            datacenter = by_id.get(datacenter_id)
+            if datacenter is None:
+                return False
+            return any(
+                item.gpu_type_id == gpu_id
+                and item.stock_status.casefold() not in {"", "none", "unavailable"}
+                for item in datacenter.gpu_availability
+            )
+
+        selected_datacenter = fixed_datacenter_id
+        if selected_datacenter is None:
+            for gpu_id in request.gpu_priority_ids:
+                if selected_datacenter is not None:
+                    break
+                for datacenter_id in datacenter_ids:
+                    if available(datacenter_id, gpu_id):
+                        selected_datacenter = datacenter_id
+                        break
+        if selected_datacenter is None:
+            return []
+        return [
+            (options[gpu_id], selected_datacenter)
+            for gpu_id in request.gpu_priority_ids
+            if gpu_id in options
+            and available(selected_datacenter, gpu_id)
+            and options[gpu_id].secure_available
+            and self._price(options[gpu_id], CloudType.SECURE, request.interruptible) is not None
+        ]
+
+    def _storage_price(self, request: WorkspacePlanRequest) -> float:
+        if request.mode == WorkspaceMode.PORTABLE_WORKSPACE:
+            rate = (
+                self.NETWORK_VOLUME_PRICE_OVER_1TB
+                if request.workspace_disk_gb > 1_000
+                else self.NETWORK_VOLUME_PRICE_UNDER_1TB
+            )
+            return round(request.workspace_disk_gb * rate, 2)
+        return round(request.workspace_disk_gb * self.STORAGE_PRICE_PER_GB_MONTH, 2)
 
     @staticmethod
     def _state_from_provider(status: str) -> WorkspaceState:

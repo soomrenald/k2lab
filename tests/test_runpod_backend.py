@@ -36,9 +36,15 @@ if WEB_PROVIDER_AVAILABLE:
     from k2_region_lab.web.domain import (
         CloudType,
         WorkspaceCreateRequest,
+        WorkspaceMode,
         WorkspacePlanRequest,
     )
-    from k2_region_lab.web.runpod_api import RunPodApiClient, RunPodGpuType
+    from k2_region_lab.web.runpod_api import (
+        RunPodApiClient,
+        RunPodDatacenter,
+        RunPodGpuType,
+        RunPodNetworkVolume,
+    )
     from k2_region_lab.web.runpod_backend import RunPodPersistentPodBackend
     from k2_region_lab.web.lease_reaper import WorkspaceLeaseReaper
     from k2_region_lab.web.state_store import SqlRunPodStateStore
@@ -68,7 +74,20 @@ class FakeRunPodApi:
     def __init__(self) -> None:
         self.validated = False
         self.create_requests: list[dict[str, Any]] = []
+        self.deleted_pods: list[str] = []
+        self.stopped_pods: list[str] = []
+        self.created_volumes: list[str] = []
         self.status = "RUNNING"
+        self.network_volumes = {
+            "volume-existing": RunPodNetworkVolume.model_validate(
+                {
+                    "id": "volume-existing",
+                    "name": "Existing volume",
+                    "size": 200,
+                    "dataCenterId": "US-GA-2",
+                }
+            )
+        }
 
     async def validate_credentials(self) -> None:
         self.validated = True
@@ -76,27 +95,72 @@ class FakeRunPodApi:
     async def list_gpu_types(self) -> list[RunPodGpuType]:
         return [GPU_FIXTURE]
 
+    async def list_datacenters(self) -> list[RunPodDatacenter]:
+        return [
+            RunPodDatacenter.model_validate(
+                {
+                    "id": "US-GA-2",
+                    "name": "US-GA-2",
+                    "location": "United States",
+                    "gpuAvailability": [
+                        {
+                            "gpuTypeId": GPU_FIXTURE.id,
+                            "displayName": GPU_FIXTURE.display_name,
+                            "stockStatus": "High",
+                        }
+                    ],
+                }
+            )
+        ]
+
+    async def list_network_volumes(self) -> list[RunPodNetworkVolume]:
+        return list(self.network_volumes.values())
+
+    async def get_network_volume(self, volume_id: str) -> RunPodNetworkVolume:
+        return self.network_volumes[volume_id]
+
+    async def create_network_volume(
+        self, *, name: str, size_gb: int, datacenter_id: str
+    ) -> RunPodNetworkVolume:
+        volume = RunPodNetworkVolume.model_validate(
+            {
+                "id": "volume-created",
+                "name": name,
+                "size": size_gb,
+                "dataCenterId": datacenter_id,
+            }
+        )
+        self.network_volumes[volume.id] = volume
+        self.created_volumes.append(volume.id)
+        return volume
+
+    async def delete_network_volume(self, volume_id: str) -> None:
+        self.network_volumes.pop(volume_id, None)
+
     async def create_pod(self, request: dict[str, Any]) -> dict[str, Any]:
         self.create_requests.append(request)
         self.status = "RUNNING"
+        pod_id = f"pod-{len(self.create_requests)}"
         return {
-            "id": "pod-123",
+            "id": pod_id,
             "desiredStatus": self.status,
             "adjustedCostPerHr": 0.4,
         }
 
-    async def get_pod(self, _pod_id: str) -> dict[str, Any]:
-        return {"id": "pod-123", "desiredStatus": self.status}
+    async def get_pod(self, pod_id: str) -> dict[str, Any]:
+        return {"id": pod_id, "desiredStatus": self.status}
 
     async def start_pod(self, _pod_id: str) -> dict[str, Any]:
         self.status = "RUNNING"
-        return {"id": "pod-123", "desiredStatus": self.status}
+        return {"id": _pod_id, "desiredStatus": self.status}
 
     async def stop_pod(self, _pod_id: str) -> dict[str, Any]:
+        self.stopped_pods.append(_pod_id)
         self.status = "EXITED"
-        return {"id": "pod-123", "desiredStatus": self.status}
+        return {"id": _pod_id, "desiredStatus": self.status}
 
     async def delete_pod(self, _pod_id: str) -> None:
+        self.deleted_pods.append(_pod_id)
         self.status = "TERMINATED"
 
 
@@ -169,6 +233,67 @@ class RunPodApiClientTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(Exception, "RunPod rejected") as caught:
             await client.validate_credentials()
         self.assertNotIn("secret-runpod-key", str(caught.exception))
+
+    async def test_network_volume_and_datacenter_contracts(self) -> None:
+        observed: list[tuple[str, str]] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            observed.append((request.method, request.url.path))
+            if request.url.host == "api.runpod.io":
+                self.assertIn("gpuAvailability", json.loads(request.content)["query"])
+                return httpx.Response(
+                    200,
+                    json={
+                        "data": {
+                            "dataCenters": [
+                                {
+                                    "id": "US-GA-2",
+                                    "name": "US-GA-2",
+                                    "location": "United States",
+                                    "gpuAvailability": [
+                                        {
+                                            "gpuTypeId": "NVIDIA A40",
+                                            "displayName": "A40",
+                                            "stockStatus": "High",
+                                        }
+                                    ],
+                                }
+                            ]
+                        }
+                    },
+                )
+            if request.method == "GET":
+                return httpx.Response(
+                    200,
+                    json=[
+                        {
+                            "id": "volume-1",
+                            "name": "Portable",
+                            "size": 100,
+                            "dataCenterId": "US-GA-2",
+                        }
+                    ],
+                )
+            if request.method == "POST":
+                body = json.loads(request.content)
+                self.assertEqual(body["dataCenterId"], "US-GA-2")
+                return httpx.Response(
+                    200,
+                    json={"id": "volume-2", **body},
+                )
+            return httpx.Response(204)
+
+        client = RunPodApiClient("secret-runpod-key", transport=httpx.MockTransport(handler))
+        datacenters = await client.list_datacenters()
+        volumes = await client.list_network_volumes()
+        created = await client.create_network_volume(
+            name="New portable", size_gb=100, datacenter_id="US-GA-2"
+        )
+        await client.delete_network_volume(created.id)
+
+        self.assertEqual(datacenters[0].gpu_availability[0].gpu_type_id, "NVIDIA A40")
+        self.assertEqual(volumes[0].size_gb, 100)
+        self.assertIn(("DELETE", "/v1/networkvolumes/volume-2"), observed)
 
 
 @unittest.skipUnless(WEB_PROVIDER_AVAILABLE, "web provider dependencies are not installed")
@@ -257,7 +382,7 @@ class RunPodBackendTests(unittest.IsolatedAsyncioTestCase):
             WorkspaceCreateRequest(plan_id=plan.id, name="Portrait lab")
         )
         self.assertEqual(workspace.state, "starting")
-        self.assertEqual(workspace.provider_resource_id, "pod-123")
+        self.assertEqual(workspace.provider_resource_id, "pod-1")
         self.assertNotIn("K2LAB_AGENT_SESSION_TOKEN", workspace.model_dump_json())
 
         self.agent_workspace_id = workspace.id
@@ -332,7 +457,7 @@ class RunPodBackendTests(unittest.IsolatedAsyncioTestCase):
         try:
             restored = await reopened_store.get_workspace(workspace.id)
             self.assertIsNotNone(restored)
-            self.assertEqual(restored.provider_resource_id, "pod-123")
+            self.assertEqual(restored.provider_resource_id, "pod-1")
             events = await reopened_store.audit_events()
             self.assertEqual(events[-1]["action"], "runpod.workspace.create")
             self.assertNotIn("secret-runpod-key", json.dumps(events))
@@ -450,6 +575,99 @@ class RunPodBackendTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.state_store.incomplete_operations(), [])
         events = await self.state_store.audit_events()
         self.assertEqual(events[-1]["action"], "runpod.workspace.orphan_stop")
+
+    async def test_portable_workspace_creates_volume_and_recreates_ephemeral_pod(self) -> None:
+        await self.backend.validate_credentials("secret-runpod-key")
+        plan = await self.backend.plan_workspace(
+            WorkspacePlanRequest(
+                mode=WorkspaceMode.PORTABLE_WORKSPACE,
+                gpu_priority_ids=["NVIDIA RTX A6000"],
+                cloud_type=CloudType.SECURE,
+                workspace_disk_gb=100,
+                datacenter_priority_ids=["US-GA-2"],
+            )
+        )
+        self.assertTrue(plan.create_network_volume)
+        self.assertEqual(plan.selected_datacenter_id, "US-GA-2")
+        self.assertEqual(plan.estimated_storage_per_month, 7.0)
+
+        workspace = await self.backend.create_workspace(
+            WorkspaceCreateRequest(plan_id=plan.id, name="Portable lab")
+        )
+        self.assertEqual(workspace.network_volume_id, "volume-created")
+        self.assertEqual(workspace.provider_resource_id, "pod-1")
+        self.assertTrue(workspace.owns_network_volume)
+        payload = self.api.create_requests[-1]
+        self.assertEqual(payload["networkVolumeId"], "volume-created")
+        self.assertEqual(payload["dataCenterIds"], ["US-GA-2"])
+        self.assertNotIn("volumeInGb", payload)
+
+        stopped = await self.backend.stop_workspace(workspace.id)
+        self.assertEqual(stopped.state, "stopped")
+        self.assertIsNone(stopped.provider_resource_id)
+        self.assertEqual(self.api.deleted_pods, ["pod-1"])
+        self.assertIn("volume-created", self.api.network_volumes)
+
+        restarted = await self.backend.start_workspace(workspace.id)
+        self.assertEqual(restarted.provider_resource_id, "pod-2")
+        self.assertEqual(self.api.create_requests[-1]["networkVolumeId"], "volume-created")
+        deleted = await self.backend.terminate_workspace(workspace.id, "Portable lab")
+        self.assertEqual(deleted.state, "deleted")
+        self.assertIn("volume-created", self.api.network_volumes)
+        cost = await self.backend.get_cost_snapshot(workspace.id)
+        self.assertEqual(cost.storage_per_month, 7.0)
+
+    async def test_portable_workspace_uses_existing_volume_and_its_datacenter(self) -> None:
+        await self.backend.validate_credentials("secret-runpod-key")
+        plan = await self.backend.plan_workspace(
+            WorkspacePlanRequest(
+                mode=WorkspaceMode.PORTABLE_WORKSPACE,
+                gpu_priority_ids=["NVIDIA RTX A6000"],
+                cloud_type=CloudType.SECURE,
+                workspace_disk_gb=100,
+                network_volume_id="volume-existing",
+            )
+        )
+        self.assertFalse(plan.create_network_volume)
+        self.assertEqual(plan.selected_datacenter_id, "US-GA-2")
+        self.assertEqual(plan.request.workspace_disk_gb, 200)
+        self.assertEqual(plan.estimated_storage_per_month, 14.0)
+        workspace = await self.backend.create_workspace(
+            WorkspaceCreateRequest(plan_id=plan.id, name="Existing portable")
+        )
+        self.assertEqual(workspace.network_volume_id, "volume-existing")
+        self.assertFalse(workspace.owns_network_volume)
+        self.assertEqual(self.api.created_volumes, [])
+
+    async def test_portable_workspace_rejects_community_cloud(self) -> None:
+        await self.backend.validate_credentials("secret-runpod-key")
+        with self.assertRaisesRegex(Exception, "Secure Cloud"):
+            await self.backend.plan_workspace(
+                WorkspacePlanRequest(
+                    mode=WorkspaceMode.PORTABLE_WORKSPACE,
+                    gpu_priority_ids=["NVIDIA RTX A6000"],
+                    cloud_type=CloudType.COMMUNITY,
+                )
+            )
+
+    async def test_portable_orphan_pod_is_terminated_during_reconciliation(self) -> None:
+        await self.vault.store(self.backend.PROVIDER_CREDENTIAL_ID, "secret-runpod-key")
+        operation_id = await self.state_store.begin_operation(
+            operation="runpod.workspace.create",
+            workspace_id="portable-orphan",
+            context={"mode": WorkspaceMode.PORTABLE_WORKSPACE.value},
+        )
+        await self.state_store.update_operation(
+            operation_id,
+            state="provider_created",
+            context={"provider_resource_id": "pod-portable-orphan"},
+        )
+
+        await self.backend.reconcile_workspaces()
+
+        self.assertEqual(self.api.deleted_pods, ["pod-portable-orphan"])
+        events = await self.state_store.audit_events()
+        self.assertEqual(events[-1]["action"], "runpod.workspace.orphan_delete")
 
 
 if __name__ == "__main__":
