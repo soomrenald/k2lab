@@ -260,6 +260,11 @@ export interface JobEventPage {
   next_cursor: string;
 }
 
+export interface UnifiedPromptPreview {
+  prompt: string;
+  regions: { id: string; name: string; spatial_role: string; clause: string }[];
+}
+
 export class ApiError extends Error {
   readonly code: string;
   readonly status: number;
@@ -300,6 +305,11 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export const controlPlane = {
   openSession: () => request<BrowserSession>("/api/v1/auth/session", { method: "POST" }),
   capabilities: () => request<CapabilityManifest>("/api/v1/capabilities"),
+  previewUnifiedPrompt: (project: Record<string, unknown>) =>
+    request<UnifiedPromptPreview>("/api/v1/projects/unified-prompt-preview", {
+      method: "POST",
+      body: JSON.stringify({ project }),
+    }),
   credentialStatus: () =>
     request<CredentialStatus>("/api/v1/credentials/runpod"),
   connectRunPod: (apiKey: string) =>

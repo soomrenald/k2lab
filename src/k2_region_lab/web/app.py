@@ -6,7 +6,7 @@ import os
 from collections.abc import Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import AsyncIterator
+from typing import Any, AsyncIterator
 
 from fastapi import FastAPI, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -33,6 +33,9 @@ from k2_region_lab.agent.domain import (
     UploadCreateRequest,
     UploadSession,
 )
+from k2_region_lab.project import project_state
+from k2_region_lab.regional_lora import character_identity_triggers
+from k2_region_lab.regional_prompting import compile_regional_prompt_plan
 
 from k2_region_lab.web.development_backend import DevelopmentWorkspaceBackend
 from k2_region_lab.web.domain import (
@@ -100,6 +103,22 @@ class ProviderTokenRequest(BaseModel):
 class ErrorBody(BaseModel):
     code: str
     message: str
+
+
+class UnifiedPromptPreviewRequest(BaseModel):
+    project: dict[str, Any]
+
+
+class UnifiedPromptPreviewRegion(BaseModel):
+    id: str
+    name: str
+    spatial_role: str
+    clause: str
+
+
+class UnifiedPromptPreview(BaseModel):
+    prompt: str
+    regions: list[UnifiedPromptPreviewRegion]
 
 
 def create_app(
@@ -192,6 +211,52 @@ def create_app(
             workspace_modes=[
                 WorkspaceMode.PERSISTENT_POD,
                 WorkspaceMode.PORTABLE_WORKSPACE,
+            ],
+        )
+
+    @application.post(
+        "/api/v1/projects/unified-prompt-preview",
+        response_model=UnifiedPromptPreview,
+    )
+    async def preview_unified_prompt(
+        request: UnifiedPromptPreviewRequest,
+    ) -> UnifiedPromptPreview:
+        try:
+            state = project_state(request.project)
+            plan = compile_regional_prompt_plan(
+                state.canvas_width,
+                state.canvas_height,
+                state.global_prompt,
+                state.regions,
+                strength=state.regional_prompt_strength,
+                outside_penalty=state.regional_outside_penalty,
+                falloff_pixels=state.regional_feather_pixels,
+                subject_competition=state.regional_subject_competition,
+                subject_fill=state.regional_subject_fill,
+                late_step_scale=(
+                    state.regional_late_step_scale if state.regional_relaxation else 1.0
+                ),
+                emphases=state.prompt_emphases,
+                character_identity_triggers=character_identity_triggers(
+                    list(request.project.get("loras", []))
+                ),
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            raise WorkspaceError(
+                "invalid_project",
+                f"The project cannot be compiled: {error}",
+                status_code=422,
+            ) from error
+        return UnifiedPromptPreview(
+            prompt=plan.prompt,
+            regions=[
+                UnifiedPromptPreviewRegion(
+                    id=region.region_id,
+                    name=region.name,
+                    spatial_role=region.spatial_role,
+                    clause=region.clause,
+                )
+                for region in plan.regions
             ],
         )
 

@@ -19,9 +19,11 @@ if FASTAPI_AVAILABLE:
     from httpx import ASGITransport, AsyncClient
 
     from k2_region_lab.agent.app import AgentSettings, create_agent_app
+    from k2_region_lab.agent.domain import JobSubmitRequest
     from k2_region_lab.agent.downloads import parse_civitai_url, parse_huggingface_url
     from k2_region_lab.agent.storage import LAYOUT_VERSION, WorkspaceLayout
     from k2_region_lab.agent.transfers import TransferError, TransferManager
+    from k2_region_lab.project import project_state
     from k2_region_lab.web.agent_client import WorkspaceAgentClient
 
 
@@ -116,6 +118,29 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(marker, {"layout_version": LAYOUT_VERSION})
         self.assertTrue((self.root / "downloads" / "incomplete").is_dir())
         self.assertTrue((self.root / "models" / "face_detection").is_dir())
+
+    async def test_generation_payload_disables_late_relaxation_exactly_like_desktop(
+        self,
+    ) -> None:
+        document = self._project_document("portrait")
+        document["generation"].update(
+            {
+                "regional_relaxation": False,
+                "regional_late_step_scale": 0.2,
+            }
+        )
+        request = JobSubmitRequest.model_validate(
+            {
+                "command_id": "relaxation-contract",
+                "kind": "generate",
+                "project_id": "relaxation-project",
+                "project": document,
+            }
+        )
+        payload = await self.app.state.job_manager._job_payload(
+            "job-id", request, project_state(document), document
+        )
+        self.assertEqual(payload["regional_late_step_scale"], 1.0)
 
     async def test_path_resolution_rejects_traversal_absolute_and_symlink(self) -> None:
         layout = WorkspaceLayout(self.root)

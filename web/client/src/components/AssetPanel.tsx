@@ -16,10 +16,10 @@ const kinds: { value: FileKind; label: string }[] = [
   { value: "face_detection", label: "Face detection" },
 ];
 
-interface Props { workspaceId: string; onClose: () => void; onSelect?: (file: FileRecord) => void }
+interface Props { workspaceId: string; onClose: () => void; onSelect?: (file: FileRecord) => void; initialKind?: FileKind }
 
-export function AssetPanel({ workspaceId, onClose, onSelect }: Props) {
-  const [kind, setKind] = useState<FileKind>("inputs");
+export function AssetPanel({ workspaceId, onClose, onSelect, initialKind = "inputs" }: Props) {
+  const [kind, setKind] = useState<FileKind>(initialKind);
   const [files, setFiles] = useState<FileRecord[]>([]);
   const [selected, setSelected] = useState<File | null>(null);
   const [upload, setUpload] = useState<UploadSession | null>(null);

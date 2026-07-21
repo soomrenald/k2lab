@@ -16,7 +16,11 @@ Implemented:
 - local PNG/JPEG/WebP loading for interface development;
 - separate image-edit reference and target layers;
 - SVG region drawing, selection, movement, and live eight-direction resizing;
-- prompt, region, LoRA, and advanced inspector layouts;
+- complete version-18 prompt, region, phrase-emphasis, character/standard LoRA routing,
+  seed/batch, regional-guidance, image-edit, face, projector, and post-upscale controls;
+- exact front-to-back region priority and subject/background-role serialization plus a unified
+  prompt preview compiled by the same Python implementation as the legacy desktop;
+- prompt editors with overflow scrollbars and live state synchronization;
 - responsive desktop/mobile styling with locally bundled fonts.
 - a production RunPod REST/GraphQL adapter with redacted provider errors;
 - encrypted process-local credential storage and explicit production backend selection;
@@ -136,6 +140,11 @@ workspace volume, while the control plane persists job summaries and reconnectab
 cursors. Raw filesystem paths, prompts, and credentials are excluded from those events;
 completed images are returned through authenticated opaque output URLs with HTTP Range
 support.
+
+Every browser run is first parsed as a version-18 project and compiled by the shared Python
+unified-prompt implementation. Invalid emphasis matches, LoRA scopes/triggers, duplicate region
+names, or out-of-canvas geometry fail before a GPU job is submitted. **Preview unified prompt**
+shows the exact compiled text and resolved front-to-back subject/background order.
 
 Migration temporarily bills both source and target compute plus both storage resources.
 Closing the browser does not discard progress: reopen the workspace, choose the migration

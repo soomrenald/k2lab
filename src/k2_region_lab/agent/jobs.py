@@ -59,9 +59,7 @@ class SubprocessWorkerExecutor:
         commands: list[dict[str, Any]],
         on_event: Callable[[dict[str, Any]], Awaitable[None]],
     ) -> int:
-        if not self._worker_python.is_file() or not os.access(
-            self._worker_python, os.X_OK
-        ):
+        if not self._worker_python.is_file() or not os.access(self._worker_python, os.X_OK):
             raise JobError(
                 "worker_unavailable",
                 "The configured GPU worker runtime is unavailable.",
@@ -135,7 +133,16 @@ class SubprocessWorkerExecutor:
 
     @staticmethod
     def _worker_environment() -> dict[str, str]:
-        allowed_names = {"HOME", "LANG", "LC_ALL", "LD_LIBRARY_PATH", "PATH", "PYTHONPATH", "TMPDIR", "VIRTUAL_ENV"}
+        allowed_names = {
+            "HOME",
+            "LANG",
+            "LC_ALL",
+            "LD_LIBRARY_PATH",
+            "PATH",
+            "PYTHONPATH",
+            "TMPDIR",
+            "VIRTUAL_ENV",
+        }
         allowed_prefixes = ("CUDA_", "HIP_", "NVIDIA_", "ROCM_")
         return {
             key: value
@@ -256,9 +263,7 @@ class JobManager:
                     state=JobState.STARTING.value,
                     message="Starting an isolated GPU worker.",
                 )
-                payload = await self._job_payload(
-                    job_id, request, project_state_value, project
-                )
+                payload = await self._job_payload(job_id, request, project_state_value, project)
                 executor = self._executor_factory()
                 async with self._lock:
                     self._executors[job_id] = executor
@@ -270,11 +275,11 @@ class JobManager:
                     if output_id is not None and output_id not in output_ids:
                         output_ids.append(output_id)
                     if str(raw.get("state")) == "error":
-                        worker_errors.append(str(raw.get("payload", {}).get("exception_type", "worker_error")))
+                        worker_errors.append(
+                            str(raw.get("payload", {}).get("exception_type", "worker_error"))
+                        )
 
-                exit_code = await executor.run(
-                    self._commands(job_id, request, payload), on_event
-                )
+                exit_code = await executor.run(self._commands(job_id, request, payload), on_event)
                 async with self._lock:
                     self._executors.pop(job_id, None)
                 if job_id in self._cancelled:
@@ -314,25 +319,19 @@ class JobManager:
         except Exception:
             if job_id not in self._cancelled:
                 self._readiness_callback(False)
-                await self._fail_job(
-                    job_id, "worker_failed", "The remote GPU worker failed."
-                )
+                await self._fail_job(job_id, "worker_failed", "The remote GPU worker failed.")
         finally:
             async with self._lock:
                 self._executors.pop(job_id, None)
 
-    async def _handle_worker_event(
-        self, job_id: str, raw: dict[str, Any]
-    ) -> str | None:
+    async def _handle_worker_event(self, job_id: str, raw: dict[str, Any]) -> str | None:
         raw_state = str(raw.get("state", "unknown"))
         message = str(raw.get("message", "Worker event"))[:512]
         raw_payload = raw.get("payload") if isinstance(raw.get("payload"), dict) else {}
         output_id: str | None = None
         image_path = raw_payload.get("image_path")
         if isinstance(image_path, str):
-            record = await self._transfers.index_existing_file(
-                FileKind.OUTPUTS, Path(image_path)
-            )
+            record = await self._transfers.index_existing_file(FileKind.OUTPUTS, Path(image_path))
             output_id = record.id
             raw_payload = {**raw_payload, "output_file_id": output_id}
             raw_payload.pop("image_path", None)
@@ -353,9 +352,7 @@ class JobManager:
                 progress["progress_total"] = max(0, total)
             await self._set_job_state(job_id, JobState.RUNNING, **progress)
             self._readiness_callback(True)
-        await self._append_event(
-            job_id, state=raw_state, message=message, payload=payload
-        )
+        await self._append_event(job_id, state=raw_state, message=message, payload=payload)
         return output_id
 
     async def _job_payload(
@@ -402,7 +399,9 @@ class JobManager:
                     "regional_feather_pixels": state.regional_feather_pixels,
                     "regional_subject_competition": state.regional_subject_competition,
                     "regional_subject_fill": state.regional_subject_fill,
-                    "regional_late_step_scale": state.regional_late_step_scale,
+                    "regional_late_step_scale": (
+                        state.regional_late_step_scale if state.regional_relaxation else 1.0
+                    ),
                     "regional_lora_delta_adaptation": state.regional_lora_delta_adaptation,
                     "regional_lora_delta_adaptation_gain": state.regional_lora_delta_adaptation_gain,
                     "projector_enabled": state.projector_enabled,
@@ -500,9 +499,7 @@ class JobManager:
     def _base_worker_payload(self) -> dict[str, Any]:
         face_files = sorted(
             path
-            for path in self._layout.destination(
-                FileKind.FACE_DETECTION.value
-            ).iterdir()
+            for path in self._layout.destination(FileKind.FACE_DETECTION.value).iterdir()
             if path.is_file() and not path.is_symlink()
         )
         return {
@@ -532,9 +529,7 @@ class JobManager:
             )
         payload = []
         for index, (file_id, lora) in enumerate(zip(request.lora_file_ids, state.loras)):
-            record, path = await self._transfers.resolve_file(
-                file_id, required_kind=FileKind.LORAS
-            )
+            record, path = await self._transfers.resolve_file(file_id, required_kind=FileKind.LORAS)
             payload.append(
                 {
                     "id": record.id,
@@ -551,9 +546,7 @@ class JobManager:
         return payload
 
     @staticmethod
-    def _edit_loras(
-        resolved: list[dict[str, Any]], state: ProjectState
-    ) -> list[dict[str, Any]]:
+    def _edit_loras(resolved: list[dict[str, Any]], state: ProjectState) -> list[dict[str, Any]]:
         payload = []
         for item, lora in zip(resolved, state.loras):
             if lora.reference_enabled:
@@ -590,9 +583,7 @@ class JobManager:
             raise JobError("input_file_invalid", "The selected file is not an input image.")
         return path
 
-    async def _optional_file_path(
-        self, file_id: str | None, kind: FileKind
-    ) -> str | None:
+    async def _optional_file_path(self, file_id: str | None, kind: FileKind) -> str | None:
         if not file_id:
             return None
         _record, path = await self._transfers.resolve_file(file_id, required_kind=kind)
@@ -608,14 +599,20 @@ class JobManager:
         }[request.kind]
         return [
             {"command_id": f"{job_id}:probe", "kind": CommandKind.PROBE.value, "payload": payload},
-            {"command_id": f"{job_id}:validate", "kind": CommandKind.VALIDATE_MODELS.value, "payload": payload},
-            {"command_id": f"{job_id}:load", "kind": CommandKind.LOAD_MODEL.value, "payload": payload},
+            {
+                "command_id": f"{job_id}:validate",
+                "kind": CommandKind.VALIDATE_MODELS.value,
+                "payload": payload,
+            },
+            {
+                "command_id": f"{job_id}:load",
+                "kind": CommandKind.LOAD_MODEL.value,
+                "payload": payload,
+            },
             {"command_id": request.command_id, "kind": kind.value, "payload": payload},
         ]
 
-    def _validate_request(
-        self, request: JobSubmitRequest
-    ) -> tuple[ProjectState, dict[str, Any]]:
+    def _validate_request(self, request: JobSubmitRequest) -> tuple[ProjectState, dict[str, Any]]:
         try:
             encoded = json.dumps(request.project, separators=(",", ":"), allow_nan=False)
         except (TypeError, ValueError) as error:
@@ -626,7 +623,10 @@ class JobManager:
             state = project_state(request.project)
         except (KeyError, TypeError, ValueError) as error:
             raise JobError("project_invalid", "The project document is invalid.") from error
-        if request.project.get("schema") != PROJECT_SCHEMA or request.project.get("version") != PROJECT_VERSION:
+        if (
+            request.project.get("schema") != PROJECT_SCHEMA
+            or request.project.get("version") != PROJECT_VERSION
+        ):
             raise JobError(
                 "project_version_mismatch",
                 f"Remote jobs require {PROJECT_SCHEMA} version {PROJECT_VERSION}.",
@@ -706,9 +706,7 @@ class JobManager:
             raise JobError("input_image_invalid", "The input image is invalid.") from error
 
     async def _fail_job(self, job_id: str, code: str, message: str) -> None:
-        await self._set_job_state(
-            job_id, JobState.FAILED, error_code=code, error_message=message
-        )
+        await self._set_job_state(job_id, JobState.FAILED, error_code=code, error_message=message)
         await self._append_event(
             job_id,
             state=JobState.FAILED.value,
@@ -716,15 +714,11 @@ class JobManager:
             payload={"error_code": code},
         )
 
-    async def _set_job_state(
-        self, job_id: str, state: JobState, **updates: Any
-    ) -> GenerationJob:
+    async def _set_job_state(self, job_id: str, state: JobState, **updates: Any) -> GenerationJob:
         async with self._lock:
             return self._update_job(self._read_job(job_id), state=state, **updates)
 
-    def _update_job(
-        self, job: GenerationJob, *, state: JobState, **updates: Any
-    ) -> GenerationJob:
+    def _update_job(self, job: GenerationJob, *, state: JobState, **updates: Any) -> GenerationJob:
         updated = job.model_copy(
             update={"state": state, "updated_at": datetime.now(UTC), **updates}
         )

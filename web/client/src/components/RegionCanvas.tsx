@@ -13,6 +13,8 @@ export interface RegionBox {
   width: number;
   height: number;
   prompt: string;
+  faceIdentityPrompt: string;
+  spatialRole: "auto" | "subject" | "background";
   enabled: boolean;
 }
 
@@ -37,6 +39,8 @@ interface Props {
   selectedId: string | null;
   drawMode: boolean;
   comparePosition: number;
+  canvasWidth: number;
+  canvasHeight: number;
   onComparePosition: (value: number) => void;
   onSelect: (id: string | null) => void;
   onRegions: (regions: RegionBox[]) => void;
@@ -44,8 +48,7 @@ interface Props {
   onLoadImage: (file: File) => void;
 }
 
-const canvasSize = 1000;
-const minimumSize = 24;
+const minimumSize = 16;
 
 export function RegionCanvas({
   mode,
@@ -57,6 +60,8 @@ export function RegionCanvas({
   selectedId,
   drawMode,
   comparePosition,
+  canvasWidth,
+  canvasHeight,
   onComparePosition,
   onSelect,
   onRegions,
@@ -73,24 +78,31 @@ export function RegionCanvas({
   function point(event: React.PointerEvent<SVGSVGElement | SVGElement>) {
     const rect = svgRef.current!.getBoundingClientRect();
     return {
-      x: Math.max(0, Math.min(canvasSize, (event.clientX - rect.left) / rect.width * canvasSize)),
-      y: Math.max(0, Math.min(canvasSize, (event.clientY - rect.top) / rect.height * canvasSize)),
+      x: Math.max(0, Math.min(canvasWidth, (event.clientX - rect.left) / rect.width * canvasWidth)),
+      y: Math.max(0, Math.min(canvasHeight, (event.clientY - rect.top) / rect.height * canvasHeight)),
     };
   }
 
   function beginDraw(event: React.PointerEvent<SVGSVGElement>) {
     if (!drawMode || mode === "face" || event.target !== event.currentTarget) return;
     const start = point(event);
+    const names = new Set(
+      regions.filter((item) => item.layer === activeLayer).map((item) => item.name.toLocaleLowerCase()),
+    );
+    let nameIndex = regions.filter((item) => item.layer === activeLayer).length + 1;
+    while (names.has(`region ${nameIndex}`)) nameIndex += 1;
     event.currentTarget.setPointerCapture(event.pointerId);
     const region: RegionBox = {
       id: crypto.randomUUID(),
-      name: `Region ${regions.filter((item) => item.layer === activeLayer).length + 1}`,
+      name: `Region ${nameIndex}`,
       layer: activeLayer,
       x: start.x,
       y: start.y,
       width: 1,
       height: 1,
       prompt: "",
+      faceIdentityPrompt: "",
+      spatialRole: "auto",
       enabled: true,
     };
     onRegions([...regions, region]);
@@ -134,11 +146,11 @@ export function RegionCanvas({
       if (drag.kind === "move") {
         return {
           ...region,
-          x: Math.max(0, Math.min(canvasSize - initial.width, initial.x + dx)),
-          y: Math.max(0, Math.min(canvasSize - initial.height, initial.y + dy)),
+          x: Math.max(0, Math.min(canvasWidth - initial.width, initial.x + dx)),
+          y: Math.max(0, Math.min(canvasHeight - initial.height, initial.y + dy)),
         };
       }
-      return resized(initial, drag.edge!, dx, dy);
+      return resized(initial, drag.edge!, dx, dy, canvasWidth, canvasHeight);
     }));
   }
 
@@ -197,7 +209,7 @@ export function RegionCanvas({
           <svg
             ref={svgRef}
             className="region-overlay"
-            viewBox={`0 0 ${canvasSize} ${canvasSize}`}
+            viewBox={`0 0 ${canvasWidth} ${canvasHeight}`}
             preserveAspectRatio="none"
             onPointerDown={beginDraw}
             onPointerMove={movePointer}
@@ -239,15 +251,15 @@ export function RegionCanvas({
   );
 }
 
-function resized(region: RegionBox, edge: ResizeEdge, dx: number, dy: number): RegionBox {
+function resized(region: RegionBox, edge: ResizeEdge, dx: number, dy: number, canvasWidth: number, canvasHeight: number): RegionBox {
   let left = region.x;
   let top = region.y;
   let right = region.x + region.width;
   let bottom = region.y + region.height;
   if (edge.includes("w")) left = Math.max(0, Math.min(right - minimumSize, left + dx));
-  if (edge.includes("e")) right = Math.min(canvasSize, Math.max(left + minimumSize, right + dx));
+  if (edge.includes("e")) right = Math.min(canvasWidth, Math.max(left + minimumSize, right + dx));
   if (edge.includes("n")) top = Math.max(0, Math.min(bottom - minimumSize, top + dy));
-  if (edge.includes("s")) bottom = Math.min(canvasSize, Math.max(top + minimumSize, bottom + dy));
+  if (edge.includes("s")) bottom = Math.min(canvasHeight, Math.max(top + minimumSize, bottom + dy));
   return { ...region, x: left, y: top, width: right - left, height: bottom - top };
 }
 

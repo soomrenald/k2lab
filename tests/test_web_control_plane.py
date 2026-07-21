@@ -56,6 +56,66 @@ class WebControlPlaneTests(unittest.IsolatedAsyncioTestCase):
             ["persistent_pod", "portable_workspace"],
         )
 
+    async def test_unified_prompt_preview_uses_project_order_roles_and_identity(self) -> None:
+        project = {
+            "schema": "k2-region-lab-project",
+            "version": 18,
+            "canvas": {"width": 1024, "height": 1024},
+            "generation": {
+                "global_prompt": "a studio scene",
+                "regional_subject_fill": True,
+                "regional_relaxation": False,
+                "regional_late_step_scale": 0.2,
+            },
+            "regions": [
+                {
+                    "id": "person",
+                    "name": "Person",
+                    "box": {"x0": 300, "y0": 100, "x1": 700, "y1": 950},
+                    "prompt": "a smiling woman",
+                    "face_identity_prompt": "brown hair and green eyes",
+                    "enabled": True,
+                    "priority": 2,
+                    "spatial_role": "subject",
+                },
+                {
+                    "id": "wall",
+                    "name": "Back wall",
+                    "box": {"x0": 0, "y0": 0, "x1": 1024, "y1": 1024},
+                    "prompt": "a brick wall",
+                    "face_identity_prompt": "",
+                    "enabled": True,
+                    "priority": 1,
+                    "spatial_role": "background",
+                },
+            ],
+            "loras": [
+                {
+                    "path": "character.safetensors",
+                    "global": False,
+                    "region_ids": ["person"],
+                    "strength": 1.0,
+                    "routing_mode": "character_identity",
+                    "trigger_phrase": "lface",
+                }
+            ],
+            "image_edit": {},
+        }
+        response = await self.client.post(
+            "/api/v1/projects/unified-prompt-preview", json={"project": project}
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertEqual(
+            [(item["id"], item["spatial_role"]) for item in body["regions"]],
+            [("person", "subject"), ("wall", "background")],
+        )
+        self.assertLess(
+            body["prompt"].index("a smiling woman"), body["prompt"].index("a brick wall")
+        )
+        self.assertIn("brown hair and green eyes", body["prompt"])
+        self.assertIn("lface", body["prompt"])
+
     async def test_credentials_are_required_and_never_echoed(self) -> None:
         blocked = await self.client.get("/api/v1/gpus")
         self.assertEqual(blocked.status_code, 401)

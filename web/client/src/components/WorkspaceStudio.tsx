@@ -1,10 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { DatacenterOption, FileRecord, GenerationJob, JobKind, NetworkVolumeOption, WorkspaceMigrationRecord, WorkspaceRecord } from "../api";
+import type { DatacenterOption, FileRecord, GenerationJob, JobKind, NetworkVolumeOption, UnifiedPromptPreview, WorkspaceMigrationRecord, WorkspaceRecord } from "../api";
 import { controlPlane } from "../api";
 import { Icon, type IconName } from "./Icon";
 import { Inspector } from "./Inspector";
 import { AssetPanel } from "./AssetPanel";
 import { TransferPanel } from "./TransferPanel";
+import {
+  buildProjectDocument,
+  createStudioLora,
+  createStudioSettings,
+  type StudioLora,
+} from "../studioProject";
 import {
   RegionCanvas,
   type RegionBox,
@@ -22,8 +28,8 @@ interface Props {
 }
 
 const starterRegions: RegionBox[] = [
-  { id: "region-a", name: "Primary subject", layer: "generation", x: 165, y: 180, width: 310, height: 620, prompt: "", enabled: true },
-  { id: "region-b", name: "Secondary subject", layer: "generation", x: 565, y: 220, width: 270, height: 560, prompt: "", enabled: true },
+  { id: "region-a", name: "Primary subject", layer: "generation", x: 165, y: 180, width: 310, height: 620, prompt: "", faceIdentityPrompt: "", spatialRole: "auto", enabled: true },
+  { id: "region-b", name: "Secondary subject", layer: "generation", x: 565, y: 220, width: 270, height: 560, prompt: "", faceIdentityPrompt: "", spatialRole: "auto", enabled: true },
 ];
 
 export function WorkspaceStudio({ workspace, developmentBackend, datacenters, networkVolumes, onWorkspace, onDelete }: Props) {
@@ -42,6 +48,9 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
     reference: "",
     targets: "",
   });
+  const [studioSettings, setStudioSettings] = useState(createStudioSettings);
+  const [loras, setLoras] = useState<StudioLora[]>([]);
+  const [assetPurpose, setAssetPurpose] = useState<"source" | "lora" | "upscale">("source");
   const [showCloud, setShowCloud] = useState(false);
   const [showDelete, setShowDelete] = useState(false);
   const [showAssets, setShowAssets] = useState(false);
@@ -56,6 +65,8 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [job, setJob] = useState<GenerationJob | null>(null);
+  const [queuedJobs, setQueuedJobs] = useState<GenerationJob[]>([]);
+  const [promptPreview, setPromptPreview] = useState<UnifiedPromptPreview | null>(null);
   const eventCursor = useRef<string | undefined>(undefined);
 
   useEffect(() => () => { if (sourceUrl) URL.revokeObjectURL(sourceUrl); }, [sourceUrl]);
@@ -92,16 +103,22 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
         setJob(next);
         if (next.state === "completed" && next.output_file_ids[0]) {
           setResultUrl(controlPlane.outputUrl(workspace.id, next.output_file_ids[0]));
-          setMessage("Remote job complete. The verified output is stored in cloud files.");
+          setMessage(queuedJobs.length ? `Batch image complete. ${queuedJobs.length} queued run(s) remain.` : "Remote job complete. The verified output is stored in cloud files.");
         } else if (next.error_message) {
           setMessage(next.error_message);
+        }
+        if (["completed", "failed", "cancelled"].includes(next.state) && queuedJobs.length) {
+          const [following, ...remaining] = queuedJobs;
+          eventCursor.current = undefined;
+          setQueuedJobs(remaining);
+          setJob(following);
         }
       } catch (caught) {
         setMessage(caught instanceof Error ? caught.message : "Could not refresh remote job");
       }
     }, 1000);
     return () => window.clearInterval(interval);
-  }, [job, workspace.id]);
+  }, [job, queuedJobs, workspace.id]);
 
   useEffect(() => {
     if (!showCloud && !showMigration) return undefined;
@@ -244,17 +261,43 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
     setResultUrl(null);
     eventCursor.current = undefined;
     try {
+      await controlPlane.previewUnifiedPrompt(
+        buildProjectDocument(regions, globalPrompts, studioSettings, loras),
+      );
       const kind: JobKind = mode === "generation" ? "generate" : mode === "edit" ? "edit_image" : "refine_faces";
-      const next = await controlPlane.submitJob(workspace.id, {
-        command_id: crypto.randomUUID(),
-        kind,
-        project_id: `studio-${workspace.id}`,
-        project: buildProjectDocument(regions, globalPrompts),
-        input_file_id: cloudSource?.id,
-        lora_file_ids: [],
-      });
-      setJob(next);
-      setMessage("Remote job queued.");
+      const runCount = mode === "generation" && studioSettings.generation.batchMode
+        ? studioSettings.generation.batchCount : 1;
+      const submitted: GenerationJob[] = [];
+      let lastSeed = studioSettings.generation.seed;
+      for (let index = 0; index < runCount; index += 1) {
+        let seed = studioSettings.generation.seed;
+        if (mode === "generation" && studioSettings.generation.seedMode === "random") {
+          seed = crypto.getRandomValues(new Uint32Array(1))[0] & 0x7fffffff;
+        } else if (mode === "generation" && studioSettings.generation.seedMode === "increment") {
+          seed = (studioSettings.generation.seed + index) % 2147483648;
+        }
+        lastSeed = seed;
+        const jobSettings = mode === "generation"
+          ? { ...studioSettings, generation: { ...studioSettings.generation, seed } }
+          : studioSettings;
+        submitted.push(await controlPlane.submitJob(workspace.id, {
+          command_id: crypto.randomUUID(),
+          kind,
+          project_id: `studio-${workspace.id}`,
+          project: buildProjectDocument(regions, globalPrompts, jobSettings, loras),
+          input_file_id: cloudSource?.id,
+          lora_file_ids: loras.map((lora) => lora.fileId),
+          upscale_model_file_id: studioSettings.generation.upscaleModelFileId || undefined,
+        }));
+      }
+      if (mode === "generation") {
+        const nextSeed = studioSettings.generation.seedMode === "increment"
+          ? (studioSettings.generation.seed + runCount) % 2147483648 : lastSeed;
+        setStudioSettings({ ...studioSettings, generation: { ...studioSettings.generation, seed: nextSeed } });
+      }
+      setJob(submitted[0]);
+      setQueuedJobs(submitted.slice(1));
+      setMessage(runCount > 1 ? `${runCount} remote batch runs queued.` : "Remote job queued.");
     } catch (caught) {
       setMessage(caught instanceof Error ? caught.message : "Could not submit remote job");
     } finally {
@@ -266,10 +309,29 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
     if (!job) return;
     setBusy(true);
     try {
-      setJob(await controlPlane.cancelJob(workspace.id, job.id));
-      setMessage("Remote job cancelled; worker memory was released.");
+      const [cancelled] = await Promise.all([
+        controlPlane.cancelJob(workspace.id, job.id),
+        ...queuedJobs.map((queued) => controlPlane.cancelJob(workspace.id, queued.id)),
+      ]);
+      setJob(cancelled);
+      setQueuedJobs([]);
+      setMessage("Remote job queue cancelled; worker memory was released.");
     } catch (caught) {
       setMessage(caught instanceof Error ? caught.message : "Could not cancel remote job");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function previewUnifiedPrompt() {
+    setBusy(true);
+    setMessage("");
+    try {
+      setPromptPreview(await controlPlane.previewUnifiedPrompt(
+        buildProjectDocument(regions, globalPrompts, studioSettings, loras),
+      ));
+    } catch (caught) {
+      setMessage(caught instanceof Error ? caught.message : "Could not compile the unified prompt");
     } finally {
       setBusy(false);
     }
@@ -330,7 +392,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
           <RailButton icon="face" label="Faces" active={mode === "face"} onClick={() => switchMode("face")} />
         </div>
         <div className="utility-rail">
-          <RailButton icon="folder" label="Assets" active={showAssets} onClick={() => setShowAssets(true)} />
+          <RailButton icon="folder" label="Assets" active={showAssets} onClick={() => { setAssetPurpose("source"); setShowAssets(true); }} />
           <RailButton icon="transfer" label="Transfers" active={showTransfers} onClick={() => setShowTransfers(true)} />
           <RailButton icon="settings" label="Setup" active={false} onClick={() => setShowCloud(true)} />
         </div>
@@ -357,6 +419,8 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
             selectedId={selectedId}
             drawMode={drawMode}
             comparePosition={comparePosition}
+            canvasWidth={studioSettings.generation.width}
+            canvasHeight={studioSettings.generation.height}
             onComparePosition={setComparePosition}
             onSelect={setSelectedId}
             onRegions={setRegions}
@@ -369,7 +433,14 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
             regions={regions}
             selectedId={selectedId}
             globalPrompt={globalPrompts[activeLayer]}
+            settings={studioSettings}
+            loras={loras}
             onGlobalPrompt={(value) => setGlobalPrompts({ ...globalPrompts, [activeLayer]: value })}
+            onSettings={setStudioSettings}
+            onLoras={setLoras}
+            onChooseLora={() => { setAssetPurpose("lora"); setShowAssets(true); }}
+            onChooseUpscaleModel={() => { setAssetPurpose("upscale"); setShowAssets(true); }}
+            onPreviewUnifiedPrompt={() => void previewUnifiedPrompt()}
             onRegions={setRegions}
             onSelect={setSelectedId}
           />
@@ -398,6 +469,20 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
             <input id="delete-confirmation" className="text-input" value={deleteConfirmation} onChange={(event) => setDeleteConfirmation(event.target.value)} />
             {message && <div className="error-banner">{message}</div>}
             <div className="modal-actions"><button className="quiet-button" onClick={() => { setShowDelete(false); setDeleteConfirmation(""); }}>Cancel</button><button className="danger-button" disabled={busy || deleteConfirmation !== workspace.name} onClick={terminate}>{workspace.mode === "portable_workspace" ? "Delete workspace; retain volume" : "Delete workspace and files"}</button></div>
+          </section>
+        </div>
+      )}
+      {promptPreview && (
+        <div className="modal-backdrop" role="presentation">
+          <section className="confirm-modal prompt-preview-modal" role="dialog" aria-modal="true" aria-labelledby="prompt-preview-title">
+            <p className="kicker">Legacy compiler output</p>
+            <h2 id="prompt-preview-title">Unified spatial prompt</h2>
+            <p>{promptPreview.regions.length} regional clause{promptPreview.regions.length === 1 ? "" : "s"} in front-to-back order. Pixel boxes are applied separately as a hidden soft attention grid.</p>
+            <textarea className="prompt-area prompt-preview-text" readOnly value={promptPreview.prompt} />
+            <div className="preview-region-order">
+              {promptPreview.regions.map((region, index) => <div key={region.id}><strong>{index + 1}. {region.name}</strong><span>{region.spatial_role}</span></div>)}
+            </div>
+            <div className="modal-actions"><button className="primary-button" onClick={() => setPromptPreview(null)}>Close</button></div>
           </section>
         </div>
       )}
@@ -465,7 +550,20 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
           </section>
         </div>
       )}
-      {showAssets && <AssetPanel workspaceId={workspace.id} onClose={() => setShowAssets(false)} onSelect={(file) => { setCloudSource(file); setSourceName(file.display_name); if (file.kind === "outputs") setSourceUrl(controlPlane.outputUrl(workspace.id, file.id)); }} />}
+      {showAssets && <AssetPanel workspaceId={workspace.id} initialKind={assetPurpose === "lora" ? "loras" : assetPurpose === "upscale" ? "upscale_models" : "inputs"} onClose={() => setShowAssets(false)} onSelect={(file) => {
+        if (assetPurpose === "lora") {
+          if (file.kind === "loras" && !loras.some((lora) => lora.fileId === file.id)) setLoras([...loras, createStudioLora(file.id, file.display_name)]);
+          return;
+        }
+        if (assetPurpose === "upscale") {
+          if (file.kind === "upscale_models") setStudioSettings({ ...studioSettings, generation: { ...studioSettings.generation, upscaleModelFileId: file.id, upscaleModelName: file.display_name } });
+          return;
+        }
+        if (file.kind !== "inputs" && file.kind !== "outputs") return;
+        setCloudSource(file);
+        setSourceName(file.display_name);
+        if (file.kind === "outputs") setSourceUrl(controlPlane.outputUrl(workspace.id, file.id));
+      }} />}
       {showTransfers && <TransferPanel workspaceId={workspace.id} onClose={() => setShowTransfers(false)} />}
     </div>
   );
@@ -473,36 +571,4 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
 
 function RailButton({ icon, label, active, onClick }: { icon: IconName; label: string; active: boolean; onClick: () => void }) {
   return <button className={`rail-button ${active ? "active" : ""}`} onClick={onClick}><Icon name={icon} /><span>{label}</span></button>;
-}
-
-function buildProjectDocument(regions: RegionBox[], prompts: Record<RegionLayer, string>): Record<string, unknown> {
-  return {
-    schema: "k2-region-lab-project",
-    version: 18,
-    canvas: { width: 1024, height: 1024 },
-    generation: { global_prompt: prompts.generation, steps: 8, sampler: "euler", scheduler: "simple", seed: 0 },
-    regions: regions.filter((region) => region.layer === "generation").map(regionDocument),
-    loras: [],
-    image_edit: {
-      width: 1024,
-      height: 1024,
-      global_prompt: prompts.targets,
-      reference_global_prompt: prompts.reference,
-      regions: regions.filter((region) => region.layer === "targets").map(regionDocument),
-      reference_regions: regions.filter((region) => region.layer === "reference").map(regionDocument),
-    },
-    runtime: {},
-  };
-}
-
-function regionDocument(region: RegionBox) {
-  return {
-    id: region.id,
-    name: region.name,
-    box: { x0: region.x, y0: region.y, x1: region.x + region.width, y1: region.y + region.height },
-    prompt: region.prompt,
-    enabled: region.enabled,
-    priority: 0,
-    spatial_role: "auto",
-  };
 }
