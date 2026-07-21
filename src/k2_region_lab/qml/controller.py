@@ -19,9 +19,14 @@ from PySide6.QtCore import (
 from PySide6.QtWidgets import QFileDialog
 
 from k2_region_lab.config import ModelDirectories, discover_worker_python
-from k2_region_lab.lora import LoraBinding
+from k2_region_lab.lora import (
+    CHARACTER_IDENTITY_LORA_ROUTING,
+    STANDARD_LORA_ROUTING,
+    LoraBinding,
+)
 from k2_region_lab.memory import MEMORY_POLICIES, memory_policy
 from k2_region_lab.output import validate_filename_prefix
+from k2_region_lab.regional_prompting import GLOBAL_EMPHASIS_SCOPE, PromptEmphasis
 from k2_region_lab.regions import PixelBox, RegionDefinition
 
 
@@ -415,6 +420,11 @@ class SetupController(QObject):
             self.backend._load_worker_model()
 
     @Slot()
+    def releaseGpuMemory(self) -> None:
+        if self._require_applied():
+            self.backend._release_k2_gpu_memory()
+
+    @Slot()
     def diagnoseAccelerator(self) -> None:
         if self._require_applied():
             self.backend._diagnose_accelerator()
@@ -535,7 +545,9 @@ class QmlWorkspaceController(QObject):
     @Property(str, notify=stateChanged)
     def canvasCaption(self) -> str:
         if self._mode == self.IMAGE_EDIT:
-            return "Original reference layout" if self._edit_layer == "reference" else "Edit targets"
+            return (
+                "Original reference layout" if self._edit_layer == "reference" else "Edit targets"
+            )
         if self._mode == self.FACE_REFINEMENT:
             return "Face refinement source"
         return "Generation canvas"
@@ -592,6 +604,40 @@ class QmlWorkspaceController(QObject):
         if self._mode == self.FACE_REFINEMENT:
             return "Generation prompt (reference)"
         return "Global prompt"
+
+    @Property(str, constant=True)
+    def globalEmphasisScope(self) -> str:
+        return GLOBAL_EMPHASIS_SCOPE
+
+    @Property("QVariantList", notify=stateChanged)
+    def promptEmphases(self) -> list[dict[str, Any]]:
+        emphases = self._active_prompt_emphases()
+        return [
+            {
+                "index": index,
+                "scopeId": emphasis.scope_id,
+                "scopeLabel": self._emphasis_scope_label(emphasis.scope_id),
+                "phrase": emphasis.phrase,
+                "strength": emphasis.strength,
+                "occurrence": emphasis.occurrence,
+                "matches": self._emphasis_matches(emphasis),
+            }
+            for index, emphasis in enumerate(emphases)
+        ]
+
+    @Property(bool, notify=stateChanged)
+    def promptEmphasisAvailable(self) -> bool:
+        return self._mode == self.GENERATION or (
+            self._mode == self.IMAGE_EDIT and self._edit_layer == "reference"
+        )
+
+    @Property("QVariantList", notify=stateChanged)
+    def projectorVector(self) -> list[float]:
+        return [float(control.value()) for control in self.backend.projector_vector_inputs]
+
+    @Property(str, notify=stateChanged)
+    def upscaleModelPath(self) -> str:
+        return str(self.backend._upscale_model_path or "")
 
     @Property(QUrl, notify=stateChanged)
     def imageSource(self) -> QUrl:
@@ -669,7 +715,10 @@ class QmlWorkspaceController(QObject):
 
     @Property("QStringList", constant=True)
     def samplerOptions(self) -> list[str]:
-        return [self.backend.sampler_input.itemText(index) for index in range(self.backend.sampler_input.count())]
+        return [
+            self.backend.sampler_input.itemText(index)
+            for index in range(self.backend.sampler_input.count())
+        ]
 
     @Property("QStringList", constant=True)
     def schedulerOptions(self) -> list[str]:
@@ -738,9 +787,7 @@ class QmlWorkspaceController(QObject):
         if not self.canDrawRegions:
             return ""
         try:
-            box = PixelBox(x0, y0, x1, y1).clipped(
-                self.canvasWidth, self.canvasHeight
-            )
+            box = PixelBox(x0, y0, x1, y1).clipped(self.canvasWidth, self.canvasHeight)
         except ValueError:
             return ""
         if box.width < 16 or box.height < 16:
@@ -748,17 +795,11 @@ class QmlWorkspaceController(QObject):
             return ""
         region_id = uuid4().hex
         if self._mode == self.GENERATION:
-            self.backend._region_created(
-                region_id, box.x0, box.y0, box.x1, box.y1
-            )
+            self.backend._region_created(region_id, box.x0, box.y0, box.x1, box.y1)
         elif self._edit_layer == "reference":
-            self.backend._edit_reference_region_created(
-                region_id, box.x0, box.y0, box.x1, box.y1
-            )
+            self.backend._edit_reference_region_created(region_id, box.x0, box.y0, box.x1, box.y1)
         else:
-            self.backend._edit_region_created(
-                region_id, box.x0, box.y0, box.x1, box.y1
-            )
+            self.backend._edit_region_created(region_id, box.x0, box.y0, box.x1, box.y1)
         self._draw_mode = False
         self._selected_region_id = region_id
         self.refresh()
@@ -770,23 +811,17 @@ class QmlWorkspaceController(QObject):
         self, region_id: str, x0: float, y0: float, x1: float, y1: float
     ) -> None:
         try:
-            box = PixelBox(x0, y0, x1, y1).clipped(
-                self.canvasWidth, self.canvasHeight
-            )
+            box = PixelBox(x0, y0, x1, y1).clipped(self.canvasWidth, self.canvasHeight)
             if box.width < 16 or box.height < 16:
                 return
             if self._mode == self.GENERATION:
-                self.backend._region_changed(
-                    region_id, box.x0, box.y0, box.x1, box.y1
-                )
+                self.backend._region_changed(region_id, box.x0, box.y0, box.x1, box.y1)
             elif self._edit_layer == "reference":
                 self.backend._edit_reference_region_changed(
                     region_id, box.x0, box.y0, box.x1, box.y1
                 )
             else:
-                self.backend._edit_region_changed(
-                    region_id, box.x0, box.y0, box.x1, box.y1
-                )
+                self.backend._edit_region_changed(region_id, box.x0, box.y0, box.x1, box.y1)
         except (KeyError, ValueError):
             return
         self.refresh()
@@ -842,6 +877,30 @@ class QmlWorkspaceController(QObject):
         self.refresh()
         self.selectionChanged.emit()
 
+    @Slot(str, int)
+    def moveRegion(self, region_id: str, offset: int) -> None:
+        collection = self._active_regions()
+        try:
+            source = next(
+                index for index, region in enumerate(collection) if region.region_id == region_id
+            )
+        except StopIteration:
+            return
+        target = source + int(offset)
+        if target < 0 or target >= len(collection):
+            return
+        if self._mode == self.GENERATION:
+            widget = self.backend.region_list
+        elif self._edit_layer == "reference":
+            widget = self.backend.edit_reference_region_list
+        else:
+            widget = self.backend.edit_region_list
+        destination = target + 1 if target > source else target
+        widget.model().moveRow(QModelIndex(), source, QModelIndex(), destination)
+        self._selected_region_id = region_id
+        self.refresh()
+        self.selectionChanged.emit()
+
     @Slot(str, result="QVariant")
     def setting(self, name: str):
         control = self._setting_control(name)
@@ -870,6 +929,77 @@ class QmlWorkspaceController(QObject):
             self.backend._canvas_dimensions_changed()
         self.refresh()
 
+    @Slot(str, str, int, float)
+    def addPromptEmphasis(
+        self, scope_id: str, phrase: str, selection_start: int, strength: float
+    ) -> None:
+        if not self.promptEmphasisAvailable:
+            return
+        source = self.globalPrompt
+        if scope_id != GLOBAL_EMPHASIS_SCOPE:
+            region = self._find_active_region(scope_id)
+            if region is None:
+                self.notification.emit("Select a region before adding regional emphasis")
+                return
+            source = region.prompt
+            phrase = phrase.rstrip(".!? ")
+        phrase = str(phrase).replace("\u2029", "\n")
+        selection_start = int(selection_start)
+        if not phrase.strip():
+            self.notification.emit("Highlight a complete prompt word or phrase first")
+            return
+        offsets: list[int] = []
+        offset = source.find(phrase)
+        while offset >= 0:
+            offsets.append(offset)
+            offset = source.find(phrase, offset + len(phrase))
+        selected_offset = next(
+            (
+                offset
+                for offset in offsets
+                if len(source[:offset].encode("utf-16-le")) // 2 == selection_start
+            ),
+            None,
+        )
+        if selected_offset is None:
+            self.notification.emit("Highlight a complete prompt word or phrase first")
+            return
+        occurrence = offsets.index(selected_offset)
+        emphasis = PromptEmphasis(
+            scope_id=scope_id,
+            phrase=phrase,
+            strength=float(strength),
+            occurrence=occurrence,
+        )
+        emphases = self._active_prompt_emphases()
+        emphases.append(emphasis)
+        self._set_active_prompt_emphases(emphases)
+        self.notification.emit(f"Added token emphasis for {phrase!r}")
+        self.refresh()
+
+    @Slot(int, float)
+    def setPromptEmphasisStrength(self, index: int, strength: float) -> None:
+        emphases = self._active_prompt_emphases()
+        if not 0 <= index < len(emphases):
+            return
+        try:
+            emphases[index] = replace(emphases[index], strength=float(strength))
+        except ValueError as error:
+            self.notification.emit(str(error))
+            return
+        self._set_active_prompt_emphases(emphases)
+        self.refresh()
+
+    @Slot(int)
+    def removePromptEmphasis(self, index: int) -> None:
+        emphases = self._active_prompt_emphases()
+        if not 0 <= index < len(emphases):
+            return
+        removed = emphases.pop(index)
+        self._set_active_prompt_emphases(emphases)
+        self.notification.emit(f"Removed token emphasis for {removed.phrase!r}")
+        self.refresh()
+
     @Slot()
     def addLora(self) -> None:
         selected, _ = QFileDialog.getOpenFileName(
@@ -884,9 +1014,7 @@ class QmlWorkspaceController(QObject):
     @Slot(str, float)
     def setLoraStrength(self, lora_id: str, strength: float) -> None:
         try:
-            binding = replace(
-                self._active_lora_binding(lora_id), strength=float(strength)
-            )
+            binding = replace(self._active_lora_binding(lora_id), strength=float(strength))
         except (KeyError, ValueError):
             return
         if self._mode == self.IMAGE_EDIT:
@@ -912,6 +1040,130 @@ class QmlWorkspaceController(QObject):
             strength = 0.0
         self.setLoraStrength(lora_id, strength)
 
+    @Slot(str, str)
+    def setLoraRoutingMode(self, lora_id: str, routing_mode: str) -> None:
+        if routing_mode not in {STANDARD_LORA_ROUTING, CHARACTER_IDENTITY_LORA_ROUTING}:
+            return
+        try:
+            current = self._active_lora_binding(lora_id)
+            if routing_mode == CHARACTER_IDENTITY_LORA_ROUTING and (
+                current.global_scope or not current.region_ids
+            ):
+                self.notification.emit(
+                    "Assign this LoRA to one or more regions before using Character identity"
+                )
+                return
+            binding = replace(current, routing_mode=routing_mode)
+        except (KeyError, ValueError) as error:
+            self.notification.emit(str(error))
+            return
+        if self._mode == self.IMAGE_EDIT:
+            self._set_active_lora_binding(lora_id, binding)
+        else:
+            self.backend.lora_library.set_routing_mode(lora_id, routing_mode)
+        self.refresh()
+
+    @Slot(str, str)
+    def setLoraTriggerPhrase(self, lora_id: str, trigger_phrase: str) -> None:
+        phrase = str(trigger_phrase).strip()
+        if not phrase:
+            self.notification.emit("Character identity trigger cannot be empty")
+            return
+        try:
+            binding = replace(self._active_lora_binding(lora_id), trigger_phrase=phrase)
+        except (KeyError, ValueError) as error:
+            self.notification.emit(str(error))
+            return
+        if self._mode == self.IMAGE_EDIT:
+            self._set_active_lora_binding(lora_id, binding)
+        else:
+            self.backend.lora_library.set_trigger_phrase(lora_id, phrase)
+        self.refresh()
+
+    @Slot(str, result=bool)
+    def loraUsesSelectedRegion(self, lora_id: str) -> bool:
+        if not self._selected_region_id:
+            return False
+        try:
+            return self._selected_region_id in self._active_lora_binding(lora_id).region_ids
+        except KeyError:
+            return False
+
+    @Slot(str)
+    def toggleLoraSelectedRegion(self, lora_id: str) -> None:
+        if not self._selected_region_id:
+            self.notification.emit("Select a region before changing regional LoRA scope")
+            return
+        try:
+            current = self._active_lora_binding(lora_id)
+            region_ids = list(current.region_ids)
+            if self._selected_region_id in region_ids:
+                region_ids.remove(self._selected_region_id)
+            else:
+                region_ids.append(self._selected_region_id)
+            routing_mode = current.routing_mode
+            if not region_ids:
+                routing_mode = STANDARD_LORA_ROUTING
+            binding = replace(
+                current,
+                global_scope=False,
+                region_ids=tuple(region_ids),
+                routing_mode=routing_mode,
+            )
+        except (KeyError, ValueError) as error:
+            self.notification.emit(str(error))
+            return
+        self._set_active_lora_binding(lora_id, binding)
+        self.refresh()
+
+    @Slot(str)
+    def diagnoseLora(self, lora_id: str) -> None:
+        item = self.backend._lora_list_item(lora_id)
+        if item is None:
+            return
+        self.backend.lora_list.setCurrentItem(item)
+        self.backend._diagnose_selected_lora()
+
+    @Slot(int, float)
+    def setProjectorValue(self, index: int, value: float) -> None:
+        if not 0 <= index < len(self.backend.projector_vector_inputs):
+            return
+        self.backend.projector_vector_inputs[index].setValue(float(value))
+        self.refresh()
+
+    @Slot()
+    def previewUnifiedPrompt(self) -> None:
+        self.backend._preview_unified_prompt()
+
+    @Slot()
+    def browseUpscaleModel(self) -> None:
+        self.backend._browse_upscale_model()
+        self.refresh()
+
+    @Slot()
+    def clearUpscaleModel(self) -> None:
+        self.backend._clear_upscale_model()
+        self.refresh()
+
+    @Slot()
+    def useLatestFaceSource(self) -> None:
+        self.backend._use_latest_face_source()
+        self.refresh()
+
+    @Slot()
+    def openFaceLasso(self) -> None:
+        self.backend._open_face_lasso_dialog()
+
+    @Slot()
+    def undoFaceLasso(self) -> None:
+        self.backend.face_source_preview.undo_lasso()
+        self.refresh()
+
+    @Slot()
+    def clearFaceLassos(self) -> None:
+        self.backend.face_source_preview.clear_lassos()
+        self.refresh()
+
     @Slot(str)
     def removeLora(self, lora_id: str) -> None:
         try:
@@ -936,9 +1188,7 @@ class QmlWorkspaceController(QObject):
         for row in range(self.backend.face_selection_list.count()):
             item = self.backend.face_selection_list.item(row)
             if int(item.data(Qt.ItemDataRole.UserRole)) == face_index:
-                item.setCheckState(
-                    Qt.CheckState.Checked if selected else Qt.CheckState.Unchecked
-                )
+                item.setCheckState(Qt.CheckState.Checked if selected else Qt.CheckState.Unchecked)
                 break
         self.backend._face_selection_changed()
         self.refresh()
@@ -952,7 +1202,10 @@ class QmlWorkspaceController(QObject):
     def assignLoraGlobal(self, lora_id: str) -> None:
         try:
             binding = replace(
-                self._active_lora_binding(lora_id), global_scope=True, region_ids=()
+                self._active_lora_binding(lora_id),
+                global_scope=True,
+                region_ids=(),
+                routing_mode=STANDARD_LORA_ROUTING,
             )
         except KeyError:
             return
@@ -969,9 +1222,7 @@ class QmlWorkspaceController(QObject):
             binding = replace(
                 current,
                 global_scope=False,
-                region_ids=tuple(
-                    dict.fromkeys((*current.region_ids, self._selected_region_id))
-                ),
+                region_ids=tuple(dict.fromkeys((*current.region_ids, self._selected_region_id))),
             )
         except KeyError:
             return
@@ -1108,10 +1359,26 @@ class QmlWorkspaceController(QObject):
                 "seed",
                 "sampler",
                 "scheduler",
+                "seedMode",
+                "batchMode",
+                "batchCount",
+                "regionalPrompting",
                 "insideBoost",
                 "outsidePenalty",
                 "spatialFalloff",
+                "subjectCompetition",
+                "subjectFill",
+                "relaxation",
                 "lateStepScale",
+                "loraAdaptation",
+                "loraResponse",
+                "postUpscale",
+                "upscaleScale",
+                "upscaleMethod",
+                "projectorEnabled",
+                "projectorPreset",
+                "projectorMultiplier",
+                "projectorIdentityProtection",
             ),
             self.IMAGE_EDIT: (
                 "steps",
@@ -1126,6 +1393,8 @@ class QmlWorkspaceController(QObject):
                 "outsidePenalty",
                 "spatialFalloff",
                 "lateStepScale",
+                "subjectCompetition",
+                "subjectFill",
                 "preserveIdentity",
                 "editEntireImage",
                 "loraAdaptation",
@@ -1136,10 +1405,12 @@ class QmlWorkspaceController(QObject):
                 "seed",
                 "denoise",
                 "padding",
+                "cropSize",
                 "feather",
                 "blend",
                 "loraScale",
                 "detectorThreshold",
+                "detectorProvider",
             ),
         }[self._mode]
         settings = tuple((name, self.setting(name)) for name in setting_names)
@@ -1166,6 +1437,12 @@ class QmlWorkspaceController(QObject):
             self.canvasWidth,
             self.canvasHeight,
             self.globalPrompt,
+            tuple(
+                (item.scope_id, item.phrase, item.strength, item.occurrence)
+                for item in self._active_prompt_emphases()
+            ),
+            tuple(self.projectorVector),
+            self.upscaleModelPath,
             self.backend.statusBar().currentMessage(),
             self.backend.memory_status.text(),
             face_state,
@@ -1178,6 +1455,43 @@ class QmlWorkspaceController(QObject):
         if self._edit_layer == "reference":
             return self.backend.edit_reference_regions
         return self.backend.edit_regions
+
+    def _active_prompt_emphases(self) -> list[PromptEmphasis]:
+        if self._mode == self.GENERATION:
+            return list(self.backend.prompt_emphases)
+        if self._mode == self.IMAGE_EDIT and self._edit_layer == "reference":
+            return list(self.backend.edit_reference_prompt_emphases)
+        return []
+
+    def _set_active_prompt_emphases(self, emphases: list[PromptEmphasis]) -> None:
+        if self._mode == self.GENERATION:
+            self.backend.prompt_emphases = list(emphases)
+            self.backend._refresh_prompt_emphases()
+        elif self._mode == self.IMAGE_EDIT and self._edit_layer == "reference":
+            self.backend.edit_reference_prompt_emphases = list(emphases)
+
+    def _emphasis_scope_label(self, scope_id: str) -> str:
+        if scope_id == GLOBAL_EMPHASIS_SCOPE:
+            return "Global"
+        region = self._find_active_region(scope_id)
+        return region.name if region is not None else "Missing region"
+
+    def _emphasis_matches(self, emphasis: PromptEmphasis) -> bool:
+        if emphasis.scope_id == GLOBAL_EMPHASIS_SCOPE:
+            source = self.globalPrompt
+        else:
+            region = self._find_active_region(emphasis.scope_id)
+            if region is None:
+                return False
+            source = region.prompt.rstrip(".!? ")
+        offset = -1
+        start = 0
+        for _occurrence in range(emphasis.occurrence + 1):
+            offset = source.find(emphasis.phrase, start)
+            if offset < 0:
+                return False
+            start = offset + len(emphasis.phrase)
+        return True
 
     def _find_active_region(self, region_id: str) -> RegionDefinition | None:
         return next(
@@ -1201,6 +1515,8 @@ class QmlWorkspaceController(QObject):
         self.backend._refresh_lora_scope()
 
     def _setting_control(self, name: str):
+        if name == "emphasisStrength":
+            return self.backend.emphasis_strength_input
         generation = {
             "width": self.backend.width_input,
             "height": self.backend.height_input,
@@ -1208,10 +1524,26 @@ class QmlWorkspaceController(QObject):
             "seed": self.backend.seed_input,
             "sampler": self.backend.sampler_input,
             "scheduler": self.backend.scheduler_input,
+            "seedMode": self.backend.seed_mode_input,
+            "batchMode": self.backend.batch_mode_input,
+            "batchCount": self.backend.batch_count_input,
+            "regionalPrompting": self.backend.regional_prompting_input,
             "insideBoost": self.backend.regional_prompt_strength_input,
             "outsidePenalty": self.backend.regional_outside_penalty_input,
             "spatialFalloff": self.backend.regional_feather_input,
+            "subjectCompetition": self.backend.regional_subject_competition_input,
+            "subjectFill": self.backend.regional_subject_fill_input,
+            "relaxation": self.backend.regional_relaxation_input,
             "lateStepScale": self.backend.regional_late_step_scale_input,
+            "loraAdaptation": self.backend.regional_lora_delta_adaptation_input,
+            "loraResponse": self.backend.regional_lora_delta_adaptation_gain_input,
+            "postUpscale": self.backend.post_upscale_input,
+            "upscaleScale": self.backend.upscale_scale_input,
+            "upscaleMethod": self.backend.upscale_method_input,
+            "projectorEnabled": self.backend.projector_enabled_input,
+            "projectorPreset": self.backend.projector_preset_input,
+            "projectorMultiplier": self.backend.projector_multiplier_input,
+            "projectorIdentityProtection": self.backend.projector_identity_protection_input,
         }
         editing = {
             "steps": self.backend.edit_steps_input,
@@ -1226,6 +1558,8 @@ class QmlWorkspaceController(QObject):
             "outsidePenalty": self.backend.edit_outside_penalty_input,
             "spatialFalloff": self.backend.edit_spatial_falloff_input,
             "lateStepScale": self.backend.edit_late_step_scale_input,
+            "subjectCompetition": self.backend.edit_subject_competition_input,
+            "subjectFill": self.backend.edit_subject_fill_input,
             "preserveIdentity": self.backend.edit_preserve_identity_input,
             "editEntireImage": self.backend.edit_entire_image_input,
             "loraAdaptation": self.backend.edit_lora_adaptation_input,
@@ -1235,11 +1569,13 @@ class QmlWorkspaceController(QObject):
             "steps": self.backend.face_detail_steps_input,
             "seed": self.backend.face_detail_seed_input,
             "denoise": self.backend.face_detail_denoise_input,
+            "cropSize": self.backend.face_detail_crop_size_input,
             "padding": self.backend.face_detail_padding_input,
             "feather": self.backend.face_detail_feather_input,
             "blend": self.backend.face_detail_blend_input,
             "loraScale": self.backend.face_detail_lora_scale_input,
             "detectorThreshold": self.backend.face_detail_detector_threshold_input,
+            "detectorProvider": self.backend.face_detail_detector_provider_input,
         }
         if self._mode == self.IMAGE_EDIT:
             return editing.get(name)
@@ -1263,6 +1599,10 @@ class QmlWorkspaceController(QObject):
                 self.backend.lora_library.assign_global(lora_id)
             else:
                 self.backend.lora_library.assign_regions(lora_id, binding.region_ids)
+            self.backend.lora_library.set_strength(lora_id, binding.strength)
+            if binding.trigger_phrase:
+                self.backend.lora_library.set_trigger_phrase(lora_id, binding.trigger_phrase)
+            self.backend.lora_library.set_routing_mode(lora_id, binding.routing_mode)
             return
         target = (
             self.backend._edit_reference_lora_bindings

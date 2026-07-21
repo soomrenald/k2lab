@@ -449,6 +449,7 @@ Window {
                             SetupButton { text: "Validate"; onClicked: setupWindow.controller.validateModels() }
                             SetupButton { text: "Load model"; onClicked: setupWindow.controller.loadModel() }
                             SetupButton { text: "Diagnose"; onClicked: setupWindow.controller.diagnoseAccelerator() }
+                            SetupButton { text: "Release GPU memory"; onClicked: setupWindow.controller.releaseGpuMemory() }
                             Item { Layout.fillWidth: true }
                         }
                     }

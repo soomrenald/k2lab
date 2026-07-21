@@ -142,6 +142,10 @@ the production persistent-Pod and portable-workspace requirements. Operational l
 migration recovery are documented in
 [`docs/runpod_workspace_operations.md`](docs/runpod_workspace_operations.md).
 
+Local Qt Quick feature parity with the original Widgets interface is tracked in
+[`docs/local_gui_feature_parity.md`](docs/local_gui_feature_parity.md). The exact classic
+interface remains available with `uv run k2lab --legacy-widgets`.
+
 ### Single-user RunPod launcher
 
 For a real RunPod account on a trusted personal computer, use the loopback-only launcher.

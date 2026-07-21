@@ -36,22 +36,44 @@ Rectangle {
         }
     }
 
-    component StudioTextArea: TextArea {
-        color: "#e8ebf4"
-        placeholderTextColor: "#697287"
-        selectionColor: "#6578ff"
-        selectedTextColor: "white"
-        wrapMode: TextEdit.Wrap
-        font.pixelSize: 13
-        leftPadding: 11
-        rightPadding: 11
-        topPadding: 9
-        bottomPadding: 9
+    component StudioTextArea: ScrollView {
+        id: textAreaFrame
+        property alias text: textEditor.text
+        property alias placeholderText: textEditor.placeholderText
+        property alias selectedText: textEditor.selectedText
+        property alias selectionStart: textEditor.selectionStart
+        signal editingFinished()
+        clip: true
+        ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+        ScrollBar.vertical: ScrollBar {
+            objectName: textAreaFrame.objectName + "VerticalScrollBar"
+            policy: ScrollBar.AsNeeded
+        }
         background: Rectangle {
             color: "#0b0f18"
-            border.color: parent.activeFocus ? "#6578ff" : "#2a3243"
+            border.color: textEditor.activeFocus ? "#6578ff" : "#2a3243"
             border.width: 1
             radius: 7
+        }
+        TextArea {
+            id: textEditor
+            width: textAreaFrame.availableWidth
+            color: "#e8ebf4"
+            placeholderTextColor: "#697287"
+            selectionColor: "#6578ff"
+            selectedTextColor: "white"
+            wrapMode: TextEdit.Wrap
+            persistentSelection: true
+            font.pixelSize: 13
+            leftPadding: 11
+            rightPadding: 18
+            topPadding: 9
+            bottomPadding: 9
+            background: null
+            onActiveFocusChanged: {
+                if (!activeFocus)
+                    textAreaFrame.editingFinished()
+            }
         }
     }
 
@@ -207,6 +229,7 @@ Rectangle {
                     }
                     StudioTextArea {
                         id: globalPrompt
+                        objectName: "globalPromptEditor"
                         Layout.fillWidth: true
                         Layout.leftMargin: 14
                         Layout.rightMargin: 14
@@ -215,10 +238,7 @@ Rectangle {
                         placeholderText: controller.mode === "edit"
                                          ? "Describe the overall edit. Leave blank to preserve everything outside edit boxes."
                                          : "Describe the complete image..."
-                        onActiveFocusChanged: {
-                            if (!activeFocus)
-                                controller.setGlobalPrompt(text)
-                        }
+                        onEditingFinished: controller.setGlobalPrompt(text)
                     }
 
                     Rectangle {
@@ -291,6 +311,7 @@ Rectangle {
 
                         StudioTextArea {
                             id: selectedPrompt
+                            objectName: "selectedPromptEditor"
                             visible: controller.selectedRegionId.length > 0
                             Layout.fillWidth: true
                             implicitHeight: 112
@@ -298,22 +319,139 @@ Rectangle {
                             placeholderText: controller.mode === "edit" && controller.editLayer === "targets"
                                              ? "Describe the edit inside this box..."
                                              : "Describe the content inside this box..."
-                            onActiveFocusChanged: {
-                                if (!activeFocus)
-                                    controller.updateSelectedRegion("prompt", text)
-                            }
+                            onEditingFinished: controller.updateSelectedRegion("prompt", text)
                         }
 
                         StudioTextArea {
                             id: identityPrompt
+                            objectName: "identityPromptEditor"
                             visible: controller.selectedRegionId.length > 0
                             Layout.fillWidth: true
                             implicitHeight: 78
                             text: controller.selectedRegion.facePrompt || ""
                             placeholderText: "Optional face / identity anchor..."
-                            onActiveFocusChanged: {
-                                if (!activeFocus)
-                                    controller.updateSelectedRegion("facePrompt", text)
+                            onEditingFinished: controller.updateSelectedRegion("facePrompt", text)
+                        }
+
+                        RowLayout {
+                            visible: controller.selectedRegionId.length > 0
+                            Layout.fillWidth: true
+                            MiniButton {
+                                text: "Move forward"
+                                Layout.fillWidth: true
+                                onClicked: controller.moveRegion(controller.selectedRegionId, -1)
+                            }
+                            MiniButton {
+                                text: "Move backward"
+                                Layout.fillWidth: true
+                                onClicked: controller.moveRegion(controller.selectedRegionId, 1)
+                            }
+                        }
+                    }
+
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        Layout.leftMargin: 14
+                        Layout.rightMargin: 14
+                        spacing: 8
+                        visible: controller.promptEmphasisAvailable
+
+                        Rectangle { Layout.fillWidth: true; height: 1; color: "#262d3c" }
+                        LabelText { text: "Phrase emphasis" }
+                        Text {
+                            Layout.fillWidth: true
+                            text: "Highlight an exact phrase in a prompt, then add an additive token-attention boost. Invalid saved matches are shown in red."
+                            color: "#778095"
+                            wrapMode: Text.Wrap
+                            font.pixelSize: 11
+                        }
+                        ValueSlider {
+                            id: emphasisStrength
+                            objectName: "promptEmphasisStrength"
+                            Layout.fillWidth: true
+                            from: 0
+                            to: 2
+                            stepSize: 0.1
+                            decimals: 2
+                            value: Number(controller.setting("emphasisStrength"))
+                            onValueEdited: value => controller.setSetting("emphasisStrength", value)
+                        }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            MiniButton {
+                                text: "Emphasize global selection"
+                                Layout.fillWidth: true
+                                enabled: globalPrompt.selectedText.length > 0
+                                onClicked: controller.addPromptEmphasis(
+                                    controller.globalEmphasisScope,
+                                    globalPrompt.selectedText,
+                                    globalPrompt.selectionStart,
+                                    emphasisStrength.currentValue)
+                            }
+                            MiniButton {
+                                visible: controller.selectedRegionId.length > 0
+                                text: "Region selection"
+                                Layout.fillWidth: true
+                                enabled: selectedPrompt.selectedText.length > 0
+                                onClicked: controller.addPromptEmphasis(
+                                    controller.selectedRegionId,
+                                    selectedPrompt.selectedText,
+                                    selectedPrompt.selectionStart,
+                                    emphasisStrength.currentValue)
+                            }
+                        }
+                        Repeater {
+                            model: controller.promptEmphases
+                            delegate: Rectangle {
+                                id: emphasisCard
+                                required property var modelData
+                                Layout.fillWidth: true
+                                implicitHeight: emphasisColumn.implicitHeight + 18
+                                radius: 7
+                                color: "#171d29"
+                                border.color: modelData.matches ? "#293143" : "#df5f67"
+                                ColumnLayout {
+                                    id: emphasisColumn
+                                    anchors.left: parent.left
+                                    anchors.right: parent.right
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    anchors.margins: 9
+                                    spacing: 5
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        Text {
+                                            text: emphasisCard.modelData.scopeLabel + ": “"
+                                                  + emphasisCard.modelData.phrase + "”"
+                                            color: emphasisCard.modelData.matches ? "#e8ebf4" : "#ff8f96"
+                                            elide: Text.ElideRight
+                                            Layout.fillWidth: true
+                                            font.pixelSize: 11
+                                        }
+                                        MiniButton {
+                                            text: "Remove"
+                                            onClicked: controller.removePromptEmphasis(
+                                                emphasisCard.modelData.index)
+                                        }
+                                    }
+                                    Text {
+                                        visible: !emphasisCard.modelData.matches
+                                        text: "Phrase no longer matches this prompt; remove it or restore the exact text."
+                                        color: "#ff8f96"
+                                        wrapMode: Text.Wrap
+                                        Layout.fillWidth: true
+                                        font.pixelSize: 10
+                                    }
+                                    ValueSlider {
+                                        Layout.fillWidth: true
+                                        from: 0
+                                        to: 2
+                                        stepSize: 0.1
+                                        decimals: 2
+                                        value: emphasisCard.modelData.strength
+                                        onValueEdited: value => controller.setPromptEmphasisStrength(
+                                            emphasisCard.modelData.index, value)
+                                    }
+                                }
                             }
                         }
                     }
@@ -373,6 +511,21 @@ Rectangle {
                             text: "+ Draw"
                             enabled: controller.canDrawRegions
                             onClicked: controller.setDrawMode(true)
+                        }
+                    }
+
+                    ColumnLayout {
+                        visible: controller.mode === "generation"
+                        Layout.fillWidth: true
+                        Layout.leftMargin: 14
+                        Layout.rightMargin: 14
+                        spacing: 5
+                        LabelText { text: "Seed behavior" }
+                        ComboBox {
+                            Layout.fillWidth: true
+                            model: ["fixed", "random", "increment"]
+                            currentIndex: model.indexOf(String(controller.setting("seedMode")))
+                            onActivated: controller.setSetting("seedMode", currentValue)
                         }
                     }
 
@@ -477,6 +630,8 @@ Rectangle {
                     }
 
                     Repeater {
+                        id: loraRepeater
+                        objectName: "loraRepeater"
                         model: controller.loraModel
                         delegate: Rectangle {
                             id: loraCard
@@ -485,16 +640,18 @@ Rectangle {
                             required property string scope
                             required property real strength
                             required property string routingMode
+                            required property string triggerPhrase
                             required property bool active
                             Layout.fillWidth: true
                             Layout.leftMargin: 14
                             Layout.rightMargin: 14
-                            implicitHeight: 148
+                            implicitHeight: loraColumn.implicitHeight + 20
                             radius: 8
                             color: "#171d29"
                             border.color: "#293143"
 
                             ColumnLayout {
+                                id: loraColumn
                                 anchors.fill: parent
                                 anchors.margins: 10
                                 spacing: 5
@@ -546,15 +703,57 @@ Rectangle {
                                         onClicked: controller.assignLoraGlobal(loraCard.loraId)
                                     }
                                     MiniButton {
-                                        text: "Selected region"
+                                        property bool assigned: {
+                                            let revision = controller.stateRevision
+                                            return controller.loraUsesSelectedRegion(loraCard.loraId)
+                                        }
+                                        text: assigned ? "Remove selected" : "Add selected"
                                         Layout.fillWidth: true
                                         enabled: controller.selectedRegionId.length > 0
-                                        onClicked: controller.assignLoraToSelectedRegion(loraCard.loraId)
+                                        onClicked: controller.toggleLoraSelectedRegion(loraCard.loraId)
                                     }
                                     MiniButton {
                                         text: "Remove"
                                         onClicked: controller.removeLora(loraCard.loraId)
                                     }
+                                }
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    LabelText { text: "Routing" }
+                                    ComboBox {
+                                        id: routingMode
+                                        objectName: "loraRouting-" + loraCard.loraId
+                                        Layout.fillWidth: true
+                                        model: ["Standard regional", "Character identity (face)"]
+                                        currentIndex: loraCard.routingMode === "character_identity" ? 1 : 0
+                                        enabled: loraCard.scope !== "Global"
+                                                 && loraCard.scope !== "Unassigned"
+                                        onActivated: controller.setLoraRoutingMode(
+                                            loraCard.loraId,
+                                            currentIndex === 1 ? "character_identity" : "standard")
+                                    }
+                                }
+                                StudioTextField {
+                                    objectName: "loraTrigger-" + loraCard.loraId
+                                    visible: loraCard.routingMode === "character_identity"
+                                    Layout.fillWidth: true
+                                    text: loraCard.triggerPhrase
+                                    placeholderText: "Training trigger, for example lface"
+                                    onEditingFinished: controller.setLoraTriggerPhrase(
+                                        loraCard.loraId, text)
+                                }
+                                Text {
+                                    visible: loraCard.routingMode === "character_identity"
+                                    Layout.fillWidth: true
+                                    text: "The identity trigger is inserted automatically into each assigned region's face anchor; it does not need to be duplicated in the visible prompt."
+                                    color: "#778095"
+                                    wrapMode: Text.Wrap
+                                    font.pixelSize: 10
+                                }
+                                MiniButton {
+                                    text: "Inspect Krea compatibility"
+                                    Layout.fillWidth: true
+                                    onClicked: controller.diagnoseLora(loraCard.loraId)
                                 }
                             }
                         }
@@ -637,6 +836,14 @@ Rectangle {
                         }
                         NumericSetting {
                             visible: controller.mode === "generation"
+                                     && Boolean(controller.setting("batchMode"))
+                            label: "Batch runs"
+                            settingName: "batchCount"
+                            minimum: 1
+                            maximum: 100
+                        }
+                        NumericSetting {
+                            visible: controller.mode === "generation"
                             label: "Width"
                             settingName: "width"
                             minimum: 64
@@ -699,6 +906,29 @@ Rectangle {
                         }
                         NumericSetting {
                             visible: controller.mode === "face"
+                            label: "Crop size"
+                            settingName: "cropSize"
+                            minimum: 256
+                            maximum: 1024
+                        }
+                        NumericSetting {
+                            visible: controller.mode === "face"
+                            label: "Edge feather"
+                            settingName: "feather"
+                            minimum: 0
+                            maximum: 0.5
+                            decimals: 2
+                        }
+                        NumericSetting {
+                            visible: controller.mode === "face"
+                            label: "Regional LoRA scale"
+                            settingName: "loraScale"
+                            minimum: 0
+                            maximum: 4
+                            decimals: 2
+                        }
+                        NumericSetting {
+                            visible: controller.mode === "face"
                             label: "Detector threshold"
                             settingName: "detectorThreshold"
                             minimum: 0
@@ -712,6 +942,39 @@ Rectangle {
                             minimum: 0
                             maximum: 1
                             decimals: 2
+                        }
+                    }
+
+                    CheckBox {
+                        visible: controller.mode === "generation"
+                        Layout.leftMargin: 14
+                        text: "Run generation in batch mode"
+                        checked: Boolean(controller.setting("batchMode"))
+                        onToggled: controller.setSetting("batchMode", checked)
+                    }
+
+                    ColumnLayout {
+                        visible: controller.mode === "face"
+                        Layout.fillWidth: true
+                        Layout.leftMargin: 14
+                        Layout.rightMargin: 14
+                        spacing: 5
+                        LabelText { text: "Detector device" }
+                        ComboBox {
+                            Layout.fillWidth: true
+                            model: ["auto", "cpu", "cuda"]
+                            currentIndex: model.indexOf(String(controller.setting("detectorProvider")))
+                            onActivated: controller.setSetting("detectorProvider", currentValue)
+                        }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            MiniButton { text: "Use latest first pass"; onClicked: controller.useLatestFaceSource() }
+                            MiniButton { text: "Draw lasso…"; onClicked: controller.openFaceLasso() }
+                        }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            MiniButton { text: "Undo lasso"; Layout.fillWidth: true; onClicked: controller.undoFaceLasso() }
+                            MiniButton { text: "Clear lassos"; Layout.fillWidth: true; onClicked: controller.clearFaceLassos() }
                         }
                     }
 
@@ -752,6 +1015,54 @@ Rectangle {
                     }
 
                     CheckBox {
+                        visible: controller.mode === "generation"
+                        Layout.leftMargin: 14
+                        text: "Use unified spatial prompting"
+                        checked: Boolean(controller.setting("regionalPrompting"))
+                        onToggled: controller.setSetting("regionalPrompting", checked)
+                    }
+                    CheckBox {
+                        visible: controller.mode !== "face"
+                        Layout.leftMargin: 14
+                        text: "Separate overlapping subject targets"
+                        checked: Boolean(controller.setting("subjectCompetition"))
+                        onToggled: controller.setSetting("subjectCompetition", checked)
+                    }
+                    CheckBox {
+                        objectName: "subjectFillCheckBox"
+                        visible: controller.mode !== "face"
+                        Layout.leftMargin: 14
+                        text: "Make subjects fill their boxes"
+                        checked: Boolean(controller.setting("subjectFill"))
+                        onToggled: controller.setSetting("subjectFill", checked)
+                    }
+                    CheckBox {
+                        visible: controller.mode === "generation"
+                        Layout.leftMargin: 14
+                        text: "Relax spatial guidance during late steps"
+                        checked: Boolean(controller.setting("relaxation"))
+                        onToggled: controller.setSetting("relaxation", checked)
+                    }
+                    CheckBox {
+                        visible: controller.mode !== "face"
+                        Layout.leftMargin: 14
+                        text: "Adapt spatial guidance from regional LoRA delta"
+                        checked: Boolean(controller.setting("loraAdaptation"))
+                        onToggled: controller.setSetting("loraAdaptation", checked)
+                    }
+                    NumericSetting {
+                        visible: controller.mode !== "face"
+                                 && Boolean(controller.setting("loraAdaptation"))
+                        Layout.leftMargin: 14
+                        Layout.rightMargin: 14
+                        label: "LoRA delta response"
+                        settingName: "loraResponse"
+                        minimum: 0
+                        maximum: 1
+                        decimals: 2
+                    }
+
+                    CheckBox {
                         visible: controller.mode === "edit"
                         Layout.leftMargin: 14
                         text: "Preserve identity"
@@ -764,6 +1075,125 @@ Rectangle {
                         text: "Edit entire image"
                         checked: Boolean(controller.setting("editEntireImage"))
                         onToggled: controller.setSetting("editEntireImage", checked)
+                    }
+
+                    LabelText {
+                        visible: controller.mode === "generation"
+                        Layout.leftMargin: 14
+                        text: "Post-upscale"
+                    }
+                    CheckBox {
+                        visible: controller.mode === "generation"
+                        Layout.leftMargin: 14
+                        text: "Post-upscale after releasing Krea VRAM"
+                        checked: Boolean(controller.setting("postUpscale"))
+                        onToggled: controller.setSetting("postUpscale", checked)
+                    }
+                    RowLayout {
+                        visible: controller.mode === "generation"
+                                 && Boolean(controller.setting("postUpscale"))
+                        Layout.fillWidth: true
+                        Layout.leftMargin: 14
+                        Layout.rightMargin: 14
+                        spacing: 8
+                        ComboBox {
+                            Layout.fillWidth: true
+                            model: [2, 4]
+                            currentIndex: model.indexOf(Number(controller.setting("upscaleScale")))
+                            onActivated: controller.setSetting("upscaleScale", currentValue)
+                        }
+                        ComboBox {
+                            Layout.fillWidth: true
+                            model: ["lanczos", "model"]
+                            currentIndex: model.indexOf(String(controller.setting("upscaleMethod")))
+                            onActivated: controller.setSetting("upscaleMethod", currentValue)
+                        }
+                    }
+                    ColumnLayout {
+                        visible: controller.mode === "generation"
+                                 && Boolean(controller.setting("postUpscale"))
+                                 && String(controller.setting("upscaleMethod")) === "model"
+                        Layout.fillWidth: true
+                        Layout.leftMargin: 14
+                        Layout.rightMargin: 14
+                        StudioTextField {
+                            Layout.fillWidth: true
+                            readOnly: true
+                            text: controller.upscaleModelPath
+                            placeholderText: "Select ESRGAN-compatible model..."
+                        }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            MiniButton { text: "Choose model…"; Layout.fillWidth: true; onClicked: controller.browseUpscaleModel() }
+                            MiniButton { text: "Clear"; onClicked: controller.clearUpscaleModel() }
+                        }
+                    }
+
+                    LabelText {
+                        visible: controller.mode === "generation"
+                        Layout.leftMargin: 14
+                        text: "Projector"
+                    }
+                    CheckBox {
+                        visible: controller.mode === "generation"
+                        Layout.leftMargin: 14
+                        text: "Apply global projector vector"
+                        checked: Boolean(controller.setting("projectorEnabled"))
+                        onToggled: controller.setSetting("projectorEnabled", checked)
+                    }
+                    ColumnLayout {
+                        visible: controller.mode === "generation"
+                                 && Boolean(controller.setting("projectorEnabled"))
+                        Layout.fillWidth: true
+                        Layout.leftMargin: 14
+                        Layout.rightMargin: 14
+                        spacing: 8
+                        ComboBox {
+                            Layout.fillWidth: true
+                            model: ["filter_bypass2", "filter_bypass3", "skc3vo", "z0jglf", "custom"]
+                            currentIndex: model.indexOf(String(controller.setting("projectorPreset")))
+                            onActivated: controller.setSetting("projectorPreset", currentValue)
+                        }
+                        GridLayout {
+                            Layout.fillWidth: true
+                            columns: 3
+                            columnSpacing: 6
+                            rowSpacing: 6
+                            Repeater {
+                                model: controller.projectorVector
+                                delegate: StudioTextField {
+                                    required property int index
+                                    required property real modelData
+                                    Layout.fillWidth: true
+                                    text: Number(modelData).toFixed(4)
+                                    validator: DoubleValidator { bottom: -1000; top: 1000; decimals: 4 }
+                                    onEditingFinished: controller.setProjectorValue(index, Number(text))
+                                }
+                            }
+                        }
+                        NumericSetting {
+                            label: "Global multiplier"
+                            settingName: "projectorMultiplier"
+                            minimum: -20
+                            maximum: 20
+                            decimals: 4
+                        }
+                        NumericSetting {
+                            label: "Face identity protection"
+                            settingName: "projectorIdentityProtection"
+                            minimum: 0
+                            maximum: 1
+                            decimals: 2
+                        }
+                    }
+
+                    MiniButton {
+                        visible: controller.mode === "generation"
+                        Layout.leftMargin: 14
+                        Layout.rightMargin: 14
+                        Layout.fillWidth: true
+                        text: "Preview unified prompt…"
+                        onClicked: controller.previewUnifiedPrompt()
                     }
 
                     Rectangle {

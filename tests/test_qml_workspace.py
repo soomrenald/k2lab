@@ -20,6 +20,8 @@ if PYSIDE_AVAILABLE:
 
     from k2_region_lab.config import AppSettings, ModelDirectories
     from k2_region_lab.desktop.main_window import MainWindow
+    from k2_region_lab.project import project_document
+    from k2_region_lab.regional_prompting import GLOBAL_EMPHASIS_SCOPE
     from k2_region_lab.qml.controller import QmlWorkspaceController
 
 
@@ -71,12 +73,7 @@ class QmlWorkspaceTests(unittest.TestCase):
             controller = QmlWorkspaceController(backend, engine)
             engine.rootContext().setContextProperty("controller", controller)
             qml_path = (
-                Path(__file__).parents[1]
-                / "src"
-                / "k2_region_lab"
-                / "qml"
-                / "ui"
-                / "Main.qml"
+                Path(__file__).parents[1] / "src" / "k2_region_lab" / "qml" / "ui" / "Main.qml"
             )
 
             engine.load(QUrl.fromLocalFile(str(qml_path)))
@@ -184,6 +181,119 @@ class QmlWorkspaceTests(unittest.TestCase):
             controller.deleteLater()
             backend.close()
 
+    def test_character_lora_and_prompt_emphasis_controls_preserve_project_state(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            lora_path = root / "identity.safetensors"
+            header = {
+                "blocks.0.attn.wq.lora_A.weight": {
+                    "dtype": "BF16",
+                    "shape": [4, 8],
+                    "data_offsets": [0, 64],
+                },
+                "blocks.0.attn.wq.lora_B.weight": {
+                    "dtype": "BF16",
+                    "shape": [8, 4],
+                    "data_offsets": [64, 128],
+                },
+            }
+            encoded = json.dumps(header, separators=(",", ":")).encode("utf-8")
+            lora_path.write_bytes(struct.pack("<Q", len(encoded)) + encoded)
+            backend = self.make_window(root)
+            controller = QmlWorkspaceController(backend)
+
+            controller.setGlobalPrompt("portrait of a woman in a garden")
+            phrase_start = len("portrait of a ")
+            controller.addPromptEmphasis(GLOBAL_EMPHASIS_SCOPE, "woman", phrase_start, 0.6)
+            self.assertEqual(backend.prompt_emphases[0].phrase, "woman")
+            self.assertTrue(controller.promptEmphases[0]["matches"])
+            controller.setPromptEmphasisStrength(0, 0.9)
+            self.assertEqual(backend.prompt_emphases[0].strength, 0.9)
+
+            region_id = controller.createRegion(10, 20, 210, 320)
+            self.assertTrue(backend._add_lora_path(lora_path))
+            lora_id = backend.lora_library.entries()[0].lora_id
+            controller.assignLoraToSelectedRegion(lora_id)
+            controller.setLoraTriggerPhrase(lora_id, "lface")
+            controller.setLoraRoutingMode(lora_id, "character_identity")
+            binding = backend.lora_library.binding_for(lora_id)
+            self.assertEqual(binding.region_ids, (region_id,))
+            self.assertEqual(binding.routing_mode, "character_identity")
+            self.assertEqual(binding.trigger_phrase, "lface")
+            controller.assignLoraGlobal(lora_id)
+            self.assertTrue(backend.lora_library.binding_for(lora_id).global_scope)
+            self.assertEqual(backend.lora_library.binding_for(lora_id).routing_mode, "standard")
+            controller.assignLoraToSelectedRegion(lora_id)
+            controller.setLoraRoutingMode(lora_id, "character_identity")
+
+            controller.setSetting("subjectFill", False)
+            state = backend._project_state()
+            self.assertFalse(state.regional_subject_fill)
+            self.assertEqual(state.prompt_emphases[0].phrase, "woman")
+            self.assertEqual(state.loras[0].routing_mode, "character_identity")
+            self.assertEqual(state.loras[0].trigger_phrase, "lface")
+
+            saved_project = root / "legacy-workflow.k2lab.json"
+            saved_project.write_text(
+                json.dumps(project_document(state), indent=2), encoding="utf-8"
+            )
+
+            controller.setGlobalPrompt("portrait in a garden")
+            self.assertFalse(controller.promptEmphases[0]["matches"])
+            controller.removePromptEmphasis(0)
+            self.assertEqual(backend.prompt_emphases, [])
+            controller.setSetting("subjectFill", True)
+            self.assertTrue(backend._load_project_from(saved_project, show_error_dialog=False))
+            controller.refresh()
+            self.assertFalse(controller.setting("subjectFill"))
+            self.assertEqual(controller.promptEmphases[0]["phrase"], "woman")
+            self.assertTrue(controller.promptEmphases[0]["matches"])
+            restored_id = backend.lora_library.entries()[0].lora_id
+            restored_lora = backend.lora_library.binding_for(restored_id)
+            self.assertEqual(restored_lora.routing_mode, "character_identity")
+            self.assertEqual(restored_lora.trigger_phrase, "lface")
+
+            engine = QQmlApplicationEngine()
+            engine.rootContext().setContextProperty("controller", controller)
+            qml_path = (
+                Path(__file__).parents[1] / "src" / "k2_region_lab" / "qml" / "ui" / "Main.qml"
+            )
+            engine.load(QUrl.fromLocalFile(str(qml_path)))
+            self.application.processEvents()
+            self.assertEqual(len(engine.rootObjects()), 1)
+            root_object = engine.rootObjects()[0]
+            inspector_tabs = root_object.findChild(QObject, "inspectorTabs")
+            inspector_tabs.setProperty("currentIndex", 2)
+            self.application.processEvents()
+            lora_repeater = root_object.findChild(QObject, "loraRepeater")
+            self.assertIsNotNone(lora_repeater)
+            self.assertEqual(lora_repeater.property("count"), 1)
+            root_object.close()
+            controller.deleteLater()
+            backend.close()
+
+    def test_prompt_editors_show_vertical_scrollbars_when_content_overflows(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            backend = self.make_window(Path(directory))
+            engine = QQmlApplicationEngine()
+            controller = QmlWorkspaceController(backend, engine)
+            engine.rootContext().setContextProperty("controller", controller)
+            qml_path = (
+                Path(__file__).parents[1] / "src" / "k2_region_lab" / "qml" / "ui" / "Main.qml"
+            )
+            engine.load(QUrl.fromLocalFile(str(qml_path)))
+            self.application.processEvents()
+            root_object = engine.rootObjects()[0]
+            prompt_editor = root_object.findChild(QObject, "globalPromptEditor")
+            prompt_scrollbar = root_object.findChild(QObject, "globalPromptEditorVerticalScrollBar")
+            self.assertIsNotNone(prompt_editor)
+            self.assertIsNotNone(prompt_scrollbar)
+            prompt_editor.setProperty("text", "\n".join(f"line {index}" for index in range(40)))
+            self.application.processEvents()
+            self.assertTrue(prompt_scrollbar.property("visible"))
+            root_object.close()
+            backend.close()
+
     def test_region_boundary_preview_resizes_continuously_before_commit(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             backend = self.make_window(Path(directory))
@@ -192,21 +302,14 @@ class QmlWorkspaceTests(unittest.TestCase):
             region_id = controller.createRegion(100, 120, 360, 420)
             engine.rootContext().setContextProperty("controller", controller)
             qml_path = (
-                Path(__file__).parents[1]
-                / "src"
-                / "k2_region_lab"
-                / "qml"
-                / "ui"
-                / "Main.qml"
+                Path(__file__).parents[1] / "src" / "k2_region_lab" / "qml" / "ui" / "Main.qml"
             )
 
             engine.load(QUrl.fromLocalFile(str(qml_path)))
             self.application.processEvents()
             root_object = engine.rootObjects()[0]
             canvas = root_object.findChild(QObject, "mainRegionCanvas")
-            region_item = QQmlExpression(
-                engine.rootContext(), canvas, "regionItemAt(0)"
-            )
+            region_item = QQmlExpression(engine.rootContext(), canvas, "regionItemAt(0)")
             region_box, is_undefined = region_item.evaluate()
             self.assertFalse(region_item.hasError(), region_item.error())
             self.assertFalse(is_undefined)
@@ -236,16 +339,24 @@ class QmlWorkspaceTests(unittest.TestCase):
             root_object.close()
             backend.close()
 
+    def test_region_depth_order_can_be_changed_from_the_qml_controller(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            backend = self.make_window(Path(directory))
+            controller = QmlWorkspaceController(backend)
+            back_id = controller.createRegion(10, 10, 180, 180)
+            front_id = controller.createRegion(30, 30, 220, 220)
+            self.assertEqual([region.region_id for region in backend.regions], [back_id, front_id])
+            controller.moveRegion(front_id, -1)
+            self.assertEqual([region.region_id for region in backend.regions], [front_id, back_id])
+            self.assertGreater(backend.regions[0].priority, backend.regions[1].priority)
+            controller.deleteLater()
+            backend.close()
+
     def test_non_live_value_slider_stays_draggable_and_commits_on_release(self) -> None:
         engine = QQmlApplicationEngine()
         component = QQmlComponent(engine)
         components = (
-            Path(__file__).parents[1]
-            / "src"
-            / "k2_region_lab"
-            / "qml"
-            / "ui"
-            / "components"
+            Path(__file__).parents[1] / "src" / "k2_region_lab" / "qml" / "ui" / "components"
         )
         component.setData(
             b'import QtQuick\nimport "."\nValueSlider {'
@@ -325,6 +436,85 @@ class QmlWorkspaceTests(unittest.TestCase):
             self.assertEqual(backend.minimum_ram_input.value(), 10.0)
             self.assertEqual(backend._output_directory, output.resolve())
             self.assertEqual(backend.filename_prefix_input.text(), "qml-setup")
+            controller.deleteLater()
+            backend.close()
+
+    def test_qml_controller_covers_every_legacy_workflow_setting(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            backend = self.make_window(Path(directory))
+            controller = QmlWorkspaceController(backend)
+            generation_settings = {
+                "width",
+                "height",
+                "steps",
+                "seed",
+                "sampler",
+                "scheduler",
+                "seedMode",
+                "batchMode",
+                "batchCount",
+                "regionalPrompting",
+                "insideBoost",
+                "outsidePenalty",
+                "spatialFalloff",
+                "subjectCompetition",
+                "subjectFill",
+                "relaxation",
+                "lateStepScale",
+                "loraAdaptation",
+                "loraResponse",
+                "postUpscale",
+                "upscaleScale",
+                "upscaleMethod",
+                "projectorEnabled",
+                "projectorPreset",
+                "projectorMultiplier",
+                "projectorIdentityProtection",
+                "emphasisStrength",
+            }
+            for setting in generation_settings:
+                self.assertIsNotNone(controller._setting_control(setting), setting)
+
+            controller.setMode("edit")
+            edit_settings = {
+                "steps",
+                "seed",
+                "sampler",
+                "scheduler",
+                "denoise",
+                "latentFeather",
+                "compositeFeather",
+                "referenceRetention",
+                "insideBoost",
+                "outsidePenalty",
+                "spatialFalloff",
+                "lateStepScale",
+                "subjectCompetition",
+                "subjectFill",
+                "loraAdaptation",
+                "loraResponse",
+                "preserveIdentity",
+                "editEntireImage",
+                "emphasisStrength",
+            }
+            for setting in edit_settings:
+                self.assertIsNotNone(controller._setting_control(setting), setting)
+
+            controller.setMode("face")
+            face_settings = {
+                "steps",
+                "seed",
+                "denoise",
+                "cropSize",
+                "padding",
+                "feather",
+                "blend",
+                "loraScale",
+                "detectorThreshold",
+                "detectorProvider",
+            }
+            for setting in face_settings:
+                self.assertIsNotNone(controller._setting_control(setting), setting)
             controller.deleteLater()
             backend.close()
 
