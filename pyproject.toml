@@ -43,6 +43,7 @@ dev = [
 
 [project.scripts]
 k2lab = "k2_region_lab.app:main"
+k2lab-agent = "k2_region_lab.agent.app:main"
 k2lab-web = "k2_region_lab.web.app:main"
 
 [tool.hatch.build.targets.wheel]

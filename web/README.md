@@ -21,11 +21,13 @@ Implemented:
 - a production RunPod REST/GraphQL adapter with redacted provider errors;
 - encrypted process-local credential storage and explicit production backend selection;
 - live GPU inventory/pricing plans and persistent-Pod create/start/stop/delete requests.
+- a separate versioned workspace-agent image with authenticated health, capabilities,
+  storage validation, and idempotent persistent-layout initialization.
 
 Not yet implemented:
 
 - durable PostgreSQL persistence, a KMS-backed credential repository, and the lease reaper;
-- a published CUDA workspace image or authenticated Pod agent;
+- a published and signed CUDA workspace image (the build definition and agent are present);
 - cloud file inventory, resumable transfer, Civitai, or Hugging Face downloads;
 - remote generation/image-edit/face-refinement job submission and event streaming;
 - production authentication, authorization, CSRF protection, or hosted deployment.
