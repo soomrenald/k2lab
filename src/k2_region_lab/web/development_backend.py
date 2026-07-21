@@ -12,9 +12,12 @@ from k2_region_lab.agent.domain import (
     CivitaiPreviewRequest,
     FileKind,
     FilePage,
+    GenerationJob,
     HuggingFaceDownloadRequest,
     HuggingFacePreview,
     HuggingFacePreviewRequest,
+    JobEventPage,
+    JobSubmitRequest,
     RemoteProvider,
     RemoteTransfer,
     UploadCompleteResponse,
@@ -33,6 +36,7 @@ from k2_region_lab.web.domain import (
     WorkspacePlanRequest,
     WorkspaceRecord,
     WorkspaceState,
+    WorkspaceOutput,
     utc_now,
 )
 
@@ -426,6 +430,32 @@ class DevelopmentWorkspaceBackend:
         self, workspace_id: str, transfer_id: str
     ) -> RemoteTransfer:
         del transfer_id
+        self._transfer_unavailable(workspace_id)
+
+    async def submit_job(
+        self, workspace_id: str, request: JobSubmitRequest
+    ) -> GenerationJob:
+        del request
+        self._transfer_unavailable(workspace_id)
+
+    async def get_job(self, workspace_id: str, job_id: str) -> GenerationJob:
+        del job_id
+        self._transfer_unavailable(workspace_id)
+
+    async def get_job_events(
+        self, workspace_id: str, job_id: str, cursor: str | None = None
+    ) -> JobEventPage:
+        del job_id, cursor
+        self._transfer_unavailable(workspace_id)
+
+    async def cancel_job(self, workspace_id: str, job_id: str) -> GenerationJob:
+        del job_id
+        self._transfer_unavailable(workspace_id)
+
+    async def get_output(
+        self, workspace_id: str, file_id: str, range_header: str | None = None
+    ) -> WorkspaceOutput:
+        del file_id, range_header
         self._transfer_unavailable(workspace_id)
 
     def _require_credentials(self) -> None:

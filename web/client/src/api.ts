@@ -168,6 +168,37 @@ export interface RemoteTransfer {
   updated_at: string;
 }
 
+export type JobKind = "generate" | "edit_image" | "refine_faces";
+export type JobState = "queued" | "starting" | "running" | "completed" | "cancelled" | "failed";
+
+export interface GenerationJob {
+  id: string;
+  command_id: string;
+  kind: JobKind;
+  project_id: string;
+  state: JobState;
+  progress_current: number;
+  progress_total: number;
+  output_file_ids: string[];
+  error_code: string | null;
+  error_message: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface JobEvent {
+  sequence: number;
+  state: string;
+  message: string;
+  payload: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface JobEventPage {
+  items: JobEvent[];
+  next_cursor: string;
+}
+
 export class ApiError extends Error {
   readonly code: string;
   readonly status: number;
@@ -289,4 +320,18 @@ export const controlPlane = {
     request<RemoteTransfer>(`/api/v1/workspaces/${workspaceId}/transfers/${transferId}`),
   cancelTransfer: (workspaceId: string, transferId: string) =>
     request<RemoteTransfer>(`/api/v1/workspaces/${workspaceId}/transfers/${transferId}/cancel`, { method: "POST" }),
+  submitJob: (workspaceId: string, payload: {
+    command_id: string; kind: JobKind; project_id: string; project: Record<string, unknown>; input_file_id?: string;
+    lora_file_ids?: string[]; upscale_model_file_id?: string; selected_face_indices?: number[];
+  }) => request<GenerationJob>(`/api/v1/workspaces/${workspaceId}/jobs`, {
+    method: "POST", body: JSON.stringify(payload),
+  }),
+  job: (workspaceId: string, jobId: string) =>
+    request<GenerationJob>(`/api/v1/workspaces/${workspaceId}/jobs/${jobId}`),
+  jobEvents: (workspaceId: string, jobId: string, cursor?: string) =>
+    request<JobEventPage>(`/api/v1/workspaces/${workspaceId}/jobs/${jobId}/events${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`),
+  cancelJob: (workspaceId: string, jobId: string) =>
+    request<GenerationJob>(`/api/v1/workspaces/${workspaceId}/jobs/${jobId}/cancel`, { method: "POST" }),
+  outputUrl: (workspaceId: string, fileId: string) =>
+    `/api/v1/workspaces/${workspaceId}/outputs/${fileId}`,
 };

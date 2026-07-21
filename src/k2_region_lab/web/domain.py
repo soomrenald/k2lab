@@ -14,9 +14,12 @@ from k2_region_lab.agent.domain import (
     CivitaiPreviewRequest,
     FileKind,
     FilePage,
+    GenerationJob,
     HuggingFaceDownloadRequest,
     HuggingFacePreview,
     HuggingFacePreviewRequest,
+    JobEventPage,
+    JobSubmitRequest,
     RemoteProvider,
     RemoteTransfer,
     UploadCompleteResponse,
@@ -142,6 +145,12 @@ class CostSnapshot(BaseModel):
     observed_at: datetime
 
 
+class WorkspaceOutput(BaseModel):
+    content: bytes
+    status_code: int
+    headers: dict[str, str]
+
+
 class CapabilityManifest(BaseModel):
     api_version: str = "v1"
     project_schema: str = "k2-region-lab-project"
@@ -263,6 +272,22 @@ class WorkspaceBackend(Protocol):
     async def cancel_transfer(
         self, workspace_id: str, transfer_id: str
     ) -> RemoteTransfer: ...
+
+    async def submit_job(
+        self, workspace_id: str, request: JobSubmitRequest
+    ) -> GenerationJob: ...
+
+    async def get_job(self, workspace_id: str, job_id: str) -> GenerationJob: ...
+
+    async def get_job_events(
+        self, workspace_id: str, job_id: str, cursor: str | None = None
+    ) -> JobEventPage: ...
+
+    async def cancel_job(self, workspace_id: str, job_id: str) -> GenerationJob: ...
+
+    async def get_output(
+        self, workspace_id: str, file_id: str, range_header: str | None = None
+    ) -> WorkspaceOutput: ...
 
 
 def utc_now() -> datetime:

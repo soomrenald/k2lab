@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
-import type { WorkspaceRecord } from "../api";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { FileRecord, GenerationJob, JobKind, WorkspaceRecord } from "../api";
 import { controlPlane } from "../api";
 import { Icon, type IconName } from "./Icon";
 import { Inspector } from "./Inspector";
@@ -32,6 +32,8 @@ export function WorkspaceStudio({ workspace, developmentBackend, onWorkspace, on
   const [drawMode, setDrawMode] = useState(false);
   const [sourceUrl, setSourceUrl] = useState<string | null>(null);
   const [sourceName, setSourceName] = useState("");
+  const [cloudSource, setCloudSource] = useState<FileRecord | null>(null);
+  const [resultUrl, setResultUrl] = useState<string | null>(null);
   const [comparePosition, setComparePosition] = useState(0.5);
   const [globalPrompts, setGlobalPrompts] = useState<Record<RegionLayer, string>>({
     generation: "",
@@ -45,6 +47,8 @@ export function WorkspaceStudio({ workspace, developmentBackend, onWorkspace, on
   const [deleteConfirmation, setDeleteConfirmation] = useState("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
+  const [job, setJob] = useState<GenerationJob | null>(null);
+  const eventCursor = useRef<string | undefined>(undefined);
 
   useEffect(() => () => { if (sourceUrl) URL.revokeObjectURL(sourceUrl); }, [sourceUrl]);
 
@@ -67,6 +71,30 @@ export function WorkspaceStudio({ workspace, developmentBackend, onWorkspace, on
     };
   }, [developmentBackend, onWorkspace, workspace.id, workspace.state]);
 
+  useEffect(() => {
+    if (!job || ["completed", "failed", "cancelled"].includes(job.state)) return undefined;
+    const interval = window.setInterval(async () => {
+      try {
+        const [next, events] = await Promise.all([
+          controlPlane.job(workspace.id, job.id),
+          controlPlane.jobEvents(workspace.id, job.id, eventCursor.current),
+        ]);
+        eventCursor.current = events.next_cursor;
+        if (events.items.length) setMessage(events.items[events.items.length - 1].message);
+        setJob(next);
+        if (next.state === "completed" && next.output_file_ids[0]) {
+          setResultUrl(controlPlane.outputUrl(workspace.id, next.output_file_ids[0]));
+          setMessage("Remote job complete. The verified output is stored in cloud files.");
+        } else if (next.error_message) {
+          setMessage(next.error_message);
+        }
+      } catch (caught) {
+        setMessage(caught instanceof Error ? caught.message : "Could not refresh remote job");
+      }
+    }, 1000);
+    return () => window.clearInterval(interval);
+  }, [job, workspace.id]);
+
   const running = workspace.state === "ready";
   const activeCompute = ["provisioning", "starting", "ready", "stopping"].includes(workspace.state);
   const canExtend = workspace.state === "starting" || workspace.state === "ready";
@@ -85,6 +113,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, onWorkspace, on
     if (sourceUrl) URL.revokeObjectURL(sourceUrl);
     setSourceUrl(URL.createObjectURL(file));
     setSourceName(file.name);
+    setCloudSource(null);
     if (mode === "edit") {
       setRegions((items) => items.filter((item) => item.layer === "generation"));
       setActiveLayer("targets");
@@ -116,6 +145,48 @@ export function WorkspaceStudio({ workspace, developmentBackend, onWorkspace, on
       onDelete();
     } catch (caught) {
       setMessage(caught instanceof Error ? caught.message : "Workspace deletion failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function runRemoteJob() {
+    if (mode !== "generation" && !cloudSource) {
+      setMessage("Choose an uploaded input or prior output from Cloud files first.");
+      setShowAssets(true);
+      return;
+    }
+    setBusy(true);
+    setMessage("");
+    setResultUrl(null);
+    eventCursor.current = undefined;
+    try {
+      const kind: JobKind = mode === "generation" ? "generate" : mode === "edit" ? "edit_image" : "refine_faces";
+      const next = await controlPlane.submitJob(workspace.id, {
+        command_id: crypto.randomUUID(),
+        kind,
+        project_id: `studio-${workspace.id}`,
+        project: buildProjectDocument(regions, globalPrompts),
+        input_file_id: cloudSource?.id,
+        lora_file_ids: [],
+      });
+      setJob(next);
+      setMessage("Remote job queued.");
+    } catch (caught) {
+      setMessage(caught instanceof Error ? caught.message : "Could not submit remote job");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function cancelRemoteJob() {
+    if (!job) return;
+    setBusy(true);
+    try {
+      setJob(await controlPlane.cancelJob(workspace.id, job.id));
+      setMessage("Remote job cancelled; worker memory was released.");
+    } catch (caught) {
+      setMessage(caught instanceof Error ? caught.message : "Could not cancel remote job");
     } finally {
       setBusy(false);
     }
@@ -190,7 +261,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, onWorkspace, on
             activeLayer={activeLayer}
             sourceUrl={sourceUrl}
             sourceName={sourceName}
-            resultUrl={null}
+            resultUrl={resultUrl}
             regions={regions}
             selectedId={selectedId}
             drawMode={drawMode}
@@ -215,11 +286,11 @@ export function WorkspaceStudio({ workspace, developmentBackend, onWorkspace, on
       </main>
 
       <footer className="action-bar">
-        <div className="action-status"><span className={`status-dot ${activeCompute ? "online" : "stopped"}`} /><span><strong>{running ? "Workspace ready" : activeCompute ? `Workspace ${workspace.state}` : "GPU stopped"}</strong><small>{message || workspace.error_message || (developmentBackend ? "Interface preview · remote jobs are not connected" : "Ready")}</small></span></div>
-        <div className="memory-meter"><span>VRAM</span><div><i style={{ width: running ? "18%" : "0%" }} /></div><small>{running ? "Waiting for worker" : "Released"}</small></div>
-        <button className="run-button" disabled={!running || developmentBackend} title={developmentBackend ? "Remote generation jobs are not connected yet" : undefined}>
-          <Icon name={mode === "face" ? "face" : mode === "edit" ? "wand" : "play"} />
-          {mode === "generation" ? "Generate image" : mode === "edit" ? "Run image edit" : "Refine selected faces"}
+        <div className="action-status"><span className={`status-dot ${activeCompute ? "online" : "stopped"}`} /><span><strong>{job && !["completed", "failed", "cancelled"].includes(job.state) ? `Remote job ${job.state}` : running ? "Workspace ready" : activeCompute ? `Workspace ${workspace.state}` : "GPU stopped"}</strong><small>{message || workspace.error_message || (developmentBackend ? "Interface preview · remote jobs are disabled" : cloudSource ? `Cloud source: ${cloudSource.display_name}` : "Ready")}</small></span></div>
+        <div className="memory-meter"><span>Job</span><div><i style={{ width: job?.progress_total ? `${Math.min(100, job.progress_current / job.progress_total * 100)}%` : "0%" }} /></div><small>{job?.progress_total ? `${job.progress_current}/${job.progress_total}` : running ? "Idle" : "Released"}</small></div>
+        <button className="run-button" disabled={!running || developmentBackend || busy} title={developmentBackend ? "Remote generation jobs are disabled in preview mode" : undefined} onClick={() => void (job && !["completed", "failed", "cancelled"].includes(job.state) ? cancelRemoteJob() : runRemoteJob())}>
+          <Icon name={job && !["completed", "failed", "cancelled"].includes(job.state) ? "stop" : mode === "face" ? "face" : mode === "edit" ? "wand" : "play"} />
+          {job && !["completed", "failed", "cancelled"].includes(job.state) ? "Cancel remote job" : mode === "generation" ? "Generate image" : mode === "edit" ? "Run image edit" : "Refine faces"}
         </button>
       </footer>
 
@@ -237,7 +308,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, onWorkspace, on
           </section>
         </div>
       )}
-      {showAssets && <AssetPanel workspaceId={workspace.id} onClose={() => setShowAssets(false)} />}
+      {showAssets && <AssetPanel workspaceId={workspace.id} onClose={() => setShowAssets(false)} onSelect={(file) => { setCloudSource(file); setSourceName(file.display_name); if (file.kind === "outputs") setSourceUrl(controlPlane.outputUrl(workspace.id, file.id)); }} />}
       {showTransfers && <TransferPanel workspaceId={workspace.id} onClose={() => setShowTransfers(false)} />}
     </div>
   );
@@ -245,4 +316,36 @@ export function WorkspaceStudio({ workspace, developmentBackend, onWorkspace, on
 
 function RailButton({ icon, label, active, onClick }: { icon: IconName; label: string; active: boolean; onClick: () => void }) {
   return <button className={`rail-button ${active ? "active" : ""}`} onClick={onClick}><Icon name={icon} /><span>{label}</span></button>;
+}
+
+function buildProjectDocument(regions: RegionBox[], prompts: Record<RegionLayer, string>): Record<string, unknown> {
+  return {
+    schema: "k2-region-lab-project",
+    version: 18,
+    canvas: { width: 1024, height: 1024 },
+    generation: { global_prompt: prompts.generation, steps: 8, sampler: "euler", scheduler: "simple", seed: 0 },
+    regions: regions.filter((region) => region.layer === "generation").map(regionDocument),
+    loras: [],
+    image_edit: {
+      width: 1024,
+      height: 1024,
+      global_prompt: prompts.targets,
+      reference_global_prompt: prompts.reference,
+      regions: regions.filter((region) => region.layer === "targets").map(regionDocument),
+      reference_regions: regions.filter((region) => region.layer === "reference").map(regionDocument),
+    },
+    runtime: {},
+  };
+}
+
+function regionDocument(region: RegionBox) {
+  return {
+    id: region.id,
+    name: region.name,
+    box: { x0: region.x, y0: region.y, x1: region.x + region.width, y1: region.y + region.height },
+    prompt: region.prompt,
+    enabled: region.enabled,
+    priority: 0,
+    spatial_role: "auto",
+  };
 }

@@ -21,6 +21,10 @@ if WEB_PROVIDER_AVAILABLE:
     from k2_region_lab.agent.domain import (
         AgentHealth,
         FileKind,
+        GenerationJob,
+        JobEvent,
+        JobKind,
+        JobState,
         RemoteProvider,
         RemoteTransfer,
         TransferState,
@@ -280,6 +284,30 @@ class RunPodBackendTests(unittest.IsolatedAsyncioTestCase):
             updated_at=workspace.updated_at,
         )
         await self.state_store.save_transfer(workspace.id, transfer)
+        job = GenerationJob(
+            id="job-123",
+            command_id="command-123",
+            kind=JobKind.GENERATE,
+            project_id="project-123",
+            state=JobState.RUNNING,
+            progress_current=1,
+            progress_total=8,
+            created_at=workspace.created_at,
+            updated_at=workspace.updated_at,
+        )
+        await self.state_store.save_generation_job(workspace.id, job)
+        await self.state_store.save_job_events(
+            job.id,
+            [
+                JobEvent(
+                    sequence=0,
+                    state="running",
+                    message="Denoising step 1/8",
+                    payload={"step": 1, "total_steps": 8},
+                    created_at=workspace.updated_at,
+                )
+            ],
+        )
 
         reopened_store = SqlRunPodStateStore(self.database_url)
         try:
@@ -291,6 +319,8 @@ class RunPodBackendTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("secret-runpod-key", json.dumps(events))
             restored_transfer = await reopened_store.get_transfer(transfer.id)
             self.assertEqual(restored_transfer, (workspace.id, transfer))
+            restored_job = await reopened_store.get_generation_job(job.id)
+            self.assertEqual(restored_job, (workspace.id, job))
         finally:
             await reopened_store.close()
 

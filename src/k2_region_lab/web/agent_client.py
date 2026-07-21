@@ -14,16 +14,19 @@ from k2_region_lab.agent.domain import (
     CivitaiPreviewRequest,
     FileKind,
     FilePage,
+    GenerationJob,
     HuggingFaceDownloadRequest,
     HuggingFacePreview,
     HuggingFacePreviewRequest,
+    JobEventPage,
+    JobSubmitRequest,
     RemoteTransfer,
     StorageStatus,
     UploadCompleteResponse,
     UploadCreateRequest,
     UploadSession,
 )
-from k2_region_lab.web.domain import WorkspaceError
+from k2_region_lab.web.domain import WorkspaceError, WorkspaceOutput
 
 
 class WorkspaceAgentApi(Protocol):
@@ -68,6 +71,20 @@ class WorkspaceAgentApi(Protocol):
     async def transfer_status(self, transfer_id: str) -> RemoteTransfer: ...
 
     async def cancel_transfer(self, transfer_id: str) -> RemoteTransfer: ...
+
+    async def submit_job(self, request: JobSubmitRequest) -> GenerationJob: ...
+
+    async def job_status(self, job_id: str) -> GenerationJob: ...
+
+    async def job_events(
+        self, job_id: str, *, cursor: str | None = None
+    ) -> JobEventPage: ...
+
+    async def cancel_job(self, job_id: str) -> GenerationJob: ...
+
+    async def output(
+        self, file_id: str, *, range_header: str | None = None
+    ) -> WorkspaceOutput: ...
 
 
 class WorkspaceAgentClient:
@@ -191,6 +208,68 @@ class WorkspaceAgentClient:
     async def cancel_transfer(self, transfer_id: str) -> RemoteTransfer:
         return RemoteTransfer.model_validate(
             await self._request(f"/v1/transfers/{transfer_id}/cancel", method="POST")
+        )
+
+    async def submit_job(self, request: JobSubmitRequest) -> GenerationJob:
+        return GenerationJob.model_validate(
+            await self._request(
+                "/v1/jobs",
+                method="POST",
+                json=request.model_dump(mode="json"),
+            )
+        )
+
+    async def job_status(self, job_id: str) -> GenerationJob:
+        return GenerationJob.model_validate(await self._request(f"/v1/jobs/{job_id}"))
+
+    async def job_events(
+        self, job_id: str, *, cursor: str | None = None
+    ) -> JobEventPage:
+        params = {"cursor": cursor} if cursor else None
+        return JobEventPage.model_validate(
+            await self._request(f"/v1/jobs/{job_id}/events", params=params)
+        )
+
+    async def cancel_job(self, job_id: str) -> GenerationJob:
+        return GenerationJob.model_validate(
+            await self._request(f"/v1/jobs/{job_id}/cancel", method="POST")
+        )
+
+    async def output(
+        self, file_id: str, *, range_header: str | None = None
+    ) -> WorkspaceOutput:
+        headers = {"Authorization": f"Bearer {self._session_token}"}
+        if range_header:
+            headers["Range"] = range_header
+        try:
+            async with httpx.AsyncClient(
+                base_url=self._base_url,
+                timeout=self._timeout_seconds,
+                transport=self._transport,
+            ) as client:
+                response = await client.get(f"/v1/outputs/{file_id}", headers=headers)
+        except httpx.HTTPError as error:
+            raise WorkspaceError(
+                "agent_unavailable",
+                "The workspace output could not be retrieved.",
+                status_code=502,
+            ) from error
+        if response.status_code not in {200, 206}:
+            raise WorkspaceError(
+                "output_unavailable",
+                "The workspace output could not be retrieved.",
+                status_code=response.status_code,
+            )
+        forwarded = {
+            key: value
+            for key, value in response.headers.items()
+            if key.casefold()
+            in {"accept-ranges", "content-disposition", "content-length", "content-range", "content-type"}
+        }
+        return WorkspaceOutput(
+            content=response.content,
+            status_code=response.status_code,
+            headers=forwarded,
         )
 
     @staticmethod

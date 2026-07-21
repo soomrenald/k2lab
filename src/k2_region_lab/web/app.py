@@ -9,7 +9,7 @@ from typing import AsyncIterator
 
 from fastapi import FastAPI, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 
 from k2_region_lab.agent.domain import (
@@ -19,9 +19,12 @@ from k2_region_lab.agent.domain import (
     CivitaiPreviewRequest,
     FileKind,
     FilePage,
+    GenerationJob,
     HuggingFaceDownloadRequest,
     HuggingFacePreview,
     HuggingFacePreviewRequest,
+    JobEventPage,
+    JobSubmitRequest,
     RemoteProvider,
     RemoteTransfer,
     UploadCompleteResponse,
@@ -342,6 +345,54 @@ def create_app(backend: WorkspaceBackend | None = None) -> FastAPI:
     )
     async def cancel_transfer(workspace_id: str, transfer_id: str) -> RemoteTransfer:
         return await workspace_backend.cancel_transfer(workspace_id, transfer_id)
+
+    @application.post(
+        "/api/v1/workspaces/{workspace_id}/jobs",
+        response_model=GenerationJob,
+        status_code=202,
+    )
+    async def submit_job(
+        workspace_id: str, request: JobSubmitRequest
+    ) -> GenerationJob:
+        return await workspace_backend.submit_job(workspace_id, request)
+
+    @application.get(
+        "/api/v1/workspaces/{workspace_id}/jobs/{job_id}",
+        response_model=GenerationJob,
+    )
+    async def job_status(workspace_id: str, job_id: str) -> GenerationJob:
+        return await workspace_backend.get_job(workspace_id, job_id)
+
+    @application.get(
+        "/api/v1/workspaces/{workspace_id}/jobs/{job_id}/events",
+        response_model=JobEventPage,
+    )
+    async def job_events(
+        workspace_id: str, job_id: str, cursor: str | None = None
+    ) -> JobEventPage:
+        return await workspace_backend.get_job_events(workspace_id, job_id, cursor)
+
+    @application.post(
+        "/api/v1/workspaces/{workspace_id}/jobs/{job_id}/cancel",
+        response_model=GenerationJob,
+    )
+    async def cancel_job(workspace_id: str, job_id: str) -> GenerationJob:
+        return await workspace_backend.cancel_job(workspace_id, job_id)
+
+    @application.get("/api/v1/workspaces/{workspace_id}/outputs/{file_id}")
+    async def output_file(
+        workspace_id: str,
+        file_id: str,
+        range_header: str | None = Header(default=None, alias="Range"),
+    ) -> Response:
+        output = await workspace_backend.get_output(
+            workspace_id, file_id, range_header
+        )
+        return Response(
+            content=output.content,
+            status_code=output.status_code,
+            headers=output.headers,
+        )
 
     return application
 

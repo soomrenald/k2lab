@@ -149,6 +149,42 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
             f"Bearer {self.settings.session_token}",
         )
 
+    async def test_control_plane_output_proxy_forwards_range_and_auth_header(self) -> None:
+        observed: dict[str, str] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            observed["url"] = str(request.url)
+            observed["authorization"] = request.headers["Authorization"]
+            observed["range"] = request.headers["Range"]
+            return httpx.Response(
+                206,
+                content=b"2345",
+                headers={
+                    "Accept-Ranges": "bytes",
+                    "Content-Length": "4",
+                    "Content-Range": "bytes 2-5/10",
+                    "Content-Type": "image/png",
+                    "X-Agent-Internal": "must-not-be-forwarded",
+                },
+            )
+
+        client = WorkspaceAgentClient(
+            "pod-123",
+            self.settings.session_token,
+            transport=httpx.MockTransport(handler),
+        )
+        output = await client.output("opaque-output", range_header="bytes=2-5")
+
+        self.assertEqual(output.status_code, 206)
+        self.assertEqual(output.content, b"2345")
+        self.assertEqual(output.headers["content-range"], "bytes 2-5/10")
+        self.assertNotIn("x-agent-internal", output.headers)
+        self.assertEqual(observed["range"], "bytes=2-5")
+        self.assertEqual(
+            observed["authorization"], f"Bearer {self.settings.session_token}"
+        )
+        self.assertNotIn(self.settings.session_token, observed["url"])
+
     async def test_chunked_upload_resumes_verifies_and_updates_inventory(self) -> None:
         content = bytes(range(256)) * 8 + b"xx"
         digest = hashlib.sha256(content).hexdigest()
@@ -604,6 +640,166 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
                 ["config.json", "nested/model.safetensors"],
             )
 
+    async def test_remote_job_is_idempotent_streams_events_and_indexes_output(self) -> None:
+        observed_commands: list[dict[str, object]] = []
+        executions = 0
+
+        class FakeExecutor:
+            async def run(self, commands, on_event):
+                nonlocal executions
+                executions += 1
+                observed_commands.extend(commands)
+                target = commands[-1]
+                output = Path(target["payload"]["output_directory"]) / "result.png"
+                output.write_bytes(b"fake-png")
+                await on_event({
+                    "command_id": target["command_id"],
+                    "state": "running",
+                    "message": "Denoising step 1/2",
+                    "payload": {
+                        "step": 1,
+                        "total_steps": 2,
+                        "prompt": "must not reach event storage",
+                    },
+                })
+                await on_event({
+                    "command_id": target["command_id"],
+                    "state": "running",
+                    "message": "Preparing decoder",
+                    "payload": {},
+                })
+                await on_event({
+                    "command_id": target["command_id"],
+                    "state": "ready",
+                    "message": "Generation complete",
+                    "payload": {"image_path": str(output)},
+                })
+                return 0
+
+            async def cancel(self):
+                return None
+
+        app = create_agent_app(
+            self.settings, job_executor_factory=lambda: FakeExecutor()
+        )
+        app.state.layout.initialize()
+        request = {
+            "command_id": "browser-command-1",
+            "kind": "generate",
+            "project_id": "portrait-project",
+            "project": self._project_document("private portrait prompt"),
+        }
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://agent.test"
+        ) as client:
+            unauthorized = await client.post("/v1/jobs", json=request)
+            self.assertEqual(unauthorized.status_code, 401)
+            submitted = await client.post(
+                "/v1/jobs", headers=self.headers, json=request
+            )
+            self.assertEqual(submitted.status_code, 202, submitted.text)
+            duplicate = await client.post(
+                "/v1/jobs", headers=self.headers, json=request
+            )
+            self.assertEqual(duplicate.json()["id"], submitted.json()["id"])
+            job = await self._wait_for_job(client, submitted.json()["id"])
+            self.assertEqual(job["state"], "completed", job)
+            self.assertEqual(job["progress_current"], 1)
+            self.assertEqual(job["progress_total"], 2)
+            self.assertEqual(len(job["output_file_ids"]), 1)
+            page = await client.get(
+                f"/v1/jobs/{job['id']}/events", headers=self.headers
+            )
+            self.assertEqual(page.status_code, 200, page.text)
+            self.assertNotIn("private portrait prompt", page.text)
+            self.assertNotIn(str(self.root), page.text)
+            cursor = page.json()["next_cursor"]
+            empty = await client.get(
+                f"/v1/jobs/{job['id']}/events?cursor={cursor}", headers=self.headers
+            )
+            self.assertEqual(empty.json()["items"], [])
+            inventory = await client.get(
+                "/v1/files?kind=outputs", headers=self.headers
+            )
+            self.assertEqual(
+                inventory.json()["items"][0]["id"], job["output_file_ids"][0]
+            )
+        self.assertEqual(executions, 1)
+        self.assertEqual(
+            [command["kind"] for command in observed_commands],
+            ["probe", "validate_models", "load_model", "generate_baseline"],
+        )
+        saved_project = json.loads(
+            (self.root / "projects" / "portrait-project.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(saved_project["schema"], "k2-region-lab-project")
+
+    async def test_remote_job_cancellation_stops_isolated_executor(self) -> None:
+        started = asyncio.Event()
+        cancelled = asyncio.Event()
+
+        class BlockingExecutor:
+            async def run(self, commands, on_event):
+                await on_event({
+                    "command_id": commands[-1]["command_id"],
+                    "state": "running",
+                    "message": "Generation started",
+                    "payload": {},
+                })
+                started.set()
+                await cancelled.wait()
+                return -15
+
+            async def cancel(self):
+                cancelled.set()
+
+        app = create_agent_app(
+            self.settings, job_executor_factory=lambda: BlockingExecutor()
+        )
+        app.state.layout.initialize()
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://agent.test"
+        ) as client:
+            submitted = await client.post(
+                "/v1/jobs",
+                headers=self.headers,
+                json={
+                    "command_id": "cancel-command",
+                    "kind": "generate",
+                    "project_id": "cancel-project",
+                    "project": self._project_document("cancel me"),
+                },
+            )
+            await asyncio.wait_for(started.wait(), timeout=2)
+            response = await client.post(
+                f"/v1/jobs/{submitted.json()['id']}/cancel", headers=self.headers
+            )
+            self.assertEqual(response.json()["state"], "cancelled")
+            self.assertTrue(cancelled.is_set())
+            await asyncio.sleep(0)
+            status = await client.get(
+                f"/v1/jobs/{submitted.json()['id']}", headers=self.headers
+            )
+            self.assertEqual(status.json()["state"], "cancelled")
+
+    async def test_remote_job_reports_missing_worker_runtime(self) -> None:
+        submitted = await self.client.post(
+            "/v1/jobs",
+            headers=self.headers,
+            json={
+                "command_id": "missing-worker-command",
+                "kind": "generate",
+                "project_id": "missing-worker-project",
+                "project": self._project_document("safe prompt"),
+            },
+        )
+        self.assertEqual(submitted.status_code, 202, submitted.text)
+        job = await self._wait_for_job(self.client, submitted.json()["id"])
+        self.assertEqual(job["state"], "failed")
+        self.assertEqual(job["error_code"], "worker_unavailable")
+
     async def _wait_for_transfer(
         self, client: AsyncClient, transfer_id: str
     ) -> dict[str, object]:
@@ -616,6 +812,36 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
                 return body
             await asyncio.sleep(0.01)
         self.fail("transfer did not reach a terminal state")
+
+    async def _wait_for_job(
+        self, client: AsyncClient, job_id: str
+    ) -> dict[str, object]:
+        for _attempt in range(100):
+            response = await client.get(f"/v1/jobs/{job_id}", headers=self.headers)
+            body = response.json()
+            if body["state"] in {"completed", "failed", "cancelled"}:
+                return body
+            await asyncio.sleep(0.01)
+        self.fail("job did not reach a terminal state")
+
+    @staticmethod
+    def _project_document(prompt: str) -> dict[str, object]:
+        return {
+            "schema": "k2-region-lab-project",
+            "version": 18,
+            "canvas": {"width": 1024, "height": 1024},
+            "generation": {
+                "global_prompt": prompt,
+                "steps": 8,
+                "sampler": "euler",
+                "scheduler": "simple",
+                "seed": 42,
+            },
+            "regions": [],
+            "loras": [],
+            "image_edit": {},
+            "runtime": {},
+        }
 
     @staticmethod
     def _safetensors_payload() -> bytes:

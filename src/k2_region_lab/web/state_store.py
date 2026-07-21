@@ -11,7 +11,7 @@ from sqlalchemy import DateTime, ForeignKey, Integer, JSON, LargeBinary, String,
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
-from k2_region_lab.agent.domain import RemoteTransfer
+from k2_region_lab.agent.domain import GenerationJob, JobEvent, RemoteTransfer
 from k2_region_lab.web.domain import (
     WorkspaceError,
     WorkspacePlan,
@@ -78,6 +78,16 @@ class RunPodStateStore(Protocol):
     async def get_transfer(
         self, transfer_id: str
     ) -> tuple[str, RemoteTransfer] | None: ...
+
+    async def save_generation_job(
+        self, workspace_id: str, job: GenerationJob
+    ) -> None: ...
+
+    async def get_generation_job(
+        self, job_id: str
+    ) -> tuple[str, GenerationJob] | None: ...
+
+    async def save_job_events(self, job_id: str, events: list[JobEvent]) -> None: ...
 
 
 class Base(DeclarativeBase):
@@ -189,6 +199,40 @@ class TransferEntity(Base):
     payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class GenerationJobEntity(Base):
+    __tablename__ = "generation_jobs"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    workspace_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
+    command_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    command_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    project_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    state: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    progress_current: Mapped[int] = mapped_column(Integer, nullable=False)
+    progress_total: Mapped[int] = mapped_column(Integer, nullable=False)
+    output_file_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    error_code: Mapped[str | None] = mapped_column(String(80))
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class JobEventEntity(Base):
+    __tablename__ = "job_events"
+
+    id: Mapped[str] = mapped_column(String(96), primary_key=True)
+    job_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("generation_jobs.id", ondelete="CASCADE"), index=True
+    )
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    state: Mapped[str] = mapped_column(String(64), nullable=False)
+    message: Mapped[str] = mapped_column(String(512), nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class AuditEventEntity(Base):
@@ -440,6 +484,67 @@ class SqlRunPodStateStore:
             if entity is None:
                 return None
             return entity.workspace_id, RemoteTransfer.model_validate(entity.payload)
+
+    async def save_generation_job(
+        self, workspace_id: str, job: GenerationJob
+    ) -> None:
+        await self.initialize()
+        async with self._sessions.begin() as session:
+            entity = await session.get(GenerationJobEntity, job.id)
+            if entity is None:
+                entity = GenerationJobEntity(id=job.id, workspace_id=workspace_id)
+                session.add(entity)
+            elif entity.workspace_id != workspace_id:
+                raise WorkspaceError(
+                    "job_workspace_mismatch",
+                    "The generation job belongs to another workspace.",
+                    status_code=409,
+                )
+            entity.command_id = job.command_id
+            entity.command_kind = job.kind.value
+            entity.project_id = job.project_id
+            entity.state = job.state.value
+            entity.progress_current = job.progress_current
+            entity.progress_total = job.progress_total
+            entity.output_file_ids = job.output_file_ids
+            entity.error_code = job.error_code
+            entity.payload = job.model_dump(mode="json")
+            entity.created_at = job.created_at
+            entity.updated_at = job.updated_at
+
+    async def get_generation_job(
+        self, job_id: str
+    ) -> tuple[str, GenerationJob] | None:
+        await self.initialize()
+        async with self._sessions() as session:
+            entity = await session.get(GenerationJobEntity, job_id)
+            if entity is None:
+                return None
+            return entity.workspace_id, GenerationJob.model_validate(entity.payload)
+
+    async def save_job_events(self, job_id: str, events: list[JobEvent]) -> None:
+        if not events:
+            return
+        await self.initialize()
+        async with self._sessions.begin() as session:
+            if await session.get(GenerationJobEntity, job_id) is None:
+                raise WorkspaceError(
+                    "job_not_found", "The generation job does not exist.", status_code=404
+                )
+            for event in events:
+                event_id = f"{job_id}:{event.sequence}"
+                if await session.get(JobEventEntity, event_id) is None:
+                    session.add(
+                        JobEventEntity(
+                            id=event_id,
+                            job_id=job_id,
+                            sequence=event.sequence,
+                            state=event.state,
+                            message=event.message,
+                            payload=event.model_dump(mode="json")["payload"],
+                            created_at=event.created_at,
+                        )
+                    )
 
     async def audit_events(self) -> list[dict[str, Any]]:
         await self.initialize()

@@ -115,6 +115,20 @@ class WebControlPlaneTests(unittest.IsolatedAsyncioTestCase):
             json={"source_url": "https://civitai.com/models/123"},
         )
         self.assertEqual(rejected_download.status_code, 501)
+        rejected_job = await self.client.post(
+            f"/api/v1/workspaces/{workspace['id']}/jobs",
+            json={
+                "command_id": "dev-job",
+                "kind": "generate",
+                "project_id": "dev-project",
+                "project": {
+                    "schema": "k2-region-lab-project",
+                    "version": 18,
+                    "canvas": {"width": 1024, "height": 1024},
+                },
+            },
+        )
+        self.assertEqual(rejected_job.status_code, 501)
 
         stopped = await self.client.post(
             f"/api/v1/workspaces/{workspace['id']}/stop"

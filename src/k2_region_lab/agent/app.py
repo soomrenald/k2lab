@@ -23,9 +23,12 @@ from k2_region_lab.agent.domain import (
     CivitaiPreviewRequest,
     FileKind,
     FilePage,
+    GenerationJob,
     HuggingFaceDownloadRequest,
     HuggingFacePreview,
     HuggingFacePreviewRequest,
+    JobEventPage,
+    JobSubmitRequest,
     ReadinessStages,
     RemoteTransfer,
     StorageStatus,
@@ -34,6 +37,7 @@ from k2_region_lab.agent.domain import (
     UploadSession,
 )
 from k2_region_lab.agent.downloads import RemoteDownloadManager
+from k2_region_lab.agent.jobs import JobError, JobManager
 from k2_region_lab.agent.storage import LAYOUT_VERSION, WorkspaceLayout
 from k2_region_lab.agent.transfers import TransferError, TransferManager
 
@@ -47,6 +51,7 @@ class AgentSettings:
         image_version: str,
         workspace_root: Path,
         worker_python: Path,
+        comfyui_root: Path = Path("/opt/ComfyUI"),
         cuda_version: str | None = None,
         pytorch_version: str | None = None,
     ) -> None:
@@ -61,6 +66,7 @@ class AgentSettings:
         self.image_version = image_version
         self.workspace_root = workspace_root
         self.worker_python = worker_python
+        self.comfyui_root = comfyui_root
         self.cuda_version = cuda_version
         self.pytorch_version = pytorch_version
 
@@ -77,6 +83,7 @@ class AgentSettings:
             worker_python=Path(
                 os.environ.get("K2LAB_WORKER_PYTHON", "/opt/comfyui-venv/bin/python")
             ),
+            comfyui_root=Path(os.environ.get("K2LAB_COMFYUI_ROOT", "/opt/ComfyUI")),
             cuda_version=os.environ.get("K2LAB_CUDA_VERSION"),
             pytorch_version=os.environ.get("K2LAB_PYTORCH_VERSION"),
         )
@@ -89,6 +96,7 @@ def create_agent_app(
     hf_file_download: Any | None = None,
     hf_snapshot_download: Any | None = None,
     hf_repo_info: Any | None = None,
+    job_executor_factory: Any | None = None,
 ) -> FastAPI:
     configured = settings or AgentSettings.from_environment()
     layout = WorkspaceLayout(configured.workspace_root)
@@ -100,6 +108,7 @@ def create_agent_app(
             yield
         finally:
             await download_manager.close()
+            await job_manager.close()
 
     application = FastAPI(
         title="K2 Region Lab Workspace Agent",
@@ -123,11 +132,29 @@ def create_agent_app(
         hf_repo_info=hf_repo_info,
     )
     application.state.download_manager = download_manager
+    job_manager = JobManager(
+        layout,
+        transfer_manager,
+        worker_python=configured.worker_python,
+        comfyui_root=configured.comfyui_root,
+        executor_factory=job_executor_factory,
+        readiness_callback=lambda ready: setattr(
+            application.state, "worker_ready", ready
+        ),
+    )
+    application.state.job_manager = job_manager
 
     @application.exception_handler(TransferError)
     async def transfer_error_handler(
         _request: Request, error: TransferError
     ) -> JSONResponse:
+        return JSONResponse(
+            status_code=error.status_code,
+            content={"code": error.code, "message": error.message},
+        )
+
+    @application.exception_handler(JobError)
+    async def job_error_handler(_request: Request, error: JobError) -> JSONResponse:
         return JSONResponse(
             status_code=error.status_code,
             content={"code": error.code, "message": error.message},
@@ -316,6 +343,43 @@ def create_agent_app(
     )
     async def cancel_transfer(transfer_id: str) -> RemoteTransfer:
         return await download_manager.cancel(transfer_id)
+
+    @application.post(
+        "/v1/jobs",
+        response_model=GenerationJob,
+        dependencies=authentication,
+        status_code=202,
+    )
+    async def submit_job(request: JobSubmitRequest) -> GenerationJob:
+        return await job_manager.submit(request)
+
+    @application.get(
+        "/v1/jobs/{job_id}",
+        response_model=GenerationJob,
+        dependencies=authentication,
+    )
+    async def job_status(job_id: str) -> GenerationJob:
+        return await job_manager.get(job_id)
+
+    @application.get(
+        "/v1/jobs/{job_id}/events",
+        response_model=JobEventPage,
+        dependencies=authentication,
+    )
+    async def job_events(
+        job_id: str,
+        cursor: str | None = None,
+        limit: int = Query(default=200, ge=1, le=500),
+    ) -> JobEventPage:
+        return await job_manager.events(job_id, cursor=cursor, limit=limit)
+
+    @application.post(
+        "/v1/jobs/{job_id}/cancel",
+        response_model=GenerationJob,
+        dependencies=authentication,
+    )
+    async def cancel_job(job_id: str) -> GenerationJob:
+        return await job_manager.cancel(job_id)
 
     @application.get("/v1/outputs/{file_id}", dependencies=authentication)
     async def output_file(

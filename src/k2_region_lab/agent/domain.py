@@ -206,3 +206,58 @@ class RemoteTransfer(BaseModel):
     error_message: str | None = None
     created_at: datetime
     updated_at: datetime
+
+
+class JobKind(StrEnum):
+    GENERATE = "generate"
+    EDIT_IMAGE = "edit_image"
+    REFINE_FACES = "refine_faces"
+
+
+class JobState(StrEnum):
+    QUEUED = "queued"
+    STARTING = "starting"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    CANCELLED = "cancelled"
+    FAILED = "failed"
+
+
+class JobSubmitRequest(BaseModel):
+    command_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+    kind: JobKind
+    project_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+    project: dict
+    input_file_id: str | None = Field(default=None, max_length=64)
+    lora_file_ids: list[str] = Field(default_factory=list, max_length=128)
+    upscale_model_file_id: str | None = Field(default=None, max_length=64)
+    selected_face_indices: list[int] | None = Field(default=None, max_length=128)
+    manual_face_paths: list[list[list[float]]] = Field(default_factory=list, max_length=128)
+
+
+class GenerationJob(BaseModel):
+    id: str
+    command_id: str
+    kind: JobKind
+    project_id: str
+    state: JobState
+    progress_current: int = Field(default=0, ge=0)
+    progress_total: int = Field(default=0, ge=0)
+    output_file_ids: list[str] = Field(default_factory=list)
+    error_code: str | None = None
+    error_message: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class JobEvent(BaseModel):
+    sequence: int = Field(ge=0)
+    state: str
+    message: str
+    payload: dict = Field(default_factory=dict)
+    created_at: datetime
+
+
+class JobEventPage(BaseModel):
+    items: list[JobEvent]
+    next_cursor: str

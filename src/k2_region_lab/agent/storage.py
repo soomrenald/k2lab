@@ -40,6 +40,8 @@ class WorkspaceLayout:
             self.root / "cache" / "huggingface",
             self.root / "state" / "migrations",
             self.root / "state" / "inventory",
+            self.root / "state" / "jobs",
+            self.root / "state" / "manifests",
             self.root / "state" / "uploads",
         ]
         directories.extend(self.root / "models" / kind for kind in sorted(MODEL_KINDS))

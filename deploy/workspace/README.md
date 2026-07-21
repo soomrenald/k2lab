@@ -37,8 +37,12 @@ layout. It also runs durable Civitai and Hugging Face download jobs with strict 
 parsing, redirect allowlists, resumable Civitai ranges, the persistent Hugging Face cache,
 checksum/size verification, and safetensors header inspection. Provider credentials are
 held only in process memory for one operation and never written to the volume. Storage and
-model readiness are discovered from that volume. Worker readiness remains false until the
-remote job runner milestone starts and validates the isolated worker process.
+model readiness are discovered from that volume. Generation, image-edit, and
+face-refinement requests are validated against the canonical project schema, resolved
+through opaque file IDs, and sent to a disposable worker subprocess without shell
+interpolation. Job state and reconnectable event cursors survive agent restarts, outputs
+are indexed as opaque files, and cancellation terminates the isolated worker. Worker
+readiness becomes true only after a worker event proves that execution has started.
 
 Publishing, vulnerability scanning, signing, and live RunPod acceptance are intentionally
 separate release operations; local tests never push an image or provision a Pod.

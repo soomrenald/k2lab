@@ -13,9 +13,13 @@ from k2_region_lab.agent.domain import (
     CivitaiPreviewRequest,
     FileKind,
     FilePage,
+    GenerationJob,
     HuggingFaceDownloadRequest,
     HuggingFacePreview,
     HuggingFacePreviewRequest,
+    JobEventPage,
+    JobState,
+    JobSubmitRequest,
     RemoteProvider,
     RemoteTransfer,
     UploadCompleteResponse,
@@ -36,6 +40,7 @@ from k2_region_lab.web.domain import (
     WorkspacePlanRequest,
     WorkspaceRecord,
     WorkspaceState,
+    WorkspaceOutput,
     utc_now,
 )
 from k2_region_lab.web.runpod_api import RunPodApi, RunPodApiClient, RunPodGpuType
@@ -614,6 +619,54 @@ class RunPodPersistentPodBackend:
             }
         )
         await self.state_store.save_workspace(updated, image_digest=self._image_digest)
+
+    async def submit_job(
+        self, workspace_id: str, request: JobSubmitRequest
+    ) -> GenerationJob:
+        job = await (await self._workspace_agent(workspace_id)).submit_job(request)
+        await self.state_store.save_generation_job(workspace_id, job)
+        await self._touch_workspace_lease(workspace_id)
+        await self.state_store.append_audit(
+            action="generation_job.submit",
+            result="success",
+            workspace_id=workspace_id,
+            context={"job_id": job.id, "kind": job.kind.value},
+        )
+        return job
+
+    async def get_job(self, workspace_id: str, job_id: str) -> GenerationJob:
+        job = await (await self._workspace_agent(workspace_id)).job_status(job_id)
+        await self.state_store.save_generation_job(workspace_id, job)
+        if job.state in {JobState.QUEUED, JobState.STARTING, JobState.RUNNING}:
+            await self._touch_workspace_lease(workspace_id)
+        return job
+
+    async def get_job_events(
+        self, workspace_id: str, job_id: str, cursor: str | None = None
+    ) -> JobEventPage:
+        events = await (await self._workspace_agent(workspace_id)).job_events(
+            job_id, cursor=cursor
+        )
+        await self.state_store.save_job_events(job_id, events.items)
+        return events
+
+    async def cancel_job(self, workspace_id: str, job_id: str) -> GenerationJob:
+        job = await (await self._workspace_agent(workspace_id)).cancel_job(job_id)
+        await self.state_store.save_generation_job(workspace_id, job)
+        await self.state_store.append_audit(
+            action="generation_job.cancel",
+            result="success",
+            workspace_id=workspace_id,
+            context={"job_id": job.id},
+        )
+        return job
+
+    async def get_output(
+        self, workspace_id: str, file_id: str, range_header: str | None = None
+    ) -> WorkspaceOutput:
+        return await (await self._workspace_agent(workspace_id)).output(
+            file_id, range_header=range_header
+        )
 
     async def _workspace_agent(self, workspace_id: str) -> WorkspaceAgentApi:
         workspace = await self._workspace(workspace_id)

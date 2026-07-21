@@ -30,12 +30,14 @@ Implemented:
 - provider-side Civitai and Hugging Face inspection/download jobs with encrypted
   least-privilege tokens, strict URL/redirect validation, resumable Civitai ranges,
   Hugging Face cache reuse, unsafe-format confirmation, and safetensors validation.
+- generation, image-edit, and face-refinement jobs using the canonical project document,
+  durable summaries/events, cursor-based reconnect, cancellation, progress display, and
+  authenticated output retrieval through opaque file IDs.
 
 Not yet implemented:
 
 - durable PostgreSQL persistence, a KMS-backed credential repository, and the lease reaper;
 - a published and signed CUDA workspace image (the build definition and agent are present);
-- remote generation/image-edit/face-refinement job submission and event streaming;
 - production authentication, authorization, CSRF protection, or hosted deployment.
 
 The development backend is labelled throughout the UI. Its generation buttons are
@@ -70,6 +72,13 @@ an interrupted browser transfer can query the session and send only missing chun
 Provider downloads run inside the workspace, so large model files do not pass through the
 browser or control plane. Provider tokens are encrypted at rest and are forwarded in an
 agent request header for one operation; they are not written into transfer records.
+
+Remote runs start an isolated line-delimited worker process and send the same versioned
+project data used by the local application. The agent persists redacted job events on the
+workspace volume, while the control plane persists job summaries and reconnectable event
+cursors. Raw filesystem paths, prompts, and credentials are excluded from those events;
+completed images are returned through authenticated opaque output URLs with HTTP Range
+support.
 
 ## Local development
 

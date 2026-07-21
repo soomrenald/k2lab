@@ -213,6 +213,34 @@ class TransferManager:
                     return record, path
         raise TransferError("file_not_found", "The file does not exist.", 404)
 
+    async def index_existing_file(self, kind: FileKind, path: Path) -> FileRecord:
+        destination = self._layout.destination(kind.value).resolve(strict=True)
+        if path.is_symlink():
+            raise TransferError(
+                "worker_output_invalid", "The worker output is not a regular file.", 409
+            )
+        try:
+            resolved = path.resolve(strict=True)
+            relative_path = resolved.relative_to(destination).as_posix()
+        except (FileNotFoundError, ValueError) as error:
+            raise TransferError(
+                "worker_output_invalid",
+                "The worker output is outside the workspace output directory.",
+                409,
+            ) from error
+        if not resolved.is_file():
+            raise TransferError(
+                "worker_output_invalid", "The worker output is not a regular file.", 409
+            )
+        async with self._lock:
+            records = self._scan_kind(kind)
+            for record in records:
+                if record.display_name == relative_path:
+                    return record
+        raise TransferError(
+            "worker_output_invalid", "The worker output could not be indexed.", 409
+        )
+
     async def install_download(
         self,
         staged_path: Path,

@@ -16,9 +16,9 @@ const kinds: { value: FileKind; label: string }[] = [
   { value: "face_detection", label: "Face detection" },
 ];
 
-interface Props { workspaceId: string; onClose: () => void }
+interface Props { workspaceId: string; onClose: () => void; onSelect?: (file: FileRecord) => void }
 
-export function AssetPanel({ workspaceId, onClose }: Props) {
+export function AssetPanel({ workspaceId, onClose, onSelect }: Props) {
   const [kind, setKind] = useState<FileKind>("inputs");
   const [files, setFiles] = useState<FileRecord[]>([]);
   const [selected, setSelected] = useState<File | null>(null);
@@ -133,7 +133,7 @@ export function AssetPanel({ workspaceId, onClose }: Props) {
         </div>
         {selected && <div className="transfer-progress"><div><i style={{ width: `${progress * 100}%` }} /></div><span>{phase} · {(progress * 100).toFixed(0)}%{speed > 0 ? ` · ${formatBytes(speed)}/s · ${Math.ceil(eta)}s remaining` : ""}</span></div>}
         {error && <div className="error-banner">{error}</div>}
-        <div className="asset-list">{files.length === 0 ? <p className="field-help">No files in this category.</p> : files.map((file) => <div key={file.id}><Icon name="folder" /><span><strong>{file.display_name}</strong><small>{formatBytes(file.size_bytes)} · {file.sha256.slice(0, 12)}…</small></span></div>)}</div>
+        <div className="asset-list">{files.length === 0 ? <p className="field-help">No files in this category.</p> : files.map((file) => <div key={file.id}><Icon name="folder" /><span><strong>{file.display_name}</strong><small>{formatBytes(file.size_bytes)} · {file.sha256.slice(0, 12)}…</small></span>{onSelect && <button className="quiet-button" onClick={() => { onSelect(file); onClose(); }}>Use in studio</button>}</div>)}</div>
       </section>
     </div>
   );
