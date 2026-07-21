@@ -108,6 +108,31 @@ export interface WorkspaceRecord {
   network_volume_id: string | null;
   datacenter_id: string | null;
   owns_network_volume: boolean;
+  storage_tier: "pod_volume" | "network_volume";
+  workspace_layout_version: number;
+  retained_original_provider_resource_id: string | null;
+}
+
+export type MigrationState = "preparing" | "copying" | "verifying" | "awaiting_confirmation" | "completed" | "failed";
+
+export interface WorkspaceMigrationRecord {
+  id: string;
+  workspace_id: string;
+  state: MigrationState;
+  source_provider_resource_id: string;
+  target_provider_resource_id: string | null;
+  target_network_volume_id: string | null;
+  target_datacenter_id: string | null;
+  target_workspace_disk_gb: number;
+  owns_target_volume: boolean;
+  current_file_index: number;
+  current_file_offset: number;
+  bytes_copied: number;
+  bytes_total: number;
+  error_code: string | null;
+  error_message: string | null;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface ApiErrorBody {
@@ -318,6 +343,19 @@ export const controlPlane = {
     request<WorkspaceRecord>(`/api/v1/workspaces/${workspaceId}/terminate`, {
       method: "POST",
       body: JSON.stringify({ confirmation }),
+    }),
+  migrations: (workspaceId: string) =>
+    request<WorkspaceMigrationRecord[]>(`/api/v1/workspaces/${workspaceId}/migrations`),
+  createMigration: (workspaceId: string, payload: {
+    network_volume_id?: string | null; workspace_disk_gb?: number; datacenter_priority_ids?: string[];
+  }) => request<WorkspaceMigrationRecord>(`/api/v1/workspaces/${workspaceId}/migrations`, {
+    method: "POST", body: JSON.stringify(payload),
+  }),
+  resumeMigration: (workspaceId: string, migrationId: string) =>
+    request<WorkspaceMigrationRecord>(`/api/v1/workspaces/${workspaceId}/migrations/${migrationId}/resume`, { method: "POST" }),
+  confirmMigration: (workspaceId: string, migrationId: string, confirmation: string) =>
+    request<WorkspaceMigrationRecord>(`/api/v1/workspaces/${workspaceId}/migrations/${migrationId}/confirm`, {
+      method: "POST", body: JSON.stringify({ confirmation }),
     }),
   files: (workspaceId: string, kind: FileKind, cursor?: string) =>
     request<FilePage>(`/api/v1/workspaces/${workspaceId}/files?kind=${kind}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`),

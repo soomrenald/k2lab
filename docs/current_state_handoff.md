@@ -1,13 +1,13 @@
 # K2 Region Lab Current-State Handoff
 
 Snapshot date: 2026-07-20  
-Code baseline: commit `631978e` (`Preview region resizing during drag`)  
+Code baseline: use `git log --oneline`; the RunPod implementation is committed by milestone
 Project schema: `k2-region-lab-project`, version 18
 
 This document is the short operational handoff for resuming work on K2 Region Lab. The
 README remains the detailed feature and installation reference, the engineering reference
 documents the regional-control design, and `docs/runpod_web_workspace_spec.md` is the
-authoritative specification for the deferred web/RunPod product.
+authoritative specification for the implemented web/RunPod product.
 
 ## 1. Current product state
 
@@ -17,9 +17,9 @@ The default desktop is now a PySide6 Qt Quick/QML workspace. The older Qt Widget
 still available with `k2lab --legacy-widgets` and, importantly, still owns much of the
 application state and business logic behind the QML adapter.
 
-The present UI is acceptable for continued local testing, but it is not the final
-deployment UI. No RunPod web implementation has been started; only its detailed design has
-been committed.
+The local desktop remains available, and the repository now also contains the FastAPI/React
+RunPod workspace product: persistent Pods, portable network-volume workspaces, authenticated
+agent transfers/downloads/jobs, durable reconciliation, and verified migration.
 
 ### User-visible workspace
 
@@ -252,28 +252,23 @@ git diff --check
 Use `git show <commit>` for design context rather than reconstructing these changes from
 the final files alone.
 
-## 7. Deferred RunPod/web product
+## 7. RunPod/web product
 
-The future deployment is specified in `docs/runpod_web_workspace_spec.md`. Phase one is a
-persistent-Pod mode using the user's own RunPod account/API key and a stopped/restarted Pod
-whose regular `/workspace` volume persists. Phase two adds a choice between that mode and a
-portable workspace backed by network storage and ephemeral GPU selection.
-
-The specification includes GPU-priority discovery, lifecycle/cost safety, credential
-handling, container and storage sizing, prebuilt automatic runtime setup, local uploads,
-direct Civitai/Hugging Face downloads, resumability, agent APIs, security boundaries, and
-the phase-two migration seam. Do not begin implementation from conversation memory; treat
-that file as the source of truth.
+`docs/runpod_web_workspace_spec.md` is implemented through both workspace modes and verified
+persistent-to-portable migration. The production backend remains opt-in and requires an
+immutable image digest, durable database, persisted encryption root, trusted TLS identity
+proxy, MFA assertion, strict allowed origin, and disposable-account live acceptance before
+deployment. `docs/runpod_workspace_operations.md` is the operator runbook.
 
 ## 8. Recommended resumption order
 
 1. Read this file, `README.md`, and the relevant regional engineering-reference section.
-2. Confirm the current branch and inspect changes since `631978e`.
+2. Confirm the current branch and inspect the milestone commits after `631978e`.
 3. Preserve untracked/user-owned files. At this snapshot, `prompts/test4.json` and
    `prompts/testfive.json` are intentionally untracked and must not be modified or committed
    without explicit direction.
 4. Re-run the 46-test focused QML/desktop suite.
-5. Triage the six complete-suite failures before treating CI as clean.
+5. Triage the known dependency-mock failures before treating CI as clean.
 6. For image-edit work, inspect the latest `outputs/gpu-tests/*/validation_report.json`
    reports and comparison images, then establish a new visual acceptance case before
    changing masks, conditioning, or feather values.
@@ -288,12 +283,12 @@ that file as the source of truth.
   adherence and seamless identity-preserving synthesis inside/near the box are still
   experimental.
 - Whole-image edit mode is intrinsically high drift with the current img2img pipeline.
-- The current GUI is a strong local testing interface, not the planned install-free web
-  deployment.
+- Hosted multi-account tenancy and a cloud-specific KMS adapter remain deployment work; the
+  checked-in hosted security model is deliberately single-account.
 - GPU correctness and image quality cannot be established by the dependency-light unit
   suite. Use the actual configured ComfyUI Python environment and retain generated evidence.
-- RunPod lifecycle, storage, uploads, provider downloads, and remote jobs are specified but
-  unimplemented.
+- The signed CUDA image workflow is checked in, but publishing and live GPU acceptance require
+  the deployment owner's registry, OIDC, and disposable RunPod account.
 
 The safest next image-edit research step is a fixed-seed visual matrix over denoise,
 latent feather, composite feather, and edit prompt wording, scored separately for outside

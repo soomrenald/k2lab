@@ -14,6 +14,7 @@ from k2_region_lab.web.credential_vault import DatabaseCredentialVault
 from k2_region_lab.web.domain import (
     CloudType,
     WorkspaceCreateRequest,
+    WorkspaceMode,
     WorkspacePlanRequest,
     WorkspaceState,
 )
@@ -32,7 +33,6 @@ class RunPodLiveAcceptanceTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self) -> None:
         required = {
-            ),
         }
         missing = [name for name, value in required.items() if not value]
         if missing:
@@ -45,6 +45,7 @@ class RunPodLiveAcceptanceTests(unittest.IsolatedAsyncioTestCase):
             state_store=self.store,
         )
         self.workspace = None
+        self.network_volume_ids: set[str] = set()
 
     async def asyncTearDown(self) -> None:
         try:
@@ -53,8 +54,13 @@ class RunPodLiveAcceptanceTests(unittest.IsolatedAsyncioTestCase):
                     self.workspace.id, self.workspace.name
                 )
         finally:
-            await self.store.close()
-            self.temporary_directory.cleanup()
+            try:
+                api = await self.backend._api()
+                for volume_id in self.network_volume_ids:
+                    await api.delete_network_volume(volume_id)
+            finally:
+                await self.store.close()
+                self.temporary_directory.cleanup()
 
     async def test_disposable_pod_ready_stop_restart_volume_and_delete(self) -> None:
         await self.backend.validate_credentials(self.api_key)
@@ -86,10 +92,18 @@ class RunPodLiveAcceptanceTests(unittest.IsolatedAsyncioTestCase):
             ),
         )
         await self.backend.write_upload_chunk(
-            self.workspace.id, upload.id, 0, content[:1024], hashlib.sha256(content[:1024]).hexdigest()
+            self.workspace.id,
+            upload.id,
+            0,
+            content[:1024],
+            hashlib.sha256(content[:1024]).hexdigest(),
         )
         await self.backend.write_upload_chunk(
-            self.workspace.id, upload.id, 1, content[1024:], hashlib.sha256(content[1024:]).hexdigest()
+            self.workspace.id,
+            upload.id,
+            1,
+            content[1024:],
+            hashlib.sha256(content[1024:]).hexdigest(),
         )
         completed = await self.backend.complete_upload(self.workspace.id, upload.id)
 
@@ -97,10 +111,61 @@ class RunPodLiveAcceptanceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.workspace.state, WorkspaceState.STOPPED)
         self.workspace = await self.backend.start_workspace(self.workspace.id)
         self.workspace = await self._wait_for(WorkspaceState.READY)
-        inventory = await self.backend.get_file_inventory(
-            self.workspace.id, FileKind.INPUTS
-        )
+        inventory = await self.backend.get_file_inventory(self.workspace.id, FileKind.INPUTS)
         self.assertIn(completed.file.id, [item.id for item in inventory.items])
+
+        self.workspace = await self.backend.terminate_workspace(
+            self.workspace.id, self.workspace.name
+        )
+        self.assertEqual(self.workspace.state, WorkspaceState.DELETED)
+
+    async def test_portable_pod_recreation_preserves_verified_manifest(self) -> None:
+        await self.backend.validate_credentials(self.api_key)
+        plan = await self.backend.plan_workspace(
+            WorkspacePlanRequest(
+                mode=WorkspaceMode.PORTABLE_WORKSPACE,
+                gpu_priority_ids=[self.gpu_id],
+                cloud_type=CloudType.SECURE,
+                container_disk_gb=50,
+                workspace_disk_gb=50,
+                idle_timeout_seconds=300,
+                hard_deadline_seconds=1800,
+            )
+        )
+        self.workspace = await self.backend.create_workspace(
+            WorkspaceCreateRequest(plan_id=plan.id, name="K2 portable acceptance")
+        )
+        assert self.workspace.network_volume_id is not None
+        self.network_volume_ids.add(self.workspace.network_volume_id)
+        self.workspace = await self._wait_for(WorkspaceState.READY)
+
+        content = b"portable-manifest-acceptance" * 64
+        digest = hashlib.sha256(content).hexdigest()
+        upload = await self.backend.create_upload(
+            self.workspace.id,
+            UploadCreateRequest(
+                filename="portable-acceptance.bin",
+                destination_kind=FileKind.INPUTS,
+                size_bytes=len(content),
+                sha256=digest,
+                chunk_size_bytes=len(content),
+            ),
+        )
+        await self.backend.write_upload_chunk(self.workspace.id, upload.id, 0, content, digest)
+        await self.backend.complete_upload(self.workspace.id, upload.id)
+        source_agent = await self.backend._workspace_agent(self.workspace.id)
+        source_manifest = await source_agent.seal_for_migration()
+        await source_agent.unseal_after_migration()
+
+        self.workspace = await self.backend.stop_workspace(self.workspace.id)
+        self.assertIsNone(self.workspace.provider_resource_id)
+        self.workspace = await self.backend.start_workspace(self.workspace.id)
+        self.workspace = await self._wait_for(WorkspaceState.READY)
+        recreated_agent = await self.backend._workspace_agent(self.workspace.id)
+        recreated_manifest = await recreated_agent.seal_for_migration()
+        await recreated_agent.unseal_after_migration()
+        self.assertEqual(recreated_manifest.root_sha256, source_manifest.root_sha256)
+        self.assertEqual(recreated_manifest.files, source_manifest.files)
 
         self.workspace = await self.backend.terminate_workspace(
             self.workspace.id, self.workspace.name
@@ -115,8 +180,7 @@ class RunPodLiveAcceptanceTests(unittest.IsolatedAsyncioTestCase):
                 return self.workspace
             if self.workspace.state == WorkspaceState.ERROR:
                 self.fail(
-                    f"Workspace failed: {self.workspace.error_code}: "
-                    f"{self.workspace.error_message}"
+                    f"Workspace failed: {self.workspace.error_code}: {self.workspace.error_message}"
                 )
             await asyncio.sleep(5)
         self.fail(f"Workspace did not reach {state.value} within ten minutes")

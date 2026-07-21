@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import secrets
 from collections.abc import Callable
 from datetime import timedelta
@@ -25,6 +26,7 @@ from k2_region_lab.agent.domain import (
     UploadCompleteResponse,
     UploadCreateRequest,
     UploadSession,
+    WorkspaceManifest,
 )
 from k2_region_lab.web.agent_client import WorkspaceAgentApi, WorkspaceAgentClient
 from k2_region_lab.web.credential_vault import CredentialVault
@@ -35,10 +37,14 @@ from k2_region_lab.web.domain import (
     DatacenterOption,
     GpuOption,
     GpuAvailability,
+    MigrationState,
     NetworkVolumeOption,
+    StorageTier,
     WorkspaceCreateRequest,
     WorkspaceError,
     WorkspaceMode,
+    WorkspaceMigrationCreateRequest,
+    WorkspaceMigrationRecord,
     WorkspacePlan,
     WorkspacePlanRequest,
     WorkspaceRecord,
@@ -57,6 +63,8 @@ class RunPodPersistentPodBackend:
     STORAGE_PRICE_PER_GB_MONTH = 0.10
     NETWORK_VOLUME_PRICE_UNDER_1TB = 0.07
     NETWORK_VOLUME_PRICE_OVER_1TB = 0.05
+    MIGRATION_CHUNK_SIZE = 8 * 1024 * 1024
+    MIGRATION_COPY_BUDGET = 64 * 1024 * 1024
 
     def __init__(
         self,
@@ -363,6 +371,11 @@ class RunPodPersistentPodBackend:
             network_volume_id=network_volume.id if network_volume else None,
             datacenter_id=plan.selected_datacenter_id,
             owns_network_volume=plan.create_network_volume,
+            storage_tier=(
+                StorageTier.NETWORK_VOLUME
+                if plan.request.mode == WorkspaceMode.PORTABLE_WORKSPACE
+                else StorageTier.POD_VOLUME
+            ),
         )
         await self.state_store.save_workspace(workspace, image_digest=self._image_digest)
         await self.state_store.update_operation(operation_id, state="completed")
@@ -391,6 +404,7 @@ class RunPodPersistentPodBackend:
         return updated.model_copy(deep=True)
 
     async def start_workspace(self, workspace_id: str) -> WorkspaceRecord:
+        await self._ensure_no_active_migration(workspace_id)
         workspace = await self.state_store.claim_workspace_transition(
             workspace_id,
             allowed_states={WorkspaceState.STOPPED, WorkspaceState.ERROR},
@@ -432,6 +446,7 @@ class RunPodPersistentPodBackend:
         return updated.model_copy(deep=True)
 
     async def stop_workspace(self, workspace_id: str) -> WorkspaceRecord:
+        await self._abort_active_migrations(workspace_id)
         workspace = await self.state_store.claim_workspace_transition(
             workspace_id,
             allowed_states={
@@ -472,7 +487,14 @@ class RunPodPersistentPodBackend:
         return updated.model_copy(deep=True)
 
     async def terminate_workspace(self, workspace_id: str, confirmation: str) -> WorkspaceRecord:
+        await self._ensure_no_active_migration(workspace_id)
         workspace = await self._workspace(workspace_id)
+        if workspace.retained_original_provider_resource_id:
+            raise WorkspaceError(
+                "migration_confirmation_required",
+                "Confirm the migrated workspace before deleting cloud resources.",
+                status_code=409,
+            )
         if workspace.state == WorkspaceState.DELETED:
             return workspace.model_copy(deep=True)
         if confirmation != workspace.name:
@@ -560,16 +582,463 @@ class RunPodPersistentPodBackend:
         storage_billable = (
             workspace.network_volume_id is not None or workspace.state != WorkspaceState.DELETED
         )
+        compute_per_hour = workspace.estimated_compute_per_hour if running else 0.0
+        storage_per_month = workspace.estimated_storage_per_month if storage_billable else 0.0
+        accrued_compute = elapsed / 3600 * workspace.estimated_compute_per_hour if running else 0.0
+        migrations = await self.state_store.list_migrations(workspace_id)
+        migration = migrations[-1] if migrations else None
+        if migration is not None:
+            target_storage = round(
+                migration.target_workspace_disk_gb
+                * (
+                    self.NETWORK_VOLUME_PRICE_OVER_1TB
+                    if migration.target_workspace_disk_gb > 1_000
+                    else self.NETWORK_VOLUME_PRICE_UNDER_1TB
+                ),
+                2,
+            )
+            if migration.state in {
+                MigrationState.PREPARING,
+                MigrationState.COPYING,
+                MigrationState.VERIFYING,
+            }:
+                compute_per_hour += migration.target_compute_per_hour
+                storage_per_month += target_storage
+                migration_elapsed = max(0.0, (utc_now() - migration.created_at).total_seconds())
+                accrued_compute += migration_elapsed / 3600 * migration.target_compute_per_hour
+            elif migration.state == MigrationState.AWAITING_CONFIRMATION:
+                storage_per_month += migration.source_storage_per_month
+            elif migration.state == MigrationState.FAILED and migration.target_network_volume_id:
+                storage_per_month += target_storage
         return CostSnapshot(
             workspace_id=workspace.id,
             state=workspace.state,
-            compute_per_hour=workspace.estimated_compute_per_hour if running else 0.0,
-            storage_per_month=(workspace.estimated_storage_per_month if storage_billable else 0.0),
-            accrued_compute_estimate=(
-                elapsed / 3600 * workspace.estimated_compute_per_hour if running else 0.0
-            ),
+            compute_per_hour=compute_per_hour,
+            storage_per_month=storage_per_month,
+            accrued_compute_estimate=accrued_compute,
             observed_at=utc_now(),
         )
+
+    async def create_workspace_migration(
+        self, workspace_id: str, request: WorkspaceMigrationCreateRequest
+    ) -> WorkspaceMigrationRecord:
+        workspace = await self._workspace(workspace_id)
+        if workspace.mode != WorkspaceMode.PERSISTENT_POD:
+            raise WorkspaceError(
+                "migration_source_invalid",
+                "Only a persistent-Pod workspace can be migrated.",
+                status_code=409,
+            )
+        if workspace.state != WorkspaceState.READY:
+            raise WorkspaceError(
+                "migration_source_not_ready",
+                "Start the persistent workspace and wait for readiness before migrating.",
+                status_code=409,
+            )
+        await self._ensure_no_active_migration(workspace_id)
+        source_pod_id = self._provider_id(workspace)
+        source_agent = await self._workspace_agent(workspace_id)
+        source_manifest = await source_agent.seal_for_migration()
+        required_gb = max(50, math.ceil(source_manifest.total_bytes * 1.10 / (1024**3)))
+        target_size = max(required_gb, request.workspace_disk_gb or workspace.workspace_disk_gb)
+        try:
+            plan = await self.plan_workspace(
+                WorkspacePlanRequest(
+                    mode=WorkspaceMode.PORTABLE_WORKSPACE,
+                    gpu_priority_ids=workspace.gpu_priority_ids or [workspace.gpu.id],
+                    cloud_type=CloudType.SECURE,
+                    interruptible=workspace.interruptible,
+                    container_disk_gb=workspace.container_disk_gb,
+                    workspace_disk_gb=target_size,
+                    idle_timeout_seconds=workspace.idle_timeout_seconds,
+                    hard_deadline_seconds=workspace.hard_deadline_seconds,
+                    network_volume_id=request.network_volume_id,
+                    datacenter_priority_ids=request.datacenter_priority_ids,
+                )
+            )
+            await self.state_store.consume_plan(plan.id)
+        except Exception:
+            await source_agent.unseal_after_migration()
+            raise
+
+        now = utc_now()
+        migration = WorkspaceMigrationRecord(
+            id=uuid4().hex,
+            workspace_id=workspace.id,
+            state=MigrationState.PREPARING,
+            source_provider_resource_id=source_pod_id,
+            target_network_volume_id=(
+                plan.selected_network_volume.id if plan.selected_network_volume else None
+            ),
+            target_datacenter_id=plan.selected_datacenter_id,
+            target_gpu=plan.selected_gpu,
+            target_compute_per_hour=plan.estimated_compute_per_hour,
+            source_storage_per_month=workspace.estimated_storage_per_month,
+            target_workspace_disk_gb=plan.request.workspace_disk_gb,
+            owns_target_volume=plan.create_network_volume,
+            source_manifest=source_manifest,
+            bytes_total=source_manifest.total_bytes,
+            created_at=now,
+            updated_at=now,
+        )
+        await self.state_store.save_migration(migration)
+        operation_id = await self.state_store.begin_operation(
+            operation="runpod.workspace.migrate",
+            workspace_id=workspace.id,
+            context={"migration_id": migration.id, "source_pod_id": source_pod_id},
+        )
+        migration = migration.model_copy(
+            update={"operation_id": operation_id, "updated_at": utc_now()}
+        )
+        await self.state_store.save_migration(migration)
+        target_secret_id = f"migration-agent:{migration.id}"
+        target_secret = secrets.token_urlsafe(32)
+        await self._vault.store(target_secret_id, target_secret)
+        network_volume = plan.selected_network_volume
+        target_pod_id: str | None = None
+        try:
+            api = await self._api()
+            if plan.create_network_volume:
+                assert plan.selected_datacenter_id is not None
+                created_volume = await api.create_network_volume(
+                    name=f"k2lab-migration-{migration.id[:8]}"[:191],
+                    size_gb=plan.request.workspace_disk_gb,
+                    datacenter_id=plan.selected_datacenter_id,
+                )
+                network_volume = NetworkVolumeOption(
+                    id=created_volume.id,
+                    name=created_volume.name,
+                    size_gb=created_volume.size_gb,
+                    datacenter_id=created_volume.datacenter_id,
+                )
+                migration = migration.model_copy(
+                    update={
+                        "target_network_volume_id": network_volume.id,
+                        "updated_at": utc_now(),
+                    }
+                )
+                await self.state_store.save_migration(migration)
+                await self.state_store.update_operation(
+                    operation_id,
+                    state="volume_created",
+                    context={"network_volume_id": network_volume.id},
+                )
+            if network_volume is None:
+                raise WorkspaceError(
+                    "migration_target_invalid",
+                    "The migration target network volume is missing.",
+                    status_code=409,
+                )
+            provider = await api.create_pod(
+                self._create_payload(
+                    workspace.id,
+                    f"migration-{workspace.name}",
+                    plan,
+                    target_secret,
+                    network_volume_id=network_volume.id,
+                )
+            )
+            target_pod_id = self._required_string(provider, "id")
+            await self.state_store.update_operation(
+                operation_id,
+                state="target_created",
+                context={"target_pod_id": target_pod_id},
+            )
+            migration = migration.model_copy(
+                update={
+                    "target_provider_resource_id": target_pod_id,
+                    "target_network_volume_id": network_volume.id,
+                    "updated_at": utc_now(),
+                }
+            )
+            await self.state_store.save_migration(migration)
+            extended = workspace.model_copy(
+                update={
+                    "lease_expires_at": workspace.hard_expires_at,
+                    "updated_at": utc_now(),
+                }
+            )
+            await self.state_store.save_workspace(extended, image_digest=self._image_digest)
+        except Exception as error:
+            if target_pod_id:
+                try:
+                    await (await self._api()).delete_pod(target_pod_id)
+                except Exception:
+                    pass
+            await self._vault.delete(target_secret_id)
+            await source_agent.unseal_after_migration()
+            migration = migration.model_copy(
+                update={
+                    "state": MigrationState.FAILED,
+                    "error_code": getattr(error, "code", "migration_target_failed"),
+                    "error_message": "The migration target could not be provisioned.",
+                    "updated_at": utc_now(),
+                }
+            )
+            await self.state_store.save_migration(migration)
+            await self.state_store.update_operation(operation_id, state="failed")
+            await self.state_store.append_audit(
+                action="runpod.workspace.migrate",
+                result="failure",
+                workspace_id=workspace.id,
+                context={
+                    "migration_id": migration.id,
+                    "retained_network_volume_id": migration.target_network_volume_id,
+                },
+            )
+            raise
+        await self.state_store.append_audit(
+            action="runpod.workspace.migrate",
+            result="started",
+            workspace_id=workspace.id,
+            context={"migration_id": migration.id},
+        )
+        return migration.model_copy(deep=True)
+
+    async def get_workspace_migration(
+        self, workspace_id: str, migration_id: str
+    ) -> WorkspaceMigrationRecord:
+        return (await self._migration(workspace_id, migration_id)).model_copy(deep=True)
+
+    async def list_workspace_migrations(self, workspace_id: str) -> list[WorkspaceMigrationRecord]:
+        await self._workspace(workspace_id)
+        return [
+            item.model_copy(deep=True)
+            for item in await self.state_store.list_migrations(workspace_id)
+        ]
+
+    async def resume_workspace_migration(
+        self, workspace_id: str, migration_id: str
+    ) -> WorkspaceMigrationRecord:
+        migration = await self._migration(workspace_id, migration_id)
+        if migration.state in {
+            MigrationState.AWAITING_CONFIRMATION,
+            MigrationState.COMPLETED,
+            MigrationState.FAILED,
+        }:
+            return migration.model_copy(deep=True)
+        workspace = await self._workspace(workspace_id)
+        source_manifest = migration.source_manifest
+        if source_manifest is None or not migration.target_provider_resource_id:
+            raise WorkspaceError(
+                "migration_state_invalid",
+                "The durable migration record is incomplete.",
+                status_code=409,
+            )
+        source_secret = await self._vault.retrieve(f"agent:{workspace_id}")
+        target_secret = await self._vault.retrieve(f"migration-agent:{migration.id}")
+        if not source_secret or not target_secret:
+            raise WorkspaceError(
+                "migration_credential_missing",
+                "A migration agent credential is missing.",
+                status_code=500,
+            )
+        source_agent = self._agent_factory(migration.source_provider_resource_id, source_secret)
+        target_agent = self._agent_factory(migration.target_provider_resource_id, target_secret)
+        if migration.state == MigrationState.PREPARING:
+            health = await target_agent.health()
+            if health.workspace_id != workspace_id:
+                raise WorkspaceError(
+                    "agent_identity_mismatch",
+                    "The migration target reported a different workspace identity.",
+                    status_code=502,
+                )
+            await target_agent.seal_for_migration()
+            migration = migration.model_copy(
+                update={"state": MigrationState.COPYING, "updated_at": utc_now()}
+            )
+            await self.state_store.save_migration(migration)
+
+        if migration.state == MigrationState.COPYING:
+            copied_this_call = 0
+            while migration.current_file_index < len(source_manifest.files):
+                entry = source_manifest.files[migration.current_file_index]
+                offset = migration.current_file_offset
+                remaining = entry.size_bytes - offset
+                amount = min(self.MIGRATION_CHUNK_SIZE, remaining)
+                content = (
+                    await source_agent.migration_file(
+                        source_manifest.generation,
+                        entry.path,
+                        start=offset,
+                        end=offset + amount - 1,
+                    )
+                    if amount
+                    else b""
+                )
+                receipt = await target_agent.import_migration_chunk(
+                    migration.id,
+                    entry.path,
+                    offset=offset,
+                    total_size=entry.size_bytes,
+                    file_sha256=entry.sha256,
+                    content=content,
+                )
+                delta = max(0, receipt.next_offset - offset)
+                copied_this_call += delta
+                if receipt.completed:
+                    file_index = migration.current_file_index + 1
+                    file_offset = 0
+                else:
+                    file_index = migration.current_file_index
+                    file_offset = receipt.next_offset
+                migration = migration.model_copy(
+                    update={
+                        "current_file_index": file_index,
+                        "current_file_offset": file_offset,
+                        "bytes_copied": min(migration.bytes_total, migration.bytes_copied + delta),
+                        "updated_at": utc_now(),
+                    }
+                )
+                await self.state_store.save_migration(migration)
+                if copied_this_call >= self.MIGRATION_COPY_BUDGET:
+                    return migration.model_copy(deep=True)
+            migration = migration.model_copy(
+                update={"state": MigrationState.VERIFYING, "updated_at": utc_now()}
+            )
+            await self.state_store.save_migration(migration)
+
+        if migration.state == MigrationState.VERIFYING:
+            target_manifest = (
+                migration.target_manifest or await target_agent.create_migration_manifest()
+            )
+            migration = migration.model_copy(
+                update={"target_manifest": target_manifest, "updated_at": utc_now()}
+            )
+            await self.state_store.save_migration(migration)
+            if not self._manifests_match(source_manifest, target_manifest):
+                await (await self._api()).delete_pod(migration.target_provider_resource_id)
+                await self._vault.delete(f"migration-agent:{migration.id}")
+                await source_agent.unseal_after_migration()
+                failed = migration.model_copy(
+                    update={
+                        "state": MigrationState.FAILED,
+                        "error_code": "migration_manifest_mismatch",
+                        "error_message": (
+                            "The target manifest does not match the source; "
+                            "the original Pod was retained."
+                        ),
+                        "updated_at": utc_now(),
+                    }
+                )
+                await self.state_store.save_migration(failed)
+                if migration.operation_id:
+                    await self.state_store.update_operation(migration.operation_id, state="failed")
+                await self.state_store.append_audit(
+                    action="runpod.workspace.migrate.verify",
+                    result="failure",
+                    workspace_id=workspace_id,
+                    context={"migration_id": migration.id},
+                )
+                return failed.model_copy(deep=True)
+
+            await (await self._api()).stop_pod(migration.source_provider_resource_id)
+            await target_agent.unseal_after_migration()
+            target_health = await target_agent.health()
+            switched = workspace.model_copy(
+                update={
+                    "mode": WorkspaceMode.PORTABLE_WORKSPACE,
+                    "state": (
+                        WorkspaceState.READY
+                        if target_health.status == "ready"
+                        else WorkspaceState.STARTING
+                    ),
+                    "gpu": migration.target_gpu or workspace.gpu,
+                    "estimated_compute_per_hour": migration.target_compute_per_hour,
+                    "cloud_type": CloudType.SECURE,
+                    "workspace_disk_gb": migration.target_workspace_disk_gb,
+                    "estimated_storage_per_month": round(
+                        migration.target_workspace_disk_gb
+                        * (
+                            self.NETWORK_VOLUME_PRICE_OVER_1TB
+                            if migration.target_workspace_disk_gb > 1_000
+                            else self.NETWORK_VOLUME_PRICE_UNDER_1TB
+                        ),
+                        2,
+                    ),
+                    "provider_resource_id": migration.target_provider_resource_id,
+                    "network_volume_id": migration.target_network_volume_id,
+                    "datacenter_id": migration.target_datacenter_id,
+                    "owns_network_volume": migration.owns_target_volume,
+                    "storage_tier": StorageTier.NETWORK_VOLUME,
+                    "workspace_layout_version": source_manifest.layout_version,
+                    "retained_original_provider_resource_id": (
+                        migration.source_provider_resource_id
+                    ),
+                    "readiness": target_health.readiness.model_dump(),
+                    "updated_at": utc_now(),
+                }
+            )
+            await self.state_store.save_workspace(switched, image_digest=self._image_digest)
+            await self._vault.store(f"agent:{workspace_id}", target_secret)
+            await self._vault.delete(f"migration-agent:{migration.id}")
+            migration = migration.model_copy(
+                update={
+                    "state": MigrationState.AWAITING_CONFIRMATION,
+                    "updated_at": utc_now(),
+                }
+            )
+            await self.state_store.save_migration(migration)
+            if migration.operation_id:
+                await self.state_store.update_operation(migration.operation_id, state="verified")
+            await self.state_store.append_audit(
+                action="runpod.workspace.migrate.verify",
+                result="success",
+                workspace_id=workspace_id,
+                context={
+                    "migration_id": migration.id,
+                    "source_root_sha256": source_manifest.root_sha256,
+                },
+            )
+        return migration.model_copy(deep=True)
+
+    async def confirm_workspace_migration(
+        self, workspace_id: str, migration_id: str, confirmation: str
+    ) -> WorkspaceMigrationRecord:
+        migration = await self._migration(workspace_id, migration_id)
+        if migration.state == MigrationState.COMPLETED:
+            return migration.model_copy(deep=True)
+        if migration.state != MigrationState.AWAITING_CONFIRMATION:
+            raise WorkspaceError(
+                "migration_not_verified",
+                "The migration must be verified before deleting the original Pod.",
+                status_code=409,
+            )
+        workspace = await self._workspace(workspace_id)
+        if confirmation != workspace.name:
+            raise WorkspaceError(
+                "migration_confirmation_mismatch",
+                "Type the workspace name exactly to delete the original Pod volume.",
+                status_code=409,
+            )
+        retained = workspace.retained_original_provider_resource_id
+        if not retained or retained != migration.source_provider_resource_id:
+            raise WorkspaceError(
+                "migration_original_missing",
+                "The retained original Pod record is missing.",
+                status_code=409,
+            )
+        await (await self._api()).delete_pod(retained)
+        updated = workspace.model_copy(
+            update={
+                "retained_original_provider_resource_id": None,
+                "updated_at": utc_now(),
+            }
+        )
+        await self.state_store.save_workspace(updated, image_digest=self._image_digest)
+        completed = migration.model_copy(
+            update={"state": MigrationState.COMPLETED, "updated_at": utc_now()}
+        )
+        await self.state_store.save_migration(completed)
+        if migration.operation_id:
+            await self.state_store.update_operation(migration.operation_id, state="completed")
+        await self.state_store.append_audit(
+            action="runpod.workspace.migrate.confirm",
+            result="success",
+            workspace_id=workspace_id,
+            context={"migration_id": migration.id},
+        )
+        return completed.model_copy(deep=True)
 
     async def reconcile_workspaces(self) -> list[WorkspaceRecord]:
         """Refresh every durable provider resource after control-plane startup."""
@@ -1158,6 +1627,83 @@ class RunPodPersistentPodBackend:
                 status_code=404,
             )
         return workspace
+
+    async def _migration(self, workspace_id: str, migration_id: str) -> WorkspaceMigrationRecord:
+        migration = await self.state_store.get_migration(migration_id)
+        if migration is None or migration.workspace_id != workspace_id:
+            raise WorkspaceError(
+                "migration_not_found",
+                "The requested workspace migration does not exist.",
+                status_code=404,
+            )
+        return migration
+
+    async def _ensure_no_active_migration(self, workspace_id: str) -> None:
+        active = {
+            MigrationState.PREPARING,
+            MigrationState.COPYING,
+            MigrationState.VERIFYING,
+        }
+        if any(
+            migration.state in active
+            for migration in await self.state_store.list_migrations(workspace_id)
+        ):
+            raise WorkspaceError(
+                "migration_in_progress",
+                "Finish the active workspace migration before changing lifecycle state.",
+                status_code=409,
+            )
+
+    async def _abort_active_migrations(self, workspace_id: str) -> None:
+        active = {
+            MigrationState.PREPARING,
+            MigrationState.COPYING,
+            MigrationState.VERIFYING,
+        }
+        for migration in await self.state_store.list_migrations(workspace_id):
+            if migration.state not in active:
+                continue
+            source_secret = await self._vault.retrieve(f"agent:{workspace_id}")
+            if source_secret:
+                await self._agent_factory(
+                    migration.source_provider_resource_id, source_secret
+                ).unseal_after_migration()
+            if migration.target_provider_resource_id:
+                await (await self._api()).delete_pod(migration.target_provider_resource_id)
+            await self._vault.delete(f"migration-agent:{migration.id}")
+            failed = migration.model_copy(
+                update={
+                    "state": MigrationState.FAILED,
+                    "error_code": "migration_aborted_by_stop",
+                    "error_message": (
+                        "The migration was stopped; its network volume was retained."
+                    ),
+                    "updated_at": utc_now(),
+                }
+            )
+            await self.state_store.save_migration(failed)
+            if migration.operation_id:
+                await self.state_store.update_operation(migration.operation_id, state="failed")
+            await self.state_store.append_audit(
+                action="runpod.workspace.migrate.abort",
+                result="success",
+                workspace_id=workspace_id,
+                context={
+                    "migration_id": migration.id,
+                    "retained_network_volume_id": migration.target_network_volume_id,
+                },
+            )
+
+    @staticmethod
+    def _manifests_match(source: WorkspaceManifest, target: WorkspaceManifest) -> bool:
+        return (
+            source.layout_version == target.layout_version
+            and source.file_count == target.file_count
+            and source.total_bytes == target.total_bytes
+            and source.root_sha256 == target.root_sha256
+            and [item.model_dump() for item in source.files]
+            == [item.model_dump() for item in target.files]
+        )
 
     async def _record_provider_failure(
         self, workspace: WorkspaceRecord, action: str, error: Exception

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import importlib.util
 import unittest
 from datetime import timedelta
@@ -25,9 +26,12 @@ if WEB_PROVIDER_AVAILABLE:
         JobEvent,
         JobKind,
         JobState,
+        ManifestEntry,
+        MigrationChunkReceipt,
         RemoteProvider,
         RemoteTransfer,
         TransferState,
+        WorkspaceManifest,
     )
     from k2_region_lab.web.credential_vault import (
         DatabaseCredentialVault,
@@ -36,6 +40,7 @@ if WEB_PROVIDER_AVAILABLE:
     from k2_region_lab.web.domain import (
         CloudType,
         WorkspaceCreateRequest,
+        WorkspaceMigrationCreateRequest,
         WorkspaceMode,
         WorkspacePlanRequest,
     )
@@ -193,6 +198,99 @@ class FakeAgentApi:
         raise NotImplementedError
 
 
+class FakeMigrationAgent(FakeAgentApi):
+    def __init__(
+        self,
+        workspace_id: str,
+        files: dict[str, bytes] | None = None,
+        *,
+        corrupt_manifest: bool = False,
+    ) -> None:
+        super().__init__(workspace_id)
+        self.files = dict(files or {})
+        self.corrupt_manifest = corrupt_manifest
+        self.sealed = False
+        self.generation = 0
+
+    async def seal_for_migration(self) -> WorkspaceManifest:
+        self.sealed = True
+        return self._manifest()
+
+    async def unseal_after_migration(self) -> None:
+        self.sealed = False
+
+    async def create_migration_manifest(self) -> WorkspaceManifest:
+        return self._manifest()
+
+    async def migration_file(
+        self, generation: int, relative_path: str, *, start: int, end: int
+    ) -> bytes:
+        del generation
+        return self.files[relative_path][start : end + 1]
+
+    async def import_migration_chunk(
+        self,
+        migration_id: str,
+        relative_path: str,
+        *,
+        offset: int,
+        total_size: int,
+        file_sha256: str,
+        content: bytes,
+    ) -> MigrationChunkReceipt:
+        del migration_id
+        existing = self.files.get(relative_path, b"")
+        if len(existing) > offset:
+            self.assert_bytes(existing[offset : offset + len(content)], content)
+        else:
+            self.assert_bytes(len(existing), offset)
+            self.files[relative_path] = existing + content
+        completed = len(self.files.get(relative_path, b"")) == total_size
+        if completed:
+            self.assert_bytes(hashlib.sha256(self.files[relative_path]).hexdigest(), file_sha256)
+        return MigrationChunkReceipt(
+            path=relative_path,
+            next_offset=len(self.files.get(relative_path, b"")),
+            completed=completed,
+        )
+
+    @staticmethod
+    def assert_bytes(actual: object, expected: object) -> None:
+        if actual != expected:
+            raise AssertionError(f"{actual!r} != {expected!r}")
+
+    def _manifest(self) -> WorkspaceManifest:
+        self.generation += 1
+        entries = [
+            ManifestEntry(
+                path=path,
+                size_bytes=len(content),
+                sha256=hashlib.sha256(content).hexdigest(),
+            )
+            for path, content in sorted(self.files.items())
+        ]
+        digest = hashlib.sha256()
+        for entry in entries:
+            digest.update(entry.path.encode())
+            digest.update(b"\0")
+            digest.update(str(entry.size_bytes).encode())
+            digest.update(b"\0")
+            digest.update(entry.sha256.encode())
+            digest.update(b"\n")
+        root_sha256 = digest.hexdigest()
+        if self.corrupt_manifest:
+            root_sha256 = "f" * 64
+        return WorkspaceManifest(
+            generation=self.generation,
+            layout_version=1,
+            files=entries,
+            file_count=len(entries),
+            total_bytes=sum(item.size_bytes for item in entries),
+            root_sha256=root_sha256,
+            created_at="2026-07-20T12:00:00Z",
+        )
+
+
 @unittest.skipUnless(WEB_PROVIDER_AVAILABLE, "web provider dependencies are not installed")
 class RunPodApiClientTests(unittest.IsolatedAsyncioTestCase):
     async def test_uses_authorization_header_and_never_places_key_in_url(self) -> None:
@@ -306,13 +404,16 @@ class RunPodBackendTests(unittest.IsolatedAsyncioTestCase):
         self.vault = EncryptedMemoryCredentialVault(Fernet.generate_key())
         self.api = FakeRunPodApi()
         self.agent_workspace_id = "unused"
+        self.migration_agents: dict[str, FakeMigrationAgent] = {}
         self.backend = RunPodPersistentPodBackend(
             credential_vault=self.vault,
             state_store=self.state_store,
             image_digest="ghcr.io/example/k2lab@sha256:" + "a" * 64,
             image_version="0.1.0",
             api_factory=lambda _key: self.api,
-            agent_factory=lambda _pod_id, _token: FakeAgentApi(self.agent_workspace_id),
+            agent_factory=lambda pod_id, _token: self.migration_agents.get(
+                pod_id, FakeAgentApi(self.agent_workspace_id)
+            ),
         )
 
     async def asyncTearDown(self) -> None:
@@ -668,6 +769,140 @@ class RunPodBackendTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.api.deleted_pods, ["pod-portable-orphan"])
         events = await self.state_store.audit_events()
         self.assertEqual(events[-1]["action"], "runpod.workspace.orphan_delete")
+
+    async def test_verified_migration_switches_then_retains_original_until_confirmation(
+        self,
+    ) -> None:
+        await self.backend.validate_credentials("secret-runpod-key")
+        plan = await self.backend.plan_workspace(
+            WorkspacePlanRequest(
+                gpu_priority_ids=["NVIDIA RTX A6000"],
+                cloud_type=CloudType.SECURE,
+            )
+        )
+        workspace = await self.backend.create_workspace(
+            WorkspaceCreateRequest(plan_id=plan.id, name="Migrated lab")
+        )
+        self.agent_workspace_id = workspace.id
+        source = FakeMigrationAgent(
+            workspace.id,
+            {"projects/portrait.json": b'{"schema":"k2"}'},
+        )
+        self.migration_agents["pod-1"] = source
+        ready = await self.backend.get_workspace_status(workspace.id)
+        self.assertEqual(ready.state, "ready")
+
+        migration = await self.backend.create_workspace_migration(
+            workspace.id,
+            WorkspaceMigrationCreateRequest(
+                workspace_disk_gb=100, datacenter_priority_ids=["US-GA-2"]
+            ),
+        )
+        self.assertEqual(migration.state, "preparing")
+        self.assertTrue(source.sealed)
+        self.assertEqual(migration.target_provider_resource_id, "pod-2")
+        migrating_cost = await self.backend.get_cost_snapshot(workspace.id)
+        self.assertEqual(migrating_cost.compute_per_hour, 1.0)
+        self.assertEqual(migrating_cost.storage_per_month, 27.0)
+        target = FakeMigrationAgent(workspace.id)
+        self.migration_agents["pod-2"] = target
+
+        self.backend.MIGRATION_CHUNK_SIZE = 4
+        self.backend.MIGRATION_COPY_BUDGET = 4
+        partial = await self.backend.resume_workspace_migration(workspace.id, migration.id)
+        self.assertEqual(partial.state, "copying")
+        self.assertEqual(partial.bytes_copied, 4)
+        restored_partial = await self.state_store.get_migration(migration.id)
+        self.assertEqual(restored_partial.current_file_offset, 4)
+        verified = partial
+        while verified.state in {"preparing", "copying", "verifying"}:
+            verified = await self.backend.resume_workspace_migration(workspace.id, migration.id)
+        self.assertEqual(verified.state, "awaiting_confirmation")
+        self.assertEqual(target.files, source.files)
+        switched = await self.state_store.get_workspace(workspace.id)
+        self.assertEqual(switched.mode, "portable_workspace")
+        self.assertEqual(switched.provider_resource_id, "pod-2")
+        self.assertEqual(switched.retained_original_provider_resource_id, "pod-1")
+        self.assertEqual(self.api.stopped_pods, ["pod-1"])
+        retained_cost = await self.backend.get_cost_snapshot(workspace.id)
+        self.assertEqual(retained_cost.compute_per_hour, 0.6)
+        self.assertEqual(retained_cost.storage_per_month, 27.0)
+
+        with self.assertRaisesRegex(Exception, "Confirm the migrated workspace"):
+            await self.backend.terminate_workspace(workspace.id, "Migrated lab")
+        with self.assertRaisesRegex(Exception, "Type the workspace name"):
+            await self.backend.confirm_workspace_migration(workspace.id, migration.id, "wrong")
+        completed = await self.backend.confirm_workspace_migration(
+            workspace.id, migration.id, "Migrated lab"
+        )
+        self.assertEqual(completed.state, "completed")
+        restored = await self.state_store.get_workspace(workspace.id)
+        self.assertIsNone(restored.retained_original_provider_resource_id)
+        self.assertIn("pod-1", self.api.deleted_pods)
+        final_cost = await self.backend.get_cost_snapshot(workspace.id)
+        self.assertEqual(final_cost.storage_per_month, 7.0)
+        self.assertEqual(await self.state_store.incomplete_operations(), [])
+
+    async def test_manifest_mismatch_keeps_original_and_releases_target_compute(self) -> None:
+        await self.backend.validate_credentials("secret-runpod-key")
+        plan = await self.backend.plan_workspace(
+            WorkspacePlanRequest(
+                gpu_priority_ids=["NVIDIA RTX A6000"],
+                cloud_type=CloudType.SECURE,
+            )
+        )
+        workspace = await self.backend.create_workspace(
+            WorkspaceCreateRequest(plan_id=plan.id, name="Mismatch lab")
+        )
+        self.agent_workspace_id = workspace.id
+        source = FakeMigrationAgent(workspace.id, {"outputs/result.png": b"verified-output"})
+        self.migration_agents["pod-1"] = source
+        await self.backend.get_workspace_status(workspace.id)
+        migration = await self.backend.create_workspace_migration(
+            workspace.id,
+            WorkspaceMigrationCreateRequest(datacenter_priority_ids=["US-GA-2"]),
+        )
+        self.migration_agents["pod-2"] = FakeMigrationAgent(workspace.id, corrupt_manifest=True)
+
+        failed = await self.backend.resume_workspace_migration(workspace.id, migration.id)
+
+        self.assertEqual(failed.state, "failed")
+        self.assertEqual(failed.error_code, "migration_manifest_mismatch")
+        self.assertFalse(source.sealed)
+        self.assertIn("pod-2", self.api.deleted_pods)
+        original = await self.state_store.get_workspace(workspace.id)
+        self.assertEqual(original.mode, "persistent_pod")
+        self.assertEqual(original.provider_resource_id, "pod-1")
+
+    async def test_stop_aborts_active_migration_and_retains_target_volume(self) -> None:
+        await self.backend.validate_credentials("secret-runpod-key")
+        plan = await self.backend.plan_workspace(
+            WorkspacePlanRequest(
+                gpu_priority_ids=["NVIDIA RTX A6000"],
+                cloud_type=CloudType.SECURE,
+            )
+        )
+        workspace = await self.backend.create_workspace(
+            WorkspaceCreateRequest(plan_id=plan.id, name="Abort migration")
+        )
+        self.agent_workspace_id = workspace.id
+        source = FakeMigrationAgent(workspace.id, {"projects/project.json": b"durable"})
+        self.migration_agents["pod-1"] = source
+        await self.backend.get_workspace_status(workspace.id)
+        migration = await self.backend.create_workspace_migration(
+            workspace.id,
+            WorkspaceMigrationCreateRequest(datacenter_priority_ids=["US-GA-2"]),
+        )
+
+        stopped = await self.backend.stop_workspace(workspace.id)
+
+        self.assertEqual(stopped.state, "stopped")
+        self.assertFalse(source.sealed)
+        self.assertIn("pod-2", self.api.deleted_pods)
+        self.assertIn(migration.target_network_volume_id, self.api.network_volumes)
+        failed = await self.backend.get_workspace_migration(workspace.id, migration.id)
+        self.assertEqual(failed.error_code, "migration_aborted_by_stop")
+        self.assertEqual(await self.state_store.incomplete_operations(), [])
 
 
 if __name__ == "__main__":

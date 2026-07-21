@@ -47,6 +47,9 @@ from k2_region_lab.web.domain import (
     WorkspacePlanRequest,
     WorkspaceRecord,
     WorkspaceMode,
+    WorkspaceMigrationConfirmRequest,
+    WorkspaceMigrationCreateRequest,
+    WorkspaceMigrationRecord,
     WorkspaceTerminateRequest,
 )
 from k2_region_lab.web.security import (
@@ -250,6 +253,56 @@ def create_app(
     @application.get("/api/v1/workspaces/{workspace_id}/cost", response_model=CostSnapshot)
     async def cost_snapshot(workspace_id: str) -> CostSnapshot:
         return await workspace_backend.get_cost_snapshot(workspace_id)
+
+    @application.post(
+        "/api/v1/workspaces/{workspace_id}/migrations",
+        response_model=WorkspaceMigrationRecord,
+        status_code=202,
+    )
+    async def create_workspace_migration(
+        workspace_id: str, request: WorkspaceMigrationCreateRequest
+    ) -> WorkspaceMigrationRecord:
+        return await workspace_backend.create_workspace_migration(workspace_id, request)
+
+    @application.get(
+        "/api/v1/workspaces/{workspace_id}/migrations",
+        response_model=list[WorkspaceMigrationRecord],
+    )
+    async def list_workspace_migrations(
+        workspace_id: str,
+    ) -> list[WorkspaceMigrationRecord]:
+        return await workspace_backend.list_workspace_migrations(workspace_id)
+
+    @application.get(
+        "/api/v1/workspaces/{workspace_id}/migrations/{migration_id}",
+        response_model=WorkspaceMigrationRecord,
+    )
+    async def get_workspace_migration(
+        workspace_id: str, migration_id: str
+    ) -> WorkspaceMigrationRecord:
+        return await workspace_backend.get_workspace_migration(workspace_id, migration_id)
+
+    @application.post(
+        "/api/v1/workspaces/{workspace_id}/migrations/{migration_id}/resume",
+        response_model=WorkspaceMigrationRecord,
+    )
+    async def resume_workspace_migration(
+        workspace_id: str, migration_id: str
+    ) -> WorkspaceMigrationRecord:
+        return await workspace_backend.resume_workspace_migration(workspace_id, migration_id)
+
+    @application.post(
+        "/api/v1/workspaces/{workspace_id}/migrations/{migration_id}/confirm",
+        response_model=WorkspaceMigrationRecord,
+    )
+    async def confirm_workspace_migration(
+        workspace_id: str,
+        migration_id: str,
+        request: WorkspaceMigrationConfirmRequest,
+    ) -> WorkspaceMigrationRecord:
+        return await workspace_backend.confirm_workspace_migration(
+            workspace_id, migration_id, request.confirmation
+        )
 
     @application.get("/api/v1/workspaces/{workspace_id}/files", response_model=FilePage)
     async def file_inventory(

@@ -269,8 +269,10 @@ class ControlPlaneSecurityMiddleware(BaseHTTPMiddleware):
     @staticmethod
     def _rate_class(request: Request) -> str:
         path = request.url.path
-        if path in {"/api/v1/workspaces", "/api/v1/workspace-plans"} or path.endswith(
-            ("/start", "/stop", "/terminate")
+        if (
+            path in {"/api/v1/workspaces", "/api/v1/workspace-plans"}
+            or "/migrations" in path
+            or path.endswith(("/start", "/stop", "/terminate"))
         ):
             return "provisioning"
         if "/uploads/" in path and "/chunks/" in path:

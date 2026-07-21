@@ -149,6 +149,18 @@ class WorkspaceMigrationManager:
             raise TransferError("file_hash_invalid", "The migration file checksum is invalid.")
 
         async with self._lock:
+            destination = self._resolve_destination(normalized)
+            if destination.is_file():
+                destination_size = destination.stat().st_size
+                if (
+                    destination_size == total_size
+                    and self._sha256(destination) == file_sha256.lower()
+                ):
+                    return MigrationChunkReceipt(
+                        path=normalized,
+                        next_offset=total_size,
+                        completed=True,
+                    )
             staged = self._staging_path(migration_id, normalized)
             staged.parent.mkdir(parents=True, exist_ok=True)
             current_size = staged.stat().st_size if staged.exists() else 0
@@ -163,9 +175,9 @@ class WorkspaceMigrationManager:
                         409,
                     )
             elif current_size == offset:
-                with staged.open("ab") as destination:
-                    destination.write(content)
-                    destination.flush()
+                with staged.open("ab") as staged_file:
+                    staged_file.write(content)
+                    staged_file.flush()
             else:
                 raise TransferError(
                     "migration_offset_gap",
@@ -180,7 +192,6 @@ class WorkspaceMigrationManager:
                     raise TransferError(
                         "file_hash_mismatch", "The migrated file checksum failed.", 409
                     )
-                destination = self._resolve_destination(normalized)
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 staged.replace(destination)
             return MigrationChunkReceipt(

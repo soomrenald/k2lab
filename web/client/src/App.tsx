@@ -108,6 +108,8 @@ export function App() {
     <WorkspaceStudio
       workspace={state.workspace}
       developmentBackend={state.capabilities.development_backend}
+      datacenters={state.datacenters}
+      networkVolumes={state.networkVolumes}
       onWorkspace={(workspace) => setState({ ...state, workspace })}
       onDelete={() => setState({ ...state, workspace: null })}
     />

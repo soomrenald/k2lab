@@ -25,6 +25,7 @@ from k2_region_lab.agent.domain import (
     UploadCompleteResponse,
     UploadCreateRequest,
     UploadSession,
+    WorkspaceManifest,
 )
 
 
@@ -44,9 +45,23 @@ class WorkspaceState(StrEnum):
     ERROR = "error"
 
 
+class MigrationState(StrEnum):
+    PREPARING = "preparing"
+    COPYING = "copying"
+    VERIFYING = "verifying"
+    AWAITING_CONFIRMATION = "awaiting_confirmation"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
 class CloudType(StrEnum):
     SECURE = "secure"
     COMMUNITY = "community"
+
+
+class StorageTier(StrEnum):
+    POD_VOLUME = "pod_volume"
+    NETWORK_VOLUME = "network_volume"
 
 
 class GpuOption(BaseModel):
@@ -146,6 +161,25 @@ class WorkspaceTerminateRequest(BaseModel):
     confirmation: str = Field(min_length=1, max_length=80)
 
 
+class WorkspaceMigrationCreateRequest(BaseModel):
+    network_volume_id: str | None = Field(
+        default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,190}$"
+    )
+    workspace_disk_gb: int | None = Field(default=None, ge=50, le=4_000)
+    datacenter_priority_ids: list[str] = Field(default_factory=list, max_length=12)
+
+    @field_validator("datacenter_priority_ids")
+    @classmethod
+    def unique_datacenter_priorities(cls, value: list[str]) -> list[str]:
+        if len(set(value)) != len(value):
+            raise ValueError("Datacenter priorities must not contain duplicates")
+        return value
+
+
+class WorkspaceMigrationConfirmRequest(BaseModel):
+    confirmation: str = Field(min_length=1, max_length=80)
+
+
 class WorkspaceRecord(BaseModel):
     id: str
     name: str
@@ -172,6 +206,35 @@ class WorkspaceRecord(BaseModel):
     network_volume_id: str | None = None
     datacenter_id: str | None = None
     owns_network_volume: bool = False
+    storage_tier: StorageTier = StorageTier.POD_VOLUME
+    workspace_layout_version: int = Field(default=1, ge=1)
+    retained_original_provider_resource_id: str | None = None
+
+
+class WorkspaceMigrationRecord(BaseModel):
+    id: str
+    operation_id: str | None = None
+    workspace_id: str
+    state: MigrationState
+    source_provider_resource_id: str
+    target_provider_resource_id: str | None = None
+    target_network_volume_id: str | None = None
+    target_datacenter_id: str | None = None
+    target_gpu: GpuOption | None = None
+    target_compute_per_hour: float = Field(default=0, ge=0)
+    source_storage_per_month: float = Field(default=0, ge=0)
+    target_workspace_disk_gb: int = Field(ge=50, le=4_000)
+    owns_target_volume: bool = False
+    source_manifest: WorkspaceManifest | None = None
+    target_manifest: WorkspaceManifest | None = None
+    current_file_index: int = Field(default=0, ge=0)
+    current_file_offset: int = Field(default=0, ge=0)
+    bytes_copied: int = Field(default=0, ge=0)
+    bytes_total: int = Field(default=0, ge=0)
+    error_code: str | None = None
+    error_message: str | None = None
+    created_at: datetime
+    updated_at: datetime
 
 
 class CostSnapshot(BaseModel):
@@ -255,6 +318,26 @@ class WorkspaceBackend(Protocol):
 
     @abstractmethod
     async def get_cost_snapshot(self, workspace_id: str) -> CostSnapshot: ...
+
+    async def create_workspace_migration(
+        self, workspace_id: str, request: WorkspaceMigrationCreateRequest
+    ) -> WorkspaceMigrationRecord: ...
+
+    async def list_workspace_migrations(
+        self, workspace_id: str
+    ) -> list[WorkspaceMigrationRecord]: ...
+
+    async def get_workspace_migration(
+        self, workspace_id: str, migration_id: str
+    ) -> WorkspaceMigrationRecord: ...
+
+    async def resume_workspace_migration(
+        self, workspace_id: str, migration_id: str
+    ) -> WorkspaceMigrationRecord: ...
+
+    async def confirm_workspace_migration(
+        self, workspace_id: str, migration_id: str, confirmation: str
+    ) -> WorkspaceMigrationRecord: ...
 
     async def get_file_inventory(
         self, workspace_id: str, kind: FileKind, cursor: str | None = None

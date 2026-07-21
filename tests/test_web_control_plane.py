@@ -203,6 +203,50 @@ class WebControlPlaneTests(unittest.IsolatedAsyncioTestCase):
         cost = await self.client.get(f"/api/v1/workspaces/{workspace['id']}/cost")
         self.assertEqual(cost.json()["storage_per_month"], 7.0)
 
+    async def test_persistent_to_portable_migration_requires_verified_confirmation(self) -> None:
+        await self.connect()
+        plan = await self.plan()
+        created = await self.client.post(
+            "/api/v1/workspaces",
+            json={"plan_id": plan["id"], "name": "Migration preview"},
+        )
+        workspace = created.json()
+        started = await self.client.post(
+            f"/api/v1/workspaces/{workspace['id']}/migrations",
+            json={"workspace_disk_gb": 200, "datacenter_priority_ids": ["US-GA-2"]},
+        )
+        self.assertEqual(started.status_code, 202, started.text)
+        migration = started.json()
+        migrating_cost = await self.client.get(f"/api/v1/workspaces/{workspace['id']}/cost")
+        self.assertEqual(migrating_cost.json()["storage_per_month"], 34.0)
+        listed = await self.client.get(f"/api/v1/workspaces/{workspace['id']}/migrations")
+        self.assertEqual(listed.json()[0]["id"], migration["id"])
+
+        verified = await self.client.post(
+            f"/api/v1/workspaces/{workspace['id']}/migrations/{migration['id']}/resume"
+        )
+        self.assertEqual(verified.json()["state"], "awaiting_confirmation")
+        switched = await self.client.get(f"/api/v1/workspaces/{workspace['id']}")
+        self.assertEqual(switched.json()["mode"], "portable_workspace")
+        self.assertIsNotNone(switched.json()["retained_original_provider_resource_id"])
+        retained_cost = await self.client.get(f"/api/v1/workspaces/{workspace['id']}/cost")
+        self.assertEqual(retained_cost.json()["storage_per_month"], 34.0)
+
+        rejected = await self.client.post(
+            f"/api/v1/workspaces/{workspace['id']}/migrations/{migration['id']}/confirm",
+            json={"confirmation": "wrong"},
+        )
+        self.assertEqual(rejected.status_code, 409)
+        confirmed = await self.client.post(
+            f"/api/v1/workspaces/{workspace['id']}/migrations/{migration['id']}/confirm",
+            json={"confirmation": "Migration preview"},
+        )
+        self.assertEqual(confirmed.json()["state"], "completed")
+        final_workspace = await self.client.get(f"/api/v1/workspaces/{workspace['id']}")
+        self.assertIsNone(final_workspace.json()["retained_original_provider_resource_id"])
+        final_cost = await self.client.get(f"/api/v1/workspaces/{workspace['id']}/cost")
+        self.assertEqual(final_cost.json()["storage_per_month"], 14.0)
+
 
 @unittest.skipUnless(FASTAPI_AVAILABLE, "web dependencies are not installed")
 class HostedWebSecurityTests(unittest.IsolatedAsyncioTestCase):

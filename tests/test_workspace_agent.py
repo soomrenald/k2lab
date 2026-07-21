@@ -221,6 +221,20 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
                         )
                         self.assertEqual(retried.status_code, 200, retried.text)
                     offset += len(chunk)
+                retried_complete = await target.put(
+                    f"/v1/migrations/files/{entry['path']}",
+                    headers={
+                        **self.headers,
+                        "X-Migration-ID": "migration123",
+                        "X-File-Offset": "0",
+                        "X-File-Size": str(len(content)),
+                        "X-File-SHA256": entry["sha256"],
+                        "X-Chunk-SHA256": hashlib.sha256(content).hexdigest(),
+                    },
+                    content=content,
+                )
+                self.assertEqual(retried_complete.status_code, 200)
+                self.assertTrue(retried_complete.json()["completed"])
             target_manifest = await target.post("/v1/migrations/manifests", headers=self.headers)
             self.assertEqual(target_manifest.status_code, 200, target_manifest.text)
             self.assertEqual(target_manifest.json()["root_sha256"], source_manifest["root_sha256"])

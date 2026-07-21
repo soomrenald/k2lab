@@ -36,6 +36,9 @@ Implemented:
 - persistent-Pod and portable-workspace onboarding, RunPod datacenter/network-volume
   inventory, compatible GPU filtering, independent storage pricing, and ephemeral Pod
   termination/recreation around a retained network volume.
+- sealed allowlisted workspace manifests, resumable checksum-verified persistent-to-portable
+  copy, durable reconnectable migration progress, manifest-gated switchover, and separate
+  typed confirmation before deleting the stopped original Pod.
 
 Not yet implemented:
 
@@ -95,6 +98,15 @@ cursors. Raw filesystem paths, prompts, and credentials are excluded from those 
 completed images are returned through authenticated opaque output URLs with HTTP Range
 support.
 
+Migration temporarily bills both source and target compute plus both storage resources.
+Closing the browser does not discard progress: reopen the workspace, choose the migration
+action, and resume from the last accepted chunk. Explicit **Stop GPU now** aborts an active
+migration, terminates its temporary target Pod, unseals the source, and retains the target
+network volume. A manifest mismatch also leaves the original workspace authoritative and
+retains the network volume for inspection. The application never automatically deletes a
+network volume. See [`../docs/runpod_workspace_operations.md`](../docs/runpod_workspace_operations.md)
+for the lifecycle and recovery runbook.
+
 ## Local development
 
 Install the Python and browser dependencies:
@@ -141,5 +153,7 @@ and this exact sentinel are provided:
 uv run pytest -q tests/test_runpod_live_acceptance.py
 ```
 
-That test creates a billable Pod and 50 GB volume, verifies readiness and upload persistence
-across stop/start, and permanently deletes the Pod and volume in cleanup.
+The live suite covers both a billable persistent Pod and a portable network-volume workspace.
+It verifies upload persistence across persistent stop/start and verifies an allowlisted SHA-256
+manifest across portable Pod termination/recreation. Cleanup permanently deletes every test Pod
+and the explicitly tracked disposable network volume.

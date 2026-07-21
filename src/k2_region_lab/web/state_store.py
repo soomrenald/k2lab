@@ -19,6 +19,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from k2_region_lab.agent.domain import GenerationJob, JobEvent, RemoteTransfer
 from k2_region_lab.web.domain import (
+    WorkspaceMigrationRecord,
     WorkspaceError,
     WorkspacePlan,
     WorkspaceRecord,
@@ -92,6 +93,12 @@ class RunPodStateStore(Protocol):
     ) -> None: ...
 
     async def incomplete_operations(self) -> list[dict[str, Any]]: ...
+
+    async def save_migration(self, migration: WorkspaceMigrationRecord) -> None: ...
+
+    async def get_migration(self, migration_id: str) -> WorkspaceMigrationRecord | None: ...
+
+    async def list_migrations(self, workspace_id: str) -> list[WorkspaceMigrationRecord]: ...
 
     async def save_transfer(self, workspace_id: str, transfer: RemoteTransfer) -> None: ...
 
@@ -191,6 +198,19 @@ class OperationJournalEntity(Base):
     operation: Mapped[str] = mapped_column(String(80), nullable=False)
     state: Mapped[str] = mapped_column(String(32), nullable=False)
     redacted_context: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class WorkspaceMigrationEntity(Base):
+    __tablename__ = "workspace_migrations"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    workspace_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
+    state: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
@@ -522,6 +542,46 @@ class SqlRunPodStateStore:
                 for entity in result
                 if entity.state not in terminal
             ]
+
+    async def save_migration(self, migration: WorkspaceMigrationRecord) -> None:
+        await self.initialize()
+        async with self._sessions.begin() as session:
+            entity = await session.get(WorkspaceMigrationEntity, migration.id)
+            if entity is None:
+                entity = WorkspaceMigrationEntity(
+                    id=migration.id, workspace_id=migration.workspace_id
+                )
+                session.add(entity)
+            elif entity.workspace_id != migration.workspace_id:
+                raise WorkspaceError(
+                    "migration_workspace_mismatch",
+                    "The migration belongs to another workspace.",
+                    status_code=409,
+                )
+            entity.state = migration.state.value
+            entity.payload = migration.model_dump(mode="json")
+            entity.created_at = migration.created_at
+            entity.updated_at = migration.updated_at
+
+    async def get_migration(self, migration_id: str) -> WorkspaceMigrationRecord | None:
+        await self.initialize()
+        async with self._sessions() as session:
+            entity = await session.get(WorkspaceMigrationEntity, migration_id)
+            return (
+                WorkspaceMigrationRecord.model_validate(entity.payload)
+                if entity is not None
+                else None
+            )
+
+    async def list_migrations(self, workspace_id: str) -> list[WorkspaceMigrationRecord]:
+        await self.initialize()
+        async with self._sessions() as session:
+            result = await session.scalars(
+                select(WorkspaceMigrationEntity)
+                .where(WorkspaceMigrationEntity.workspace_id == workspace_id)
+                .order_by(WorkspaceMigrationEntity.created_at)
+            )
+            return [WorkspaceMigrationRecord.model_validate(entity.payload) for entity in result]
 
     async def save_transfer(self, workspace_id: str, transfer: RemoteTransfer) -> None:
         await self.initialize()

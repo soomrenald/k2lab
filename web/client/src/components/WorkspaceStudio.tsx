@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { FileRecord, GenerationJob, JobKind, WorkspaceRecord } from "../api";
+import type { DatacenterOption, FileRecord, GenerationJob, JobKind, NetworkVolumeOption, WorkspaceMigrationRecord, WorkspaceRecord } from "../api";
 import { controlPlane } from "../api";
 import { Icon, type IconName } from "./Icon";
 import { Inspector } from "./Inspector";
@@ -15,6 +15,8 @@ import {
 interface Props {
   workspace: WorkspaceRecord;
   developmentBackend: boolean;
+  datacenters: DatacenterOption[];
+  networkVolumes: NetworkVolumeOption[];
   onWorkspace: (workspace: WorkspaceRecord) => void;
   onDelete: () => void;
 }
@@ -24,7 +26,7 @@ const starterRegions: RegionBox[] = [
   { id: "region-b", name: "Secondary subject", layer: "generation", x: 565, y: 220, width: 270, height: 560, prompt: "", enabled: true },
 ];
 
-export function WorkspaceStudio({ workspace, developmentBackend, onWorkspace, onDelete }: Props) {
+export function WorkspaceStudio({ workspace, developmentBackend, datacenters, networkVolumes, onWorkspace, onDelete }: Props) {
   const [mode, setMode] = useState<StudioMode>("generation");
   const [activeLayer, setActiveLayer] = useState<RegionLayer>("generation");
   const [regions, setRegions] = useState<RegionBox[]>(starterRegions);
@@ -44,6 +46,12 @@ export function WorkspaceStudio({ workspace, developmentBackend, onWorkspace, on
   const [showDelete, setShowDelete] = useState(false);
   const [showAssets, setShowAssets] = useState(false);
   const [showTransfers, setShowTransfers] = useState(false);
+  const [showMigration, setShowMigration] = useState(false);
+  const [migration, setMigration] = useState<WorkspaceMigrationRecord | null>(null);
+  const [migrationConfirmation, setMigrationConfirmation] = useState("");
+  const [migrationVolumeId, setMigrationVolumeId] = useState("");
+  const [migrationDatacenterId, setMigrationDatacenterId] = useState(datacenters[0]?.id ?? "");
+  const [migrationDiskGb, setMigrationDiskGb] = useState(workspace.workspace_disk_gb);
   const [deleteConfirmation, setDeleteConfirmation] = useState("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
@@ -95,6 +103,15 @@ export function WorkspaceStudio({ workspace, developmentBackend, onWorkspace, on
     return () => window.clearInterval(interval);
   }, [job, workspace.id]);
 
+  useEffect(() => {
+    if (!showCloud && !showMigration) return undefined;
+    let cancelled = false;
+    void controlPlane.migrations(workspace.id).then((items) => {
+      if (!cancelled && items.length) setMigration(items[items.length - 1]);
+    }).catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [showCloud, showMigration, workspace.id]);
+
   const running = workspace.state === "ready";
   const activeCompute = ["provisioning", "starting", "ready", "stopping"].includes(workspace.state);
   const canExtend = workspace.state === "starting" || workspace.state === "ready";
@@ -145,6 +162,72 @@ export function WorkspaceStudio({ workspace, developmentBackend, onWorkspace, on
       onDelete();
     } catch (caught) {
       setMessage(caught instanceof Error ? caught.message : "Workspace deletion failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function advanceMigration(initial: WorkspaceMigrationRecord) {
+    let next = initial;
+    while (["preparing", "copying", "verifying"].includes(next.state)) {
+      next = await controlPlane.resumeMigration(workspace.id, next.id);
+      setMigration(next);
+    }
+    if (next.state === "awaiting_confirmation") {
+      onWorkspace(await controlPlane.workspace(workspace.id));
+      setMessage("Manifest verification succeeded. Test the portable workspace, then explicitly delete the retained original Pod.");
+    } else if (next.error_message) {
+      setMessage(next.error_message);
+    }
+  }
+
+  async function beginMigration() {
+    setBusy(true);
+    setMessage("");
+    try {
+      const created = await controlPlane.createMigration(workspace.id, {
+        network_volume_id: migrationVolumeId || null,
+        workspace_disk_gb: migrationVolumeId
+          ? networkVolumes.find((item) => item.id === migrationVolumeId)?.size_gb
+          : migrationDiskGb,
+        datacenter_priority_ids: migrationVolumeId || !migrationDatacenterId
+          ? [] : [migrationDatacenterId],
+      });
+      setMigration(created);
+      await advanceMigration(created);
+    } catch (caught) {
+      setMessage(caught instanceof Error ? caught.message : "Workspace migration failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function resumeMigration() {
+    if (!migration) return;
+    setBusy(true);
+    try {
+      await advanceMigration(migration);
+    } catch (caught) {
+      setMessage(caught instanceof Error ? caught.message : "Could not resume migration");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function confirmMigration() {
+    if (!migration) return;
+    setBusy(true);
+    try {
+      const completed = await controlPlane.confirmMigration(
+        workspace.id, migration.id, migrationConfirmation,
+      );
+      setMigration(completed);
+      setMigrationConfirmation("");
+      setShowMigration(false);
+      onWorkspace(await controlPlane.workspace(workspace.id));
+      setMessage("Migration complete. The original Pod and its regular volume were deleted.");
+    } catch (caught) {
+      setMessage(caught instanceof Error ? caught.message : "Could not confirm migration");
     } finally {
       setBusy(false);
     }
@@ -226,7 +309,13 @@ export function WorkspaceStudio({ workspace, developmentBackend, onWorkspace, on
               : canStart
                 ? <button className="primary-button" onClick={() => lifecycle("start")}>Start GPU</button>
                 : null}
-            <button className="danger-text-button" onClick={() => setShowDelete(true)}>Delete cloud workspace</button>
+            {workspace.mode === "persistent_pod" && (
+              <button className="quiet-button" onClick={() => setShowMigration(true)}>Migrate to portable storage</button>
+            )}
+            {workspace.retained_original_provider_resource_id && (
+              <button className="quiet-button" onClick={() => setShowMigration(true)}>Confirm verified migration</button>
+            )}
+            <button className="danger-text-button" disabled={Boolean(workspace.retained_original_provider_resource_id)} title={workspace.retained_original_provider_resource_id ? "Confirm the verified migration first" : undefined} onClick={() => setShowDelete(true)}>Delete cloud workspace</button>
           </div>
           <p className="field-help">{workspace.mode === "portable_workspace"
             ? "Stopping terminates the Pod and retains the network volume. Deleting this workspace also retains that volume for safety."
@@ -309,6 +398,70 @@ export function WorkspaceStudio({ workspace, developmentBackend, onWorkspace, on
             <input id="delete-confirmation" className="text-input" value={deleteConfirmation} onChange={(event) => setDeleteConfirmation(event.target.value)} />
             {message && <div className="error-banner">{message}</div>}
             <div className="modal-actions"><button className="quiet-button" onClick={() => { setShowDelete(false); setDeleteConfirmation(""); }}>Cancel</button><button className="danger-button" disabled={busy || deleteConfirmation !== workspace.name} onClick={terminate}>{workspace.mode === "portable_workspace" ? "Delete workspace; retain volume" : "Delete workspace and files"}</button></div>
+          </section>
+        </div>
+      )}
+      {showMigration && (
+        <div className="modal-backdrop" role="presentation">
+          <section className="confirm-modal" role="dialog" aria-modal="true" aria-labelledby="migration-title">
+            <div className="danger-icon"><Icon name="transfer" /></div>
+            <p className="kicker">Verified storage migration</p>
+            <h2 id="migration-title">{migration?.state === "awaiting_confirmation" ? "Confirm the portable copy" : "Migrate to a network volume?"}</h2>
+            {migration?.state === "awaiting_confirmation" ? (
+              <>
+                <p>The source and target SHA-256 manifests match. The original Pod is stopped and retained so you can test the portable workspace. Confirming permanently deletes its regular volume.</p>
+                <label className="field-label" htmlFor="migration-confirmation">Type <strong>{workspace.name}</strong> to delete the original Pod</label>
+                <input id="migration-confirmation" className="text-input" value={migrationConfirmation} onChange={(event) => setMigrationConfirmation(event.target.value)} />
+              </>
+            ) : (
+              <>
+                <p>Generation and transfers will stop while durable models, projects, inputs, outputs, and job state are copied. Switchover occurs only after file inventory and SHA-256 manifests match. The original Pod remains stopped until a separate confirmation.</p>
+                {!migration && (
+                  <div className="two-fields">
+                    <label className="number-field">
+                      <span>Target network volume</span>
+                      <select className="text-input" value={migrationVolumeId} onChange={(event) => {
+                        const volume = networkVolumes.find((item) => item.id === event.target.value);
+                        setMigrationVolumeId(event.target.value);
+                        if (volume) {
+                          setMigrationDatacenterId(volume.datacenter_id);
+                          setMigrationDiskGb(volume.size_gb);
+                        }
+                      }}>
+                        <option value="">Create a new network volume</option>
+                        {networkVolumes.map((volume) => <option value={volume.id} key={volume.id}>{volume.name} · {volume.size_gb} GB · {volume.datacenter_id}</option>)}
+                      </select>
+                    </label>
+                    <label className="number-field">
+                      <span>Datacenter</span>
+                      <select className="text-input" disabled={Boolean(migrationVolumeId)} value={migrationDatacenterId} onChange={(event) => setMigrationDatacenterId(event.target.value)}>
+                        {datacenters.map((datacenter) => <option value={datacenter.id} key={datacenter.id}>{datacenter.name} · {datacenter.location}</option>)}
+                      </select>
+                    </label>
+                    {!migrationVolumeId && (
+                      <label className="number-field">
+                        <span>Target capacity</span>
+                        <span className="number-input-wrap"><input type="number" min={50} max={4000} value={migrationDiskGb} onChange={(event) => setMigrationDiskGb(Math.max(50, Math.min(4000, Number(event.target.value))))} /><small>GB</small></span>
+                      </label>
+                    )}
+                  </div>
+                )}
+              </>
+            )}
+            {migration && migration.bytes_total > 0 && (
+              <p className="field-help">Copied {(migration.bytes_copied / 1_048_576).toFixed(1)} of {(migration.bytes_total / 1_048_576).toFixed(1)} MiB · {migration.state}</p>
+            )}
+            {message && <div className="error-banner">{message}</div>}
+            <div className="modal-actions">
+              <button className="quiet-button" onClick={() => setShowMigration(false)}>Close</button>
+              {migration?.state === "awaiting_confirmation" ? (
+                <button className="danger-button" disabled={busy || migrationConfirmation !== workspace.name} onClick={confirmMigration}>Delete original Pod and volume</button>
+              ) : migration && ["preparing", "copying", "verifying"].includes(migration.state) ? (
+                <button className="primary-button" disabled={busy} onClick={resumeMigration}>{busy ? "Migrating…" : "Resume verified copy"}</button>
+              ) : (
+                <button className="primary-button" disabled={busy || workspace.mode !== "persistent_pod"} onClick={beginMigration}>{busy ? "Preparing migration…" : "Create volume and begin copy"}</button>
+              )}
+            </div>
           </section>
         </div>
       )}

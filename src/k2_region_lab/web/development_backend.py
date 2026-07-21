@@ -23,6 +23,7 @@ from k2_region_lab.agent.domain import (
     UploadCompleteResponse,
     UploadCreateRequest,
     UploadSession,
+    WorkspaceManifest,
 )
 from k2_region_lab.web.domain import (
     CloudType,
@@ -31,10 +32,14 @@ from k2_region_lab.web.domain import (
     DatacenterOption,
     GpuOption,
     GpuAvailability,
+    MigrationState,
     NetworkVolumeOption,
+    StorageTier,
     WorkspaceCreateRequest,
     WorkspaceError,
     WorkspaceMode,
+    WorkspaceMigrationCreateRequest,
+    WorkspaceMigrationRecord,
     WorkspacePlan,
     WorkspacePlanRequest,
     WorkspaceRecord,
@@ -55,6 +60,7 @@ class DevelopmentWorkspaceBackend:
         self._credential = CredentialStatus(configured=False, development_only=True)
         self._plans: dict[str, WorkspacePlan] = {}
         self._workspaces: dict[str, WorkspaceRecord] = {}
+        self._migrations: dict[str, WorkspaceMigrationRecord] = {}
         self._gpus = [
             GpuOption(
                 id="NVIDIA RTX A6000",
@@ -329,6 +335,11 @@ class DevelopmentWorkspaceBackend:
                 network_volume_id=network_volume.id if network_volume else None,
                 datacenter_id=plan.selected_datacenter_id,
                 owns_network_volume=plan.create_network_volume,
+                storage_tier=(
+                    StorageTier.NETWORK_VOLUME
+                    if plan.request.mode == WorkspaceMode.PORTABLE_WORKSPACE
+                    else StorageTier.POD_VOLUME
+                ),
             )
             self._workspaces[workspace.id] = workspace
         return workspace.model_copy(deep=True)
@@ -370,6 +381,22 @@ class DevelopmentWorkspaceBackend:
                     f"A {workspace.state.value} workspace cannot be stopped.",
                     status_code=409,
                 )
+            for migration_id, migration in self._migrations.items():
+                if migration.workspace_id == workspace_id and migration.state in {
+                    MigrationState.PREPARING,
+                    MigrationState.COPYING,
+                    MigrationState.VERIFYING,
+                }:
+                    self._migrations[migration_id] = migration.model_copy(
+                        update={
+                            "state": MigrationState.FAILED,
+                            "error_code": "migration_aborted_by_stop",
+                            "error_message": (
+                                "The migration was stopped; its volume was retained."
+                            ),
+                            "updated_at": utc_now(),
+                        }
+                    )
             workspace = workspace.model_copy(
                 update={
                     "state": WorkspaceState.STOPPED,
@@ -389,6 +416,27 @@ class DevelopmentWorkspaceBackend:
             workspace = self._workspace(workspace_id)
             if workspace.state == WorkspaceState.DELETED:
                 return workspace.model_copy(deep=True)
+            if workspace.retained_original_provider_resource_id:
+                raise WorkspaceError(
+                    "migration_confirmation_required",
+                    "Confirm the migrated workspace before deleting cloud resources.",
+                    status_code=409,
+                )
+            if any(
+                migration.workspace_id == workspace_id
+                and migration.state
+                in {
+                    MigrationState.PREPARING,
+                    MigrationState.COPYING,
+                    MigrationState.VERIFYING,
+                }
+                for migration in self._migrations.values()
+            ):
+                raise WorkspaceError(
+                    "migration_in_progress",
+                    "Finish or stop the migration before deleting the workspace.",
+                    status_code=409,
+                )
             if confirmation != workspace.name:
                 raise WorkspaceError(
                     "workspace_delete_confirmation_mismatch",
@@ -432,24 +480,222 @@ class DevelopmentWorkspaceBackend:
         accrued = 0.0
         if workspace.state == WorkspaceState.READY:
             accrued = elapsed / 3600 * workspace.estimated_compute_per_hour
+        compute_per_hour = (
+            workspace.estimated_compute_per_hour if workspace.state == WorkspaceState.READY else 0.0
+        )
+        storage_per_month = (
+            workspace.estimated_storage_per_month
+            if workspace.network_volume_id
+            else 0.0
+            if workspace.state == WorkspaceState.DELETED
+            else workspace.estimated_storage_per_month
+        )
+        migrations = [
+            item for item in self._migrations.values() if item.workspace_id == workspace_id
+        ]
+        migration = migrations[-1] if migrations else None
+        if migration:
+            target_storage = round(migration.target_workspace_disk_gb * 0.07, 2)
+            if migration.state in {
+                MigrationState.PREPARING,
+                MigrationState.COPYING,
+                MigrationState.VERIFYING,
+            }:
+                compute_per_hour += migration.target_compute_per_hour
+                storage_per_month += target_storage
+            elif migration.state == MigrationState.AWAITING_CONFIRMATION:
+                storage_per_month += migration.source_storage_per_month
+            elif migration.state == MigrationState.FAILED:
+                storage_per_month += target_storage
         return CostSnapshot(
             workspace_id=workspace.id,
             state=workspace.state,
-            compute_per_hour=(
-                workspace.estimated_compute_per_hour
-                if workspace.state == WorkspaceState.READY
-                else 0.0
-            ),
-            storage_per_month=(
-                workspace.estimated_storage_per_month
-                if workspace.network_volume_id
-                else 0.0
-                if workspace.state == WorkspaceState.DELETED
-                else workspace.estimated_storage_per_month
-            ),
+            compute_per_hour=compute_per_hour,
+            storage_per_month=storage_per_month,
             accrued_compute_estimate=accrued,
             observed_at=utc_now(),
         )
+
+    async def create_workspace_migration(
+        self, workspace_id: str, request: WorkspaceMigrationCreateRequest
+    ) -> WorkspaceMigrationRecord:
+        async with self._lock:
+            workspace = self._workspace(workspace_id)
+            if (
+                workspace.mode != WorkspaceMode.PERSISTENT_POD
+                or workspace.state != WorkspaceState.READY
+            ):
+                raise WorkspaceError(
+                    "migration_source_invalid",
+                    "A ready persistent-Pod workspace is required.",
+                    status_code=409,
+                )
+            if any(
+                item.workspace_id == workspace_id
+                and item.state
+                in {MigrationState.PREPARING, MigrationState.COPYING, MigrationState.VERIFYING}
+                for item in self._migrations.values()
+            ):
+                raise WorkspaceError(
+                    "migration_in_progress",
+                    "Finish the active workspace migration first.",
+                    status_code=409,
+                )
+            volume = next(
+                (item for item in self._network_volumes if item.id == request.network_volume_id),
+                None,
+            )
+            target_size = request.workspace_disk_gb or workspace.workspace_disk_gb
+            if request.network_volume_id and volume is None:
+                raise WorkspaceError(
+                    "network_volume_not_found",
+                    "The selected development network volume does not exist.",
+                    status_code=404,
+                )
+            if volume and volume.size_gb < target_size:
+                raise WorkspaceError(
+                    "network_volume_too_small",
+                    "The selected network volume is smaller than the migration target.",
+                    status_code=409,
+                )
+            if volume:
+                target_size = volume.size_gb
+            else:
+                datacenter_id = (
+                    request.datacenter_priority_ids[0]
+                    if request.datacenter_priority_ids
+                    else "US-GA-2"
+                )
+                volume = NetworkVolumeOption(
+                    id=f"dev-volume-{uuid4().hex[:8]}",
+                    name=f"Migration for {workspace.name}",
+                    size_gb=target_size,
+                    datacenter_id=datacenter_id,
+                )
+                self._network_volumes.append(volume)
+            now = utc_now()
+            empty_manifest = WorkspaceManifest(
+                generation=1,
+                layout_version=1,
+                files=[],
+                file_count=0,
+                total_bytes=0,
+                root_sha256="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                created_at=now,
+            )
+            migration = WorkspaceMigrationRecord(
+                id=uuid4().hex,
+                workspace_id=workspace.id,
+                state=MigrationState.PREPARING,
+                source_provider_resource_id=workspace.provider_resource_id or "dev-source",
+                target_provider_resource_id=f"dev-pod-{uuid4().hex[:8]}",
+                target_network_volume_id=volume.id,
+                target_datacenter_id=volume.datacenter_id,
+                target_gpu=workspace.gpu,
+                target_compute_per_hour=workspace.estimated_compute_per_hour,
+                source_storage_per_month=workspace.estimated_storage_per_month,
+                target_workspace_disk_gb=volume.size_gb,
+                owns_target_volume=request.network_volume_id is None,
+                source_manifest=empty_manifest,
+                bytes_total=0,
+                created_at=now,
+                updated_at=now,
+            )
+            self._migrations[migration.id] = migration
+            return migration.model_copy(deep=True)
+
+    async def get_workspace_migration(
+        self, workspace_id: str, migration_id: str
+    ) -> WorkspaceMigrationRecord:
+        migration = self._migration(workspace_id, migration_id)
+        return migration.model_copy(deep=True)
+
+    async def list_workspace_migrations(self, workspace_id: str) -> list[WorkspaceMigrationRecord]:
+        self._workspace(workspace_id)
+        return [
+            item.model_copy(deep=True)
+            for item in self._migrations.values()
+            if item.workspace_id == workspace_id
+        ]
+
+    async def resume_workspace_migration(
+        self, workspace_id: str, migration_id: str
+    ) -> WorkspaceMigrationRecord:
+        async with self._lock:
+            migration = self._migration(workspace_id, migration_id)
+            if migration.state != MigrationState.PREPARING:
+                return migration.model_copy(deep=True)
+            workspace = self._workspace(workspace_id)
+            if migration.source_manifest is None:
+                raise WorkspaceError(
+                    "migration_state_invalid",
+                    "The development migration manifest is missing.",
+                    status_code=409,
+                )
+            target_manifest = migration.source_manifest.model_copy(
+                update={"generation": 2, "created_at": utc_now()}
+            )
+            updated_workspace = workspace.model_copy(
+                update={
+                    "mode": WorkspaceMode.PORTABLE_WORKSPACE,
+                    "provider_resource_id": migration.target_provider_resource_id,
+                    "network_volume_id": migration.target_network_volume_id,
+                    "datacenter_id": migration.target_datacenter_id,
+                    "workspace_disk_gb": migration.target_workspace_disk_gb,
+                    "estimated_storage_per_month": round(
+                        migration.target_workspace_disk_gb * 0.07, 2
+                    ),
+                    "owns_network_volume": migration.owns_target_volume,
+                    "storage_tier": StorageTier.NETWORK_VOLUME,
+                    "workspace_layout_version": target_manifest.layout_version,
+                    "retained_original_provider_resource_id": (
+                        migration.source_provider_resource_id
+                    ),
+                    "updated_at": utc_now(),
+                }
+            )
+            self._workspaces[workspace_id] = updated_workspace
+            migration = migration.model_copy(
+                update={
+                    "state": MigrationState.AWAITING_CONFIRMATION,
+                    "target_manifest": target_manifest,
+                    "updated_at": utc_now(),
+                }
+            )
+            self._migrations[migration.id] = migration
+            return migration.model_copy(deep=True)
+
+    async def confirm_workspace_migration(
+        self, workspace_id: str, migration_id: str, confirmation: str
+    ) -> WorkspaceMigrationRecord:
+        async with self._lock:
+            migration = self._migration(workspace_id, migration_id)
+            workspace = self._workspace(workspace_id)
+            if migration.state == MigrationState.COMPLETED:
+                return migration.model_copy(deep=True)
+            if migration.state != MigrationState.AWAITING_CONFIRMATION:
+                raise WorkspaceError(
+                    "migration_not_verified",
+                    "The migration has not been verified.",
+                    status_code=409,
+                )
+            if confirmation != workspace.name:
+                raise WorkspaceError(
+                    "migration_confirmation_mismatch",
+                    "Type the workspace name exactly to delete the original Pod volume.",
+                    status_code=409,
+                )
+            self._workspaces[workspace_id] = workspace.model_copy(
+                update={
+                    "retained_original_provider_resource_id": None,
+                    "updated_at": utc_now(),
+                }
+            )
+            migration = migration.model_copy(
+                update={"state": MigrationState.COMPLETED, "updated_at": utc_now()}
+            )
+            self._migrations[migration.id] = migration
+            return migration.model_copy(deep=True)
 
     async def get_file_inventory(
         self, workspace_id: str, kind: FileKind, cursor: str | None = None
@@ -583,3 +829,13 @@ class DevelopmentWorkspaceBackend:
                 "The requested workspace does not exist.",
                 status_code=404,
             ) from error
+
+    def _migration(self, workspace_id: str, migration_id: str) -> WorkspaceMigrationRecord:
+        migration = self._migrations.get(migration_id)
+        if migration is None or migration.workspace_id != workspace_id:
+            raise WorkspaceError(
+                "migration_not_found",
+                "The requested workspace migration does not exist.",
+                status_code=404,
+            )
+        return migration
