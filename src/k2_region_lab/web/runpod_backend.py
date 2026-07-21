@@ -7,6 +7,7 @@ from typing import Any
 from uuid import uuid4
 
 from k2_region_lab.web.credential_vault import CredentialVault
+from k2_region_lab.web.agent_client import WorkspaceAgentApi, WorkspaceAgentClient
 from k2_region_lab.web.domain import (
     CloudType,
     CostSnapshot,
@@ -45,6 +46,7 @@ class RunPodPersistentPodBackend:
         image_digest: str,
         image_version: str,
         api_factory: Callable[[str], RunPodApi] = RunPodApiClient,
+        agent_factory: Callable[[str, str], WorkspaceAgentApi] = WorkspaceAgentClient,
     ) -> None:
         if "@sha256:" not in image_digest:
             raise ValueError("RunPod runtime image must use an immutable sha256 digest")
@@ -53,6 +55,7 @@ class RunPodPersistentPodBackend:
         self._image_digest = image_digest
         self._image_version = image_version
         self._api_factory = api_factory
+        self._agent_factory = agent_factory
 
     async def credential_status(self) -> CredentialStatus:
         return await self._vault.status(self.PROVIDER_CREDENTIAL_ID)
@@ -232,16 +235,7 @@ class RunPodPersistentPodBackend:
             return workspace.model_copy(deep=True)
         provider_id = self._provider_id(workspace)
         provider = await (await self._api()).get_pod(provider_id)
-        status = str(provider.get("desiredStatus", ""))
-        updated = workspace.model_copy(
-            update={
-                "state": self._state_from_provider(status),
-                "updated_at": utc_now(),
-                "readiness": self._readiness(status),
-                "error_code": None,
-                "error_message": None,
-            }
-        )
+        updated = await self._workspace_from_provider(workspace, provider)
         await self.state_store.save_workspace(updated, image_digest=self._image_digest)
         return updated.model_copy(deep=True)
 
@@ -412,16 +406,8 @@ class RunPodPersistentPodBackend:
             try:
                 provider = await api.get_pod(workspace.provider_resource_id)
                 status = str(provider.get("desiredStatus", ""))
-                state = self._state_from_provider(status)
-                updated = workspace.model_copy(
-                    update={
-                        "state": state,
-                        "updated_at": utc_now(),
-                        "readiness": self._readiness(status),
-                        "error_code": None,
-                        "error_message": None,
-                    }
-                )
+                updated = await self._workspace_from_provider(workspace, provider)
+                state = updated.state
                 if state == WorkspaceState.DELETED:
                     updated = updated.model_copy(update={"provider_resource_id": None})
                     await self._vault.delete(f"agent:{workspace.id}")
@@ -440,6 +426,57 @@ class RunPodPersistentPodBackend:
                     workspace, "runpod.workspace.reconcile", error
                 )
         return reconciled
+
+    async def _workspace_from_provider(
+        self, workspace: WorkspaceRecord, provider: dict[str, Any]
+    ) -> WorkspaceRecord:
+        status = str(provider.get("desiredStatus", ""))
+        state = self._state_from_provider(status)
+        readiness = self._readiness(status)
+        error_code = None
+        error_message = None
+        if status == "RUNNING":
+            secret = await self._vault.retrieve(f"agent:{workspace.id}")
+            if not secret:
+                state = WorkspaceState.ERROR
+                error_code = "agent_credential_missing"
+                error_message = "The workspace agent credential is missing."
+            else:
+                try:
+                    health = await self._agent_factory(
+                        self._provider_id(workspace), secret
+                    ).health()
+                    if health.workspace_id != workspace.id:
+                        raise WorkspaceError(
+                            "agent_identity_mismatch",
+                            "The Pod agent reported a different workspace identity.",
+                            status_code=502,
+                        )
+                    if health.image_version != self._image_version:
+                        raise WorkspaceError(
+                            "agent_image_mismatch",
+                            "The Pod agent image version does not match the workspace.",
+                            status_code=502,
+                        )
+                    readiness = health.readiness.model_dump()
+                    state = (
+                        WorkspaceState.READY
+                        if health.status == "ready"
+                        else WorkspaceState.STARTING
+                    )
+                except WorkspaceError as error:
+                    state = WorkspaceState.STARTING
+                    error_code = error.code
+                    error_message = error.message
+        return workspace.model_copy(
+            update={
+                "state": state,
+                "updated_at": utc_now(),
+                "readiness": readiness,
+                "error_code": error_code,
+                "error_message": error_message,
+            }
+        )
 
     async def _api(self) -> RunPodApi:
         key = await self._vault.retrieve(self.PROVIDER_CREDENTIAL_ID)

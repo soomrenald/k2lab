@@ -44,7 +44,29 @@ export function WorkspaceStudio({ workspace, developmentBackend, onWorkspace, on
 
   useEffect(() => () => { if (sourceUrl) URL.revokeObjectURL(sourceUrl); }, [sourceUrl]);
 
+  useEffect(() => {
+    if (developmentBackend || workspace.state === "deleted") return undefined;
+    let cancelled = false;
+    const interval = window.setInterval(async () => {
+      try {
+        const refreshed = await controlPlane.workspace(workspace.id);
+        if (!cancelled) onWorkspace(refreshed);
+      } catch (caught) {
+        if (!cancelled) {
+          setMessage(caught instanceof Error ? caught.message : "Could not refresh workspace status");
+        }
+      }
+    }, 5_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [developmentBackend, onWorkspace, workspace.id, workspace.state]);
+
   const running = workspace.state === "ready";
+  const activeCompute = ["provisioning", "starting", "ready", "stopping"].includes(workspace.state);
+  const canExtend = workspace.state === "starting" || workspace.state === "ready";
+  const canStart = workspace.state === "stopped" || workspace.state === "error";
   const leaseMinutes = Math.max(0, Math.round((new Date(workspace.lease_expires_at).getTime() - Date.now()) / 60_000));
   const readiness = useMemo(() => Object.entries(workspace.readiness), [workspace.readiness]);
 
@@ -105,11 +127,11 @@ export function WorkspaceStudio({ workspace, developmentBackend, onWorkspace, on
         <div className="workspace-status">
           {developmentBackend && <span className="preview-chip">Preview backend</span>}
           <button className="workspace-chip" onClick={() => setShowCloud(!showCloud)}>
-            <span className={`status-dot ${running ? "online" : "stopped"}`} />
+            <span className={`status-dot ${activeCompute ? "online" : "stopped"}`} />
             <span><strong>{workspace.name}</strong><small>{workspace.gpu.display_name} · {workspace.state}</small></span>
             <Icon name="chevronDown" />
           </button>
-          {running && <button className="stop-gpu" disabled={busy} onClick={() => lifecycle("stop")}><Icon name="stop" /> Stop GPU now</button>}
+          {activeCompute && <button className="stop-gpu" disabled={busy || workspace.state === "stopping"} onClick={() => lifecycle("stop")}><Icon name="stop" /> Stop GPU now</button>}
         </div>
       </header>
 
@@ -117,14 +139,18 @@ export function WorkspaceStudio({ workspace, developmentBackend, onWorkspace, on
         <div className="cloud-popover glass-card">
           <div className="cloud-popover-head"><div><p className="kicker">Cloud workspace</p><h3>{workspace.name}</h3></div><span className={`state-badge ${workspace.state}`}>{workspace.state}</span></div>
           <dl className="summary-list compact-summary">
-            <div><dt>Compute now</dt><dd>{running ? `$${workspace.estimated_compute_per_hour.toFixed(2)}/hr` : "$0.00/hr"}</dd></div>
+            <div><dt>Compute now</dt><dd>{activeCompute ? `$${workspace.estimated_compute_per_hour.toFixed(2)}/hr` : "$0.00/hr"}</dd></div>
             <div><dt>Storage</dt><dd>${workspace.estimated_storage_per_month.toFixed(2)}/mo</dd></div>
-            <div><dt>Lease</dt><dd>{running ? `${leaseMinutes} min remaining` : "No active lease"}</dd></div>
+            <div><dt>Lease</dt><dd>{activeCompute ? `${leaseMinutes} min remaining` : "No active lease"}</dd></div>
           </dl>
           <div className="readiness-grid">{readiness.map(([name, ready]) => <span key={name} className={ready ? "ready" : "pending"}><Icon name={ready ? "check" : "clock"} /> {name}</span>)}</div>
+          {workspace.error_message && <div className="error-banner">{workspace.error_message}</div>}
           <div className="popover-actions">
-            {running ? <button className="quiet-button" onClick={() => lifecycle("extend")}>Extend session</button>
-              : <button className="primary-button" onClick={() => lifecycle("start")}>Start GPU</button>}
+            {canExtend
+              ? <button className="quiet-button" onClick={() => lifecycle("extend")}>Extend session</button>
+              : canStart
+                ? <button className="primary-button" onClick={() => lifecycle("start")}>Start GPU</button>
+                : null}
             <button className="danger-text-button" onClick={() => setShowDelete(true)}>Delete cloud workspace</button>
           </div>
           <p className="field-help">Stopping retains the attached volume. Deleting permanently removes it.</p>
@@ -185,7 +211,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, onWorkspace, on
       </main>
 
       <footer className="action-bar">
-        <div className="action-status"><span className={`status-dot ${running ? "online" : "stopped"}`} /><span><strong>{running ? "Workspace ready" : "GPU stopped"}</strong><small>{message || (developmentBackend ? "Interface preview · remote jobs are not connected" : "Ready")}</small></span></div>
+        <div className="action-status"><span className={`status-dot ${activeCompute ? "online" : "stopped"}`} /><span><strong>{running ? "Workspace ready" : activeCompute ? `Workspace ${workspace.state}` : "GPU stopped"}</strong><small>{message || workspace.error_message || (developmentBackend ? "Interface preview · remote jobs are not connected" : "Ready")}</small></span></div>
         <div className="memory-meter"><span>VRAM</span><div><i style={{ width: running ? "18%" : "0%" }} /></div><small>{running ? "Waiting for worker" : "Released"}</small></div>
         <button className="run-button" disabled={!running || developmentBackend} title={developmentBackend ? "Remote generation jobs are not connected yet" : undefined}>
           <Icon name={mode === "face" ? "face" : mode === "edit" ? "wand" : "play"} />

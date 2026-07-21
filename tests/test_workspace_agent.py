@@ -11,10 +11,12 @@ from tempfile import TemporaryDirectory
 FASTAPI_AVAILABLE = importlib.util.find_spec("fastapi") is not None
 
 if FASTAPI_AVAILABLE:
+    import httpx
     from httpx import ASGITransport, AsyncClient
 
     from k2_region_lab.agent.app import AgentSettings, create_agent_app
     from k2_region_lab.agent.storage import LAYOUT_VERSION, WorkspaceLayout
+    from k2_region_lab.web.agent_client import WorkspaceAgentClient
 
 
 @unittest.skipUnless(FASTAPI_AVAILABLE, "web dependencies are not installed")
@@ -64,7 +66,7 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(body["readiness"]["storage"])
         self.assertFalse(body["readiness"]["models"])
         self.assertFalse(body["readiness"]["worker"])
-        self.assertEqual(body["status"], "starting")
+        self.assertEqual(body["status"], "ready")
 
     async def test_capabilities_are_versioned(self) -> None:
         response = await self.client.get("/v1/capabilities", headers=self.headers)
@@ -104,6 +106,42 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(body["root"], "/workspace/k2lab")
         self.assertNotIn(self.temporary_directory.name, response.text)
         self.assertGreater(body["free_bytes"], 0)
+
+    async def test_control_plane_agent_client_keeps_token_out_of_url(self) -> None:
+        observed: dict[str, str] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            observed["url"] = str(request.url)
+            observed["authorization"] = request.headers["Authorization"]
+            return httpx.Response(
+                200,
+                json={
+                    "status": "ready",
+                    "workspace_id": "workspace-123",
+                    "image_version": "0.1.0-test",
+                    "readiness": {
+                        "container": True,
+                        "agent": True,
+                        "storage": True,
+                        "models": False,
+                        "worker": False,
+                    },
+                    "observed_at": "2026-07-20T12:00:00Z",
+                },
+            )
+
+        client = WorkspaceAgentClient(
+            "pod-123",
+            self.settings.session_token,
+            transport=httpx.MockTransport(handler),
+        )
+        health = await client.health()
+        self.assertEqual(health.workspace_id, "workspace-123")
+        self.assertNotIn(self.settings.session_token, observed["url"])
+        self.assertEqual(
+            observed["authorization"],
+            f"Bearer {self.settings.session_token}",
+        )
 
 
 if __name__ == "__main__":

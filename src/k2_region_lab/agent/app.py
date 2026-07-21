@@ -112,8 +112,9 @@ def create_agent_app(settings: AgentSettings | None = None) -> FastAPI:
             models=layout.model_inventory_ready(),
             worker=bool(application.state.worker_ready),
         )
+        core_ready = readiness.container and readiness.agent and readiness.storage
         return AgentHealth(
-            status="ready" if all(readiness.model_dump().values()) else "starting",
+            status="ready" if core_ready else "starting",
             workspace_id=configured.workspace_id,
             image_version=configured.image_version,
             readiness=readiness,

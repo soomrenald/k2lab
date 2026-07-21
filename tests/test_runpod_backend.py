@@ -18,6 +18,7 @@ if WEB_PROVIDER_AVAILABLE:
     import httpx
     from cryptography.fernet import Fernet
 
+    from k2_region_lab.agent.domain import AgentHealth
     from k2_region_lab.web.credential_vault import (
         DatabaseCredentialVault,
         EncryptedMemoryCredentialVault,
@@ -89,6 +90,35 @@ class FakeRunPodApi:
         self.status = "TERMINATED"
 
 
+class FakeAgentApi:
+    def __init__(self, workspace_id: str, image_version: str = "0.1.0") -> None:
+        self.workspace_id = workspace_id
+        self.image_version = image_version
+
+    async def health(self) -> AgentHealth:
+        return AgentHealth.model_validate(
+            {
+                "status": "ready",
+                "workspace_id": self.workspace_id,
+                "image_version": self.image_version,
+                "readiness": {
+                    "container": True,
+                    "agent": True,
+                    "storage": True,
+                    "models": False,
+                    "worker": False,
+                },
+                "observed_at": "2026-07-20T12:00:00Z",
+            }
+        )
+
+    async def capabilities(self):
+        raise NotImplementedError
+
+    async def storage(self):
+        raise NotImplementedError
+
+
 @unittest.skipUnless(WEB_PROVIDER_AVAILABLE, "web provider dependencies are not installed")
 class RunPodApiClientTests(unittest.IsolatedAsyncioTestCase):
     async def test_uses_authorization_header_and_never_places_key_in_url(self) -> None:
@@ -140,12 +170,14 @@ class RunPodBackendTests(unittest.IsolatedAsyncioTestCase):
         self.state_store = SqlRunPodStateStore(self.database_url)
         self.vault = EncryptedMemoryCredentialVault(Fernet.generate_key())
         self.api = FakeRunPodApi()
+        self.agent_workspace_id = "unused"
         self.backend = RunPodPersistentPodBackend(
             credential_vault=self.vault,
             state_store=self.state_store,
             image_digest="ghcr.io/example/k2lab@sha256:" + "a" * 64,
             image_version="0.1.0",
             api_factory=lambda _key: self.api,
+            agent_factory=lambda _pod_id, _token: FakeAgentApi(self.agent_workspace_id),
         )
 
     async def asyncTearDown(self) -> None:
@@ -185,6 +217,11 @@ class RunPodBackendTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(workspace.state, "starting")
         self.assertEqual(workspace.provider_resource_id, "pod-123")
         self.assertNotIn("K2LAB_AGENT_SESSION_TOKEN", workspace.model_dump_json())
+
+        self.agent_workspace_id = workspace.id
+        ready = await self.backend.get_workspace_status(workspace.id)
+        self.assertEqual(ready.state, "ready")
+        self.assertTrue(ready.readiness["agent"])
 
         request = self.api.create_requests[0]
         self.assertEqual(request["gpuTypePriority"], "custom")
@@ -279,6 +316,7 @@ class RunPodBackendTests(unittest.IsolatedAsyncioTestCase):
             image_digest="ghcr.io/example/k2lab@sha256:" + "a" * 64,
             image_version="0.1.0",
             api_factory=lambda _key: self.api,
+            agent_factory=lambda _pod_id, _token: FakeAgentApi("unused"),
         )
         await backend.validate_credentials("secret-runpod-key")
         plan = await backend.plan_workspace(
@@ -297,6 +335,7 @@ class RunPodBackendTests(unittest.IsolatedAsyncioTestCase):
                 image_digest="ghcr.io/example/k2lab@sha256:" + "a" * 64,
                 image_version="0.1.0",
                 api_factory=lambda _key: self.api,
+                agent_factory=lambda _pod_id, _token: FakeAgentApi(workspace.id),
             )
             reconciled = await reopened_backend.reconcile_workspaces()
             self.assertEqual(reconciled[0].id, workspace.id)

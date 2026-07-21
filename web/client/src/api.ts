@@ -128,6 +128,8 @@ export const controlPlane = {
     }),
   gpus: () => request<GpuOption[]>("/api/v1/gpus"),
   workspaces: () => request<WorkspaceRecord[]>("/api/v1/workspaces"),
+  workspace: (workspaceId: string) =>
+    request<WorkspaceRecord>(`/api/v1/workspaces/${workspaceId}`),
   planWorkspace: (payload: WorkspacePlanRequest) =>
     request<WorkspacePlan>("/api/v1/workspace-plans", {
       method: "POST",
