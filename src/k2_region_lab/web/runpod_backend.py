@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import secrets
 from collections.abc import Callable
 from datetime import timedelta
@@ -23,6 +22,7 @@ from k2_region_lab.web.domain import (
     utc_now,
 )
 from k2_region_lab.web.runpod_api import RunPodApi, RunPodApiClient, RunPodGpuType
+from k2_region_lab.web.state_store import RunPodStateStore
 
 
 class RunPodPersistentPodBackend:
@@ -41,6 +41,7 @@ class RunPodPersistentPodBackend:
         self,
         *,
         credential_vault: CredentialVault,
+        state_store: RunPodStateStore,
         image_digest: str,
         image_version: str,
         api_factory: Callable[[str], RunPodApi] = RunPodApiClient,
@@ -48,17 +49,13 @@ class RunPodPersistentPodBackend:
         if "@sha256:" not in image_digest:
             raise ValueError("RunPod runtime image must use an immutable sha256 digest")
         self._vault = credential_vault
+        self.state_store = state_store
         self._image_digest = image_digest
         self._image_version = image_version
         self._api_factory = api_factory
-        self._credential = CredentialStatus(configured=False)
-        self._plans: dict[str, WorkspacePlan] = {}
-        self._workspaces: dict[str, WorkspaceRecord] = {}
-        self._agent_secret_ids: dict[str, str] = {}
-        self._lock = asyncio.Lock()
 
     async def credential_status(self) -> CredentialStatus:
-        return self._credential.model_copy(deep=True)
+        return await self._vault.status(self.PROVIDER_CREDENTIAL_ID)
 
     async def validate_credentials(self, api_key: str) -> CredentialStatus:
         value = api_key.strip()
@@ -71,18 +68,26 @@ class RunPodPersistentPodBackend:
         api = self._api_factory(value)
         await api.validate_credentials()
         await api.list_gpu_types()
-        await self._vault.store(self.PROVIDER_CREDENTIAL_ID, value)
-        self._credential = CredentialStatus(
+        status = CredentialStatus(
             configured=True,
             key_hint=f"••••{value[-4:]}",
             validated_at=utc_now(),
         )
-        return self._credential.model_copy(deep=True)
+        await self._vault.store(
+            self.PROVIDER_CREDENTIAL_ID,
+            value,
+            key_hint=status.key_hint,
+            validated_at=status.validated_at,
+        )
+        await self.state_store.append_audit(
+            action="runpod.credentials.validate", result="success"
+        )
+        return status
 
     async def clear_credentials(self) -> CredentialStatus:
         active = any(
             workspace.state != WorkspaceState.DELETED and workspace.provider_resource_id
-            for workspace in self._workspaces.values()
+            for workspace in await self.state_store.list_workspaces()
         )
         if active:
             raise WorkspaceError(
@@ -91,8 +96,10 @@ class RunPodPersistentPodBackend:
                 status_code=409,
             )
         await self._vault.delete(self.PROVIDER_CREDENTIAL_ID)
-        self._credential = CredentialStatus(configured=False)
-        return self._credential.model_copy(deep=True)
+        await self.state_store.append_audit(
+            action="runpod.credentials.revoke", result="success"
+        )
+        return CredentialStatus(configured=False)
 
     async def list_gpu_options(self) -> list[GpuOption]:
         api = await self._api()
@@ -149,13 +156,11 @@ class RunPodPersistentPodBackend:
             warnings=warnings,
             created_at=utc_now(),
         )
-        async with self._lock:
-            self._plans[plan.id] = plan
+        await self.state_store.save_plan(plan)
         return plan.model_copy(deep=True)
 
     async def create_workspace(self, request: WorkspaceCreateRequest) -> WorkspaceRecord:
-        async with self._lock:
-            plan = self._plans.pop(request.plan_id, None)
+        plan = await self.state_store.consume_plan(request.plan_id)
         if plan is None:
             raise WorkspaceError(
                 "workspace_plan_missing",
@@ -174,6 +179,12 @@ class RunPodPersistentPodBackend:
             provider_id = self._required_string(provider, "id")
         except Exception:
             await self._vault.delete(secret_id)
+            await self.state_store.append_audit(
+                action="runpod.workspace.create",
+                result="failure",
+                workspace_id=workspace_id,
+                context={"plan_id": plan.id},
+            )
             raise
 
         now = utc_now()
@@ -203,16 +214,20 @@ class RunPodPersistentPodBackend:
             provider_resource_id=provider_id,
             readiness=self._readiness(provider_status),
         )
-        async with self._lock:
-            self._workspaces[workspace.id] = workspace
-            self._agent_secret_ids[workspace.id] = secret_id
+        await self.state_store.save_workspace(workspace, image_digest=self._image_digest)
+        await self.state_store.append_audit(
+            action="runpod.workspace.create",
+            result="success",
+            workspace_id=workspace.id,
+            context={"pod_id": provider_id, "gpu_type_id": workspace.gpu.id},
+        )
         return workspace.model_copy(deep=True)
 
     async def list_workspaces(self) -> list[WorkspaceRecord]:
-        return [item.model_copy(deep=True) for item in self._workspaces.values()]
+        return await self.state_store.list_workspaces()
 
     async def get_workspace_status(self, workspace_id: str) -> WorkspaceRecord:
-        workspace = self._workspace(workspace_id)
+        workspace = await self._workspace(workspace_id)
         if workspace.state == WorkspaceState.DELETED:
             return workspace.model_copy(deep=True)
         provider_id = self._provider_id(workspace)
@@ -223,21 +238,24 @@ class RunPodPersistentPodBackend:
                 "state": self._state_from_provider(status),
                 "updated_at": utc_now(),
                 "readiness": self._readiness(status),
+                "error_code": None,
+                "error_message": None,
             }
         )
-        async with self._lock:
-            self._workspaces[workspace_id] = updated
+        await self.state_store.save_workspace(updated, image_digest=self._image_digest)
         return updated.model_copy(deep=True)
 
     async def start_workspace(self, workspace_id: str) -> WorkspaceRecord:
-        workspace = self._workspace(workspace_id)
-        if workspace.state not in {WorkspaceState.STOPPED, WorkspaceState.ERROR}:
-            raise WorkspaceError(
-                "invalid_workspace_transition",
-                f"A {workspace.state.value} workspace cannot be started.",
-                status_code=409,
-            )
-        provider = await (await self._api()).start_pod(self._provider_id(workspace))
+        workspace = await self.state_store.claim_workspace_transition(
+            workspace_id,
+            allowed_states={WorkspaceState.STOPPED, WorkspaceState.ERROR},
+            claimed_state=WorkspaceState.STARTING,
+        )
+        try:
+            provider = await (await self._api()).start_pod(self._provider_id(workspace))
+        except Exception as error:
+            await self._record_provider_failure(workspace, "runpod.workspace.start", error)
+            raise
         now = utc_now()
         status = str(provider.get("desiredStatus", "RUNNING"))
         updated = workspace.model_copy(
@@ -247,41 +265,51 @@ class RunPodPersistentPodBackend:
                 "lease_expires_at": now + timedelta(seconds=workspace.idle_timeout_seconds),
                 "hard_expires_at": now + timedelta(seconds=workspace.hard_deadline_seconds),
                 "readiness": self._readiness(status),
+                "error_code": None,
+                "error_message": None,
             }
         )
-        async with self._lock:
-            self._workspaces[workspace_id] = updated
+        await self.state_store.save_workspace(updated, image_digest=self._image_digest)
+        await self.state_store.append_audit(
+            action="runpod.workspace.start", result="success", workspace_id=workspace_id
+        )
         return updated.model_copy(deep=True)
 
     async def stop_workspace(self, workspace_id: str) -> WorkspaceRecord:
-        workspace = self._workspace(workspace_id)
-        if workspace.state not in {
-            WorkspaceState.PROVISIONING,
-            WorkspaceState.STARTING,
-            WorkspaceState.READY,
-            WorkspaceState.ERROR,
-        }:
-            raise WorkspaceError(
-                "invalid_workspace_transition",
-                f"A {workspace.state.value} workspace cannot be stopped.",
-                status_code=409,
-            )
-        await (await self._api()).stop_pod(self._provider_id(workspace))
+        workspace = await self.state_store.claim_workspace_transition(
+            workspace_id,
+            allowed_states={
+                WorkspaceState.PROVISIONING,
+                WorkspaceState.STARTING,
+                WorkspaceState.READY,
+                WorkspaceState.ERROR,
+            },
+            claimed_state=WorkspaceState.STOPPING,
+        )
+        try:
+            await (await self._api()).stop_pod(self._provider_id(workspace))
+        except Exception as error:
+            await self._record_provider_failure(workspace, "runpod.workspace.stop", error)
+            raise
         updated = workspace.model_copy(
             update={
                 "state": WorkspaceState.STOPPED,
                 "updated_at": utc_now(),
                 "readiness": {},
+                "error_code": None,
+                "error_message": None,
             }
         )
-        async with self._lock:
-            self._workspaces[workspace_id] = updated
+        await self.state_store.save_workspace(updated, image_digest=self._image_digest)
+        await self.state_store.append_audit(
+            action="runpod.workspace.stop", result="success", workspace_id=workspace_id
+        )
         return updated.model_copy(deep=True)
 
     async def terminate_workspace(
         self, workspace_id: str, confirmation: str
     ) -> WorkspaceRecord:
-        workspace = self._workspace(workspace_id)
+        workspace = await self._workspace(workspace_id)
         if workspace.state == WorkspaceState.DELETED:
             return workspace.model_copy(deep=True)
         if confirmation != workspace.name:
@@ -290,24 +318,42 @@ class RunPodPersistentPodBackend:
                 "Type the workspace name exactly to confirm permanent deletion.",
                 status_code=409,
             )
-        await (await self._api()).delete_pod(self._provider_id(workspace))
+        workspace = await self.state_store.claim_workspace_transition(
+            workspace_id,
+            allowed_states={
+                WorkspaceState.PROVISIONING,
+                WorkspaceState.STARTING,
+                WorkspaceState.READY,
+                WorkspaceState.STOPPING,
+                WorkspaceState.STOPPED,
+                WorkspaceState.ERROR,
+            },
+            claimed_state=WorkspaceState.DELETING,
+        )
+        try:
+            await (await self._api()).delete_pod(self._provider_id(workspace))
+        except Exception as error:
+            await self._record_provider_failure(workspace, "runpod.workspace.delete", error)
+            raise
         updated = workspace.model_copy(
             update={
                 "state": WorkspaceState.DELETED,
                 "updated_at": utc_now(),
                 "provider_resource_id": None,
                 "readiness": {},
+                "error_code": None,
+                "error_message": None,
             }
         )
-        secret_id = self._agent_secret_ids.pop(workspace_id, None)
-        if secret_id:
-            await self._vault.delete(secret_id)
-        async with self._lock:
-            self._workspaces[workspace_id] = updated
+        await self._vault.delete(f"agent:{workspace_id}")
+        await self.state_store.save_workspace(updated, image_digest=self._image_digest)
+        await self.state_store.append_audit(
+            action="runpod.workspace.delete", result="success", workspace_id=workspace_id
+        )
         return updated.model_copy(deep=True)
 
     async def extend_lease(self, workspace_id: str) -> WorkspaceRecord:
-        workspace = self._workspace(workspace_id)
+        workspace = await self._workspace(workspace_id)
         if workspace.state not in {WorkspaceState.STARTING, WorkspaceState.READY}:
             raise WorkspaceError(
                 "workspace_not_running",
@@ -324,12 +370,14 @@ class RunPodPersistentPodBackend:
                 "updated_at": now,
             }
         )
-        async with self._lock:
-            self._workspaces[workspace_id] = updated
+        await self.state_store.save_workspace(updated, image_digest=self._image_digest)
+        await self.state_store.append_audit(
+            action="workspace.lease.extend", result="success", workspace_id=workspace_id
+        )
         return updated.model_copy(deep=True)
 
     async def get_cost_snapshot(self, workspace_id: str) -> CostSnapshot:
-        workspace = self._workspace(workspace_id)
+        workspace = await self._workspace(workspace_id)
         running = workspace.state in {
             WorkspaceState.PROVISIONING,
             WorkspaceState.STARTING,
@@ -351,6 +399,47 @@ class RunPodPersistentPodBackend:
             ),
             observed_at=utc_now(),
         )
+
+    async def reconcile_workspaces(self) -> list[WorkspaceRecord]:
+        """Refresh every durable provider resource after control-plane startup."""
+        if not (await self.credential_status()).configured:
+            return []
+        reconciled: list[WorkspaceRecord] = []
+        api = await self._api()
+        for workspace in await self.state_store.list_workspaces():
+            if workspace.state == WorkspaceState.DELETED or not workspace.provider_resource_id:
+                continue
+            try:
+                provider = await api.get_pod(workspace.provider_resource_id)
+                status = str(provider.get("desiredStatus", ""))
+                state = self._state_from_provider(status)
+                updated = workspace.model_copy(
+                    update={
+                        "state": state,
+                        "updated_at": utc_now(),
+                        "readiness": self._readiness(status),
+                        "error_code": None,
+                        "error_message": None,
+                    }
+                )
+                if state == WorkspaceState.DELETED:
+                    updated = updated.model_copy(update={"provider_resource_id": None})
+                    await self._vault.delete(f"agent:{workspace.id}")
+                await self.state_store.save_workspace(
+                    updated, image_digest=self._image_digest
+                )
+                await self.state_store.append_audit(
+                    action="runpod.workspace.reconcile",
+                    result="success",
+                    workspace_id=workspace.id,
+                    context={"provider_state": status},
+                )
+                reconciled.append(updated)
+            except Exception as error:
+                await self._record_provider_failure(
+                    workspace, "runpod.workspace.reconcile", error
+                )
+        return reconciled
 
     async def _api(self) -> RunPodApi:
         key = await self._vault.retrieve(self.PROVIDER_CREDENTIAL_ID)
@@ -467,15 +556,34 @@ class RunPodPersistentPodBackend:
             "worker": False,
         }
 
-    def _workspace(self, workspace_id: str) -> WorkspaceRecord:
-        try:
-            return self._workspaces[workspace_id]
-        except KeyError as error:
+    async def _workspace(self, workspace_id: str) -> WorkspaceRecord:
+        workspace = await self.state_store.get_workspace(workspace_id)
+        if workspace is None:
             raise WorkspaceError(
                 "workspace_not_found",
                 "The requested workspace does not exist.",
                 status_code=404,
-            ) from error
+            )
+        return workspace
+
+    async def _record_provider_failure(
+        self, workspace: WorkspaceRecord, action: str, error: Exception
+    ) -> None:
+        failed = workspace.model_copy(
+            update={
+                "state": WorkspaceState.ERROR,
+                "updated_at": utc_now(),
+                "error_code": getattr(error, "code", "provider_operation_failed"),
+                "error_message": str(error),
+            }
+        )
+        await self.state_store.save_workspace(failed, image_digest=self._image_digest)
+        await self.state_store.append_audit(
+            action=action,
+            result="failure",
+            workspace_id=workspace.id,
+            context={"error_type": type(error).__name__},
+        )
 
     @staticmethod
     def _provider_id(workspace: WorkspaceRecord) -> str:

@@ -3,19 +3,25 @@ from __future__ import annotations
 import json
 import importlib.util
 import unittest
+from datetime import timedelta
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any
 
 
 WEB_PROVIDER_AVAILABLE = all(
     importlib.util.find_spec(package) is not None
-    for package in ("cryptography", "fastapi", "httpx")
+    for package in ("aiosqlite", "cryptography", "fastapi", "httpx", "sqlalchemy")
 )
 
 if WEB_PROVIDER_AVAILABLE:
     import httpx
     from cryptography.fernet import Fernet
 
-    from k2_region_lab.web.credential_vault import EncryptedMemoryCredentialVault
+    from k2_region_lab.web.credential_vault import (
+        DatabaseCredentialVault,
+        EncryptedMemoryCredentialVault,
+    )
     from k2_region_lab.web.domain import (
         CloudType,
         WorkspaceCreateRequest,
@@ -23,6 +29,8 @@ if WEB_PROVIDER_AVAILABLE:
     )
     from k2_region_lab.web.runpod_api import RunPodApiClient, RunPodGpuType
     from k2_region_lab.web.runpod_backend import RunPodPersistentPodBackend
+    from k2_region_lab.web.lease_reaper import WorkspaceLeaseReaper
+    from k2_region_lab.web.state_store import SqlRunPodStateStore
 
     GPU_FIXTURE = RunPodGpuType.model_validate(
         {
@@ -126,14 +134,23 @@ class RunPodApiClientTests(unittest.IsolatedAsyncioTestCase):
 @unittest.skipUnless(WEB_PROVIDER_AVAILABLE, "web provider dependencies are not installed")
 class RunPodBackendTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
+        self.temporary_directory = TemporaryDirectory()
+        database = Path(self.temporary_directory.name) / "control-plane.sqlite3"
+        self.database_url = f"sqlite+aiosqlite:///{database}"
+        self.state_store = SqlRunPodStateStore(self.database_url)
         self.vault = EncryptedMemoryCredentialVault(Fernet.generate_key())
         self.api = FakeRunPodApi()
         self.backend = RunPodPersistentPodBackend(
             credential_vault=self.vault,
+            state_store=self.state_store,
             image_digest="ghcr.io/example/k2lab@sha256:" + "a" * 64,
             image_version="0.1.0",
             api_factory=lambda _key: self.api,
         )
+
+    async def asyncTearDown(self) -> None:
+        await self.state_store.close()
+        self.temporary_directory.cleanup()
 
     async def test_validates_before_storing_and_returns_only_hint(self) -> None:
         status = await self.backend.validate_credentials("secret-runpod-key")
@@ -183,6 +200,109 @@ class RunPodBackendTests(unittest.IsolatedAsyncioTestCase):
         deleted = await self.backend.terminate_workspace(workspace.id, "Portrait lab")
         self.assertEqual(deleted.state, "deleted")
         self.assertIsNone(deleted.provider_resource_id)
+
+    async def test_workspace_state_and_audit_are_durable(self) -> None:
+        await self.backend.validate_credentials("secret-runpod-key")
+        plan = await self.backend.plan_workspace(
+            WorkspacePlanRequest(
+                gpu_priority_ids=["NVIDIA RTX A6000"],
+                cloud_type=CloudType.SECURE,
+            )
+        )
+        workspace = await self.backend.create_workspace(
+            WorkspaceCreateRequest(plan_id=plan.id, name="Durable lab")
+        )
+
+        reopened_store = SqlRunPodStateStore(self.database_url)
+        try:
+            restored = await reopened_store.get_workspace(workspace.id)
+            self.assertIsNotNone(restored)
+            self.assertEqual(restored.provider_resource_id, "pod-123")
+            events = await reopened_store.audit_events()
+            self.assertEqual(events[-1]["action"], "runpod.workspace.create")
+            self.assertNotIn("secret-runpod-key", json.dumps(events))
+        finally:
+            await reopened_store.close()
+
+    async def test_expired_lease_is_discoverable_for_reaper(self) -> None:
+        await self.backend.validate_credentials("secret-runpod-key")
+        plan = await self.backend.plan_workspace(
+            WorkspacePlanRequest(gpu_priority_ids=["NVIDIA RTX A6000"])
+        )
+        workspace = await self.backend.create_workspace(
+            WorkspaceCreateRequest(plan_id=plan.id, name="Idle lab")
+        )
+        expired = workspace.model_copy(
+            update={"lease_expires_at": workspace.created_at - timedelta(seconds=1)}
+        )
+        await self.state_store.save_workspace(
+            expired,
+            image_digest="ghcr.io/example/k2lab@sha256:" + "a" * 64,
+        )
+        self.assertEqual(
+            await self.state_store.expired_workspace_ids(workspace.created_at),
+            [workspace.id],
+        )
+        stopped = await WorkspaceLeaseReaper(self.backend).run_once()
+        self.assertEqual(stopped, [workspace.id])
+        restored = await self.state_store.get_workspace(workspace.id)
+        self.assertEqual(restored.state, "stopped")
+
+    async def test_database_vault_survives_backend_reconstruction(self) -> None:
+        encryption_key = Fernet.generate_key()
+        vault = DatabaseCredentialVault(self.state_store, encryption_key)
+        await vault.store(
+            "provider:runpod",
+            "secret-runpod-key",
+            key_hint="••••-key",
+        )
+        reopened_store = SqlRunPodStateStore(self.database_url)
+        try:
+            reopened_vault = DatabaseCredentialVault(reopened_store, encryption_key)
+            self.assertEqual(
+                await reopened_vault.retrieve("provider:runpod"),
+                "secret-runpod-key",
+            )
+            self.assertEqual(
+                (await reopened_vault.status("provider:runpod")).key_hint,
+                "••••-key",
+            )
+        finally:
+            await reopened_store.close()
+
+    async def test_startup_reconciliation_refreshes_durable_provider_state(self) -> None:
+        encryption_key = Fernet.generate_key()
+        vault = DatabaseCredentialVault(self.state_store, encryption_key)
+        backend = RunPodPersistentPodBackend(
+            credential_vault=vault,
+            state_store=self.state_store,
+            image_digest="ghcr.io/example/k2lab@sha256:" + "a" * 64,
+            image_version="0.1.0",
+            api_factory=lambda _key: self.api,
+        )
+        await backend.validate_credentials("secret-runpod-key")
+        plan = await backend.plan_workspace(
+            WorkspacePlanRequest(gpu_priority_ids=["NVIDIA RTX A6000"])
+        )
+        workspace = await backend.create_workspace(
+            WorkspaceCreateRequest(plan_id=plan.id, name="Reconciled lab")
+        )
+        self.api.status = "EXITED"
+
+        reopened_store = SqlRunPodStateStore(self.database_url)
+        try:
+            reopened_backend = RunPodPersistentPodBackend(
+                credential_vault=DatabaseCredentialVault(reopened_store, encryption_key),
+                state_store=reopened_store,
+                image_digest="ghcr.io/example/k2lab@sha256:" + "a" * 64,
+                image_version="0.1.0",
+                api_factory=lambda _key: self.api,
+            )
+            reconciled = await reopened_backend.reconcile_workspaces()
+            self.assertEqual(reconciled[0].id, workspace.id)
+            self.assertEqual(reconciled[0].state, "stopped")
+        finally:
+            await reopened_store.close()
 
 
 if __name__ == "__main__":

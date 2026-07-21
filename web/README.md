@@ -40,15 +40,21 @@ selected explicitly and requires an immutable runtime image plus a Fernet encryp
 
 ```bash
 export K2LAB_WEB_BACKEND=runpod
-export K2LAB_CREDENTIAL_FERNET_KEY="$(python -c \
-  'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')"
+export K2LAB_CREDENTIAL_FERNET_KEY="<persisted-secret-from-your-KMS-bootstrap>"
+export K2LAB_DATABASE_URL="postgresql+asyncpg://k2lab:<password>@<host>/k2lab"
 uv run k2lab-web
 ```
 
-This mode can create billable Pods. It is an integration milestone, not a deployable
-hosted control plane: workspace records and encrypted credentials are process-local until
-the PostgreSQL/KMS repository and startup reconciler are implemented. The Pod also remains
-in `starting` until the versioned workspace image and authenticated agent are available.
+Generate the Fernet value once with `Fernet.generate_key()`, store it in a secret manager,
+and reuse it after every restart. Rotating or losing it makes existing provider credentials
+unreadable. SQLite (`sqlite+aiosqlite:////absolute/path`) is supported for isolated local
+tests, while PostgreSQL is the production store.
+
+This mode can create billable Pods. Workspace records, leases, encrypted credentials,
+provider-resource mappings, the operation-journal schema, and redacted audit events are
+durable. Startup reconciliation refreshes known Pod state, and a background reaper stops
+compute after lease expiry. The Pod remains in `starting` until the versioned workspace
+image and authenticated agent are available.
 
 ## Local development
 

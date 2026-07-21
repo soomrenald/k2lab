@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import os
 from collections.abc import Sequence
+from contextlib import asynccontextmanager
+from typing import AsyncIterator
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -32,15 +35,21 @@ def backend_from_environment() -> WorkspaceBackend:
     if backend_name != "runpod":
         raise RuntimeError("K2LAB_WEB_BACKEND must be 'development' or 'runpod'")
 
-    from k2_region_lab.web.credential_vault import EncryptedMemoryCredentialVault
+    from k2_region_lab.web.credential_vault import DatabaseCredentialVault
     from k2_region_lab.web.runpod_backend import RunPodPersistentPodBackend
+    from k2_region_lab.web.state_store import SqlRunPodStateStore
 
     encryption_key = os.environ.get("K2LAB_CREDENTIAL_FERNET_KEY")
+    database_url = os.environ.get("K2LAB_DATABASE_URL")
     if not encryption_key:
         raise RuntimeError("K2LAB_CREDENTIAL_FERNET_KEY is required for the RunPod backend")
     if not image_digest:
+    if not database_url:
+        raise RuntimeError("K2LAB_DATABASE_URL is required for the RunPod backend")
+    state_store = SqlRunPodStateStore(database_url)
     return RunPodPersistentPodBackend(
-        credential_vault=EncryptedMemoryCredentialVault(encryption_key),
+        credential_vault=DatabaseCredentialVault(state_store, encryption_key),
+        state_store=state_store,
         image_digest=image_digest,
     )
 
@@ -56,6 +65,27 @@ class ErrorBody(BaseModel):
 
 def create_app(backend: WorkspaceBackend | None = None) -> FastAPI:
     workspace_backend = backend or DevelopmentWorkspaceBackend()
+
+    @asynccontextmanager
+    async def lifespan(_application: FastAPI) -> AsyncIterator[None]:
+        reaper_task: asyncio.Task[None] | None = None
+        state_store = getattr(workspace_backend, "state_store", None)
+        if state_store is not None:
+            from k2_region_lab.web.lease_reaper import WorkspaceLeaseReaper
+
+            await state_store.initialize()
+            await workspace_backend.reconcile_workspaces()
+            interval = float(os.environ.get("K2LAB_REAPER_INTERVAL_SECONDS", "30"))
+            reaper = WorkspaceLeaseReaper(workspace_backend, interval_seconds=interval)
+            reaper_task = asyncio.create_task(reaper.run_forever())
+        try:
+            yield
+        finally:
+            if reaper_task is not None:
+                await WorkspaceLeaseReaper.cancel(reaper_task)
+            if state_store is not None:
+                await state_store.close()
+
     application = FastAPI(
         title="K2 Region Lab Control Plane",
         version="0.1.0",
@@ -63,6 +93,7 @@ def create_app(backend: WorkspaceBackend | None = None) -> FastAPI:
             "Provider-neutral workspace lifecycle API. The default development backend "
             "does not create or bill cloud resources."
         ),
+        lifespan=lifespan,
     )
     application.state.workspace_backend = workspace_backend
     application.add_middleware(
