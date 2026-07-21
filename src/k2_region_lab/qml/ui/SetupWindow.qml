@@ -271,6 +271,27 @@ Window {
                         anchors.margins: 14
                         spacing: 10
                         SectionLabel { text: "Exact model files · blank uses discovery" }
+                        SectionLabel { text: "Krea checkpoint" }
+                        ComboBox {
+                            id: checkpointSelector
+                            objectName: "checkpointSelector"
+                            Layout.fillWidth: true
+                            model: setupWindow.controller.checkpointOptions
+                            textRole: "label"
+                            valueRole: "value"
+                            currentIndex: {
+                                let revision = setupWindow.controller.revision
+                                let selected = String(setupWindow.controller.value("transformer") ?? "")
+                                for (let index = 0; index < count; ++index) {
+                                    if (valueAt(index) === selected)
+                                        return index
+                                }
+                                return -1
+                            }
+                            displayText: currentIndex >= 0
+                                         ? currentText : "Discover models, then select a checkpoint"
+                            onActivated: setupWindow.controller.setValue("transformer", currentValue)
+                        }
                         PathRow { label: "Krea transformer"; settingName: "transformer"; automatic: true }
                         PathRow { label: "Text encoder"; settingName: "textEncoder"; automatic: true }
                         PathRow { label: "VAE"; settingName: "vae"; automatic: true }
@@ -433,6 +454,12 @@ Window {
                             Text { text: setupWindow.controller.acceleratorStatus; color: "#e2e5ed"; font.pixelSize: 11 }
                             Text { text: "Models"; color: "#788195"; font.pixelSize: 11 }
                             Text { text: setupWindow.controller.modelStatus; color: "#e2e5ed"; font.pixelSize: 11 }
+                            Text { text: "Transformer"; color: "#788195"; font.pixelSize: 11 }
+                            Text { text: setupWindow.controller.transformerStatus; color: "#e2e5ed"; font.pixelSize: 11 }
+                            Text { text: "Text encoder"; color: "#788195"; font.pixelSize: 11 }
+                            Text { text: setupWindow.controller.textEncoderStatus; color: "#e2e5ed"; font.pixelSize: 11 }
+                            Text { text: "VAE"; color: "#788195"; font.pixelSize: 11 }
+                            Text { text: setupWindow.controller.vaeStatus; color: "#e2e5ed"; font.pixelSize: 11 }
                             Text { text: "Memory"; color: "#788195"; font.pixelSize: 11 }
                             Text {
                                 Layout.fillWidth: true

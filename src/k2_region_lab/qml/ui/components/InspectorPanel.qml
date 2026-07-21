@@ -12,6 +12,15 @@ Rectangle {
     border.width: 1
     radius: 12
 
+    function commitPendingText() {
+        controller.setGlobalPrompt(globalPrompt.text)
+        if (controller.selectedRegionId.length > 0) {
+            controller.updateSelectedRegion("name", selectedName.text)
+            controller.updateSelectedRegion("prompt", selectedPrompt.text)
+            controller.updateSelectedRegion("facePrompt", identityPrompt.text)
+        }
+    }
+
     component LabelText: Text {
         color: "#9099ad"
         font.pixelSize: 11
@@ -102,17 +111,24 @@ Rectangle {
         id: numeric
         required property string label
         required property string settingName
-        property string suffix: ""
-        property real minimum: -999999999
-        property real maximum: 999999999
-        property int decimals: 0
+        property var controlSpec: {
+            let revision = root.controller.stateRevision
+            return root.controller.settingSpec(settingName)
+        }
+        property string suffix: String(controlSpec.suffix ?? "")
+        property real minimum: Number(controlSpec.minimum ?? -999999999)
+        property real maximum: Number(controlSpec.maximum ?? 999999999)
+        property int decimals: Number(controlSpec.decimals ?? 0)
         spacing: 5
         Layout.fillWidth: true
+        objectName: "numericSetting-" + settingName
 
         LabelText { text: numeric.label }
         StudioTextField {
             id: numericInput
+            objectName: "numericInput-" + numeric.settingName
             Layout.fillWidth: true
+            enabled: Boolean(numeric.controlSpec.enabled ?? true)
             text: {
                 let revision = root.controller.stateRevision
                 let value = root.controller.setting(numeric.settingName)
@@ -141,6 +157,46 @@ Rectangle {
                 color: "#697287"
                 font.pixelSize: 11
             }
+        }
+    }
+
+    component SettingCombo: ColumnLayout {
+        id: settingCombo
+        required property string label
+        required property string settingName
+        property string comboObjectName: "settingCombo-" + settingName
+        readonly property var controlSpec: {
+            let revision = root.controller.stateRevision
+            return root.controller.settingSpec(settingName)
+        }
+        spacing: 5
+        Layout.fillWidth: true
+
+        LabelText { visible: settingCombo.label.length > 0; text: settingCombo.label }
+        ComboBox {
+            id: combo
+            objectName: settingCombo.comboObjectName
+            Layout.fillWidth: true
+            enabled: Boolean(settingCombo.controlSpec.enabled ?? true)
+            model: settingCombo.controlSpec.options ?? []
+            textRole: "label"
+            valueRole: "value"
+            currentIndex: {
+                let revision = root.controller.stateRevision
+                let selected = root.controller.setting(settingCombo.settingName)
+                for (let index = 0; index < count; ++index) {
+                    if (valueAt(index) === selected)
+                        return index
+                }
+                return count > 0 ? 0 : -1
+            }
+            delegate: ItemDelegate {
+                required property var modelData
+                width: combo.width
+                text: String(modelData.label)
+                enabled: Boolean(modelData.enabled)
+            }
+            onActivated: root.controller.setSetting(settingCombo.settingName, currentValue)
         }
     }
 
@@ -238,6 +294,7 @@ Rectangle {
                         placeholderText: controller.mode === "edit"
                                          ? "Describe the overall edit. Leave blank to preserve everything outside edit boxes."
                                          : "Describe the complete image..."
+                        onTextChanged: controller.setGlobalPrompt(text)
                         onEditingFinished: controller.setGlobalPrompt(text)
                     }
 
@@ -296,9 +353,19 @@ Rectangle {
                             spacing: 8
                             ComboBox {
                                 id: spatialRole
+                                objectName: "spatialRoleCombo"
                                 Layout.fillWidth: true
-                                model: ["auto", "subject", "background", "edit"]
-                                currentIndex: Math.max(0, indexOfValue(controller.selectedRegion.spatialRole || "auto"))
+                                model: controller.spatialRoleOptions
+                                textRole: "label"
+                                valueRole: "value"
+                                currentIndex: {
+                                    let selected = controller.selectedRegion.spatialRole || "auto"
+                                    for (let index = 0; index < count; ++index) {
+                                        if (valueAt(index) === selected)
+                                            return index
+                                    }
+                                    return 0
+                                }
                                 onActivated: controller.updateSelectedRegion("spatialRole", currentValue)
                             }
                             CheckBox {
@@ -319,6 +386,10 @@ Rectangle {
                             placeholderText: controller.mode === "edit" && controller.editLayer === "targets"
                                              ? "Describe the edit inside this box..."
                                              : "Describe the content inside this box..."
+                            onTextChanged: {
+                                if (visible)
+                                    controller.updateSelectedRegion("prompt", text)
+                            }
                             onEditingFinished: controller.updateSelectedRegion("prompt", text)
                         }
 
@@ -330,6 +401,10 @@ Rectangle {
                             implicitHeight: 78
                             text: controller.selectedRegion.facePrompt || ""
                             placeholderText: "Optional face / identity anchor..."
+                            onTextChanged: {
+                                if (visible)
+                                    controller.updateSelectedRegion("facePrompt", text)
+                            }
                             onEditingFinished: controller.updateSelectedRegion("facePrompt", text)
                         }
 
@@ -511,21 +586,6 @@ Rectangle {
                             text: "+ Draw"
                             enabled: controller.canDrawRegions
                             onClicked: controller.setDrawMode(true)
-                        }
-                    }
-
-                    ColumnLayout {
-                        visible: controller.mode === "generation"
-                        Layout.fillWidth: true
-                        Layout.leftMargin: 14
-                        Layout.rightMargin: 14
-                        spacing: 5
-                        LabelText { text: "Seed behavior" }
-                        ComboBox {
-                            Layout.fillWidth: true
-                            model: ["fixed", "random", "increment"]
-                            currentIndex: model.indexOf(String(controller.setting("seedMode")))
-                            onActivated: controller.setSetting("seedMode", currentValue)
                         }
                     }
 
@@ -784,34 +844,8 @@ Rectangle {
                         Layout.rightMargin: 14
                         spacing: 9
 
-                        ColumnLayout {
-                            Layout.fillWidth: true
-                            spacing: 5
-                            LabelText { text: "Sampler" }
-                            ComboBox {
-                                Layout.fillWidth: true
-                                model: root.controller.samplerOptions
-                                currentIndex: {
-                                    let revision = root.controller.stateRevision
-                                    return model.indexOf(String(root.controller.setting("sampler")))
-                                }
-                                onActivated: root.controller.setSetting("sampler", currentValue)
-                            }
-                        }
-                        ColumnLayout {
-                            Layout.fillWidth: true
-                            spacing: 5
-                            LabelText { text: "Scheduler" }
-                            ComboBox {
-                                Layout.fillWidth: true
-                                model: root.controller.schedulerOptions
-                                currentIndex: {
-                                    let revision = root.controller.stateRevision
-                                    return model.indexOf(String(root.controller.setting("scheduler")))
-                                }
-                                onActivated: root.controller.setSetting("scheduler", currentValue)
-                            }
-                        }
+                        SettingCombo { label: "Sampler"; settingName: "sampler" }
+                        SettingCombo { label: "Scheduler"; settingName: "scheduler" }
                     }
 
                     GridLayout {
@@ -825,127 +859,93 @@ Rectangle {
                         NumericSetting {
                             label: "Steps"
                             settingName: "steps"
-                            minimum: 1
-                            maximum: 200
                         }
                         NumericSetting {
                             label: "Seed"
                             settingName: "seed"
-                            minimum: -2147483648
-                            maximum: 2147483647
+                        }
+                        SettingCombo {
+                            visible: controller.mode === "generation"
+                            label: "Seed behavior"
+                            settingName: "seedMode"
+                            comboObjectName: "seedModeCombo"
                         }
                         NumericSetting {
                             visible: controller.mode === "generation"
                                      && Boolean(controller.setting("batchMode"))
                             label: "Batch runs"
                             settingName: "batchCount"
-                            minimum: 1
-                            maximum: 100
                         }
                         NumericSetting {
                             visible: controller.mode === "generation"
                             label: "Width"
                             settingName: "width"
-                            minimum: 64
-                            maximum: 4096
                         }
                         NumericSetting {
                             visible: controller.mode === "generation"
                             label: "Height"
                             settingName: "height"
-                            minimum: 64
-                            maximum: 4096
                         }
                         NumericSetting {
                             visible: controller.mode === "edit"
                             label: "Denoise"
                             settingName: "denoise"
-                            minimum: 0
-                            maximum: 1
-                            decimals: 2
                         }
                         NumericSetting {
                             visible: controller.mode === "edit"
                             label: "Retention"
                             settingName: "referenceRetention"
-                            minimum: 0
-                            maximum: 1
-                            decimals: 2
                         }
                         NumericSetting {
                             visible: controller.mode === "edit"
                             label: "Latent feather"
                             settingName: "latentFeather"
-                            minimum: 0
-                            maximum: 1024
-                            suffix: "px"
                         }
                         NumericSetting {
                             visible: controller.mode === "edit"
                             label: "Composite feather"
                             settingName: "compositeFeather"
-                            minimum: 0
-                            maximum: 1024
-                            suffix: "px"
                         }
                         NumericSetting {
                             visible: controller.mode === "face"
                             label: "Denoise"
                             settingName: "denoise"
-                            minimum: 0
-                            maximum: 1
-                            decimals: 2
                         }
                         NumericSetting {
                             visible: controller.mode === "face"
                             label: "Padding"
                             settingName: "padding"
-                            minimum: 0
-                            maximum: 1
-                            decimals: 2
                         }
-                        NumericSetting {
+                        SettingCombo {
                             visible: controller.mode === "face"
                             label: "Crop size"
                             settingName: "cropSize"
-                            minimum: 256
-                            maximum: 1024
+                            comboObjectName: "faceCropSizeCombo"
                         }
                         NumericSetting {
                             visible: controller.mode === "face"
                             label: "Edge feather"
                             settingName: "feather"
-                            minimum: 0
-                            maximum: 0.5
-                            decimals: 2
                         }
                         NumericSetting {
                             visible: controller.mode === "face"
                             label: "Regional LoRA scale"
                             settingName: "loraScale"
-                            minimum: 0
-                            maximum: 4
-                            decimals: 2
                         }
                         NumericSetting {
                             visible: controller.mode === "face"
                             label: "Detector threshold"
                             settingName: "detectorThreshold"
-                            minimum: 0
-                            maximum: 1
-                            decimals: 2
                         }
                         NumericSetting {
                             visible: controller.mode === "face"
                             label: "Blend"
                             settingName: "blend"
-                            minimum: 0
-                            maximum: 1
-                            decimals: 2
                         }
                     }
 
                     CheckBox {
+                        objectName: "batchModeCheckBox"
                         visible: controller.mode === "generation"
                         Layout.leftMargin: 14
                         text: "Run generation in batch mode"
@@ -960,11 +960,10 @@ Rectangle {
                         Layout.rightMargin: 14
                         spacing: 5
                         LabelText { text: "Detector device" }
-                        ComboBox {
-                            Layout.fillWidth: true
-                            model: ["auto", "cpu", "cuda"]
-                            currentIndex: model.indexOf(String(controller.setting("detectorProvider")))
-                            onActivated: controller.setSetting("detectorProvider", currentValue)
+                        SettingCombo {
+                            label: ""
+                            settingName: "detectorProvider"
+                            comboObjectName: "detectorProviderCombo"
                         }
                         RowLayout {
                             Layout.fillWidth: true
@@ -995,26 +994,23 @@ Rectangle {
                         NumericSetting {
                             label: "Inside boost"
                             settingName: "insideBoost"
-                            decimals: 2
                         }
                         NumericSetting {
                             label: "Outside penalty"
                             settingName: "outsidePenalty"
-                            decimals: 2
                         }
                         NumericSetting {
                             label: "Spatial falloff"
                             settingName: "spatialFalloff"
-                            decimals: 2
                         }
                         NumericSetting {
                             label: "Late scale"
                             settingName: "lateStepScale"
-                            decimals: 2
                         }
                     }
 
                     CheckBox {
+                        objectName: "regionalPromptingCheckBox"
                         visible: controller.mode === "generation"
                         Layout.leftMargin: 14
                         text: "Use unified spatial prompting"
@@ -1022,6 +1018,7 @@ Rectangle {
                         onToggled: controller.setSetting("regionalPrompting", checked)
                     }
                     CheckBox {
+                        objectName: "subjectCompetitionCheckBox"
                         visible: controller.mode !== "face"
                         Layout.leftMargin: 14
                         text: "Separate overlapping subject targets"
@@ -1037,6 +1034,7 @@ Rectangle {
                         onToggled: controller.setSetting("subjectFill", checked)
                     }
                     CheckBox {
+                        objectName: "relaxationCheckBox"
                         visible: controller.mode === "generation"
                         Layout.leftMargin: 14
                         text: "Relax spatial guidance during late steps"
@@ -1044,6 +1042,7 @@ Rectangle {
                         onToggled: controller.setSetting("relaxation", checked)
                     }
                     CheckBox {
+                        objectName: "loraAdaptationCheckBox"
                         visible: controller.mode !== "face"
                         Layout.leftMargin: 14
                         text: "Adapt spatial guidance from regional LoRA delta"
@@ -1057,12 +1056,10 @@ Rectangle {
                         Layout.rightMargin: 14
                         label: "LoRA delta response"
                         settingName: "loraResponse"
-                        minimum: 0
-                        maximum: 1
-                        decimals: 2
                     }
 
                     CheckBox {
+                        objectName: "preserveIdentityCheckBox"
                         visible: controller.mode === "edit"
                         Layout.leftMargin: 14
                         text: "Preserve identity"
@@ -1070,6 +1067,7 @@ Rectangle {
                         onToggled: controller.setSetting("preserveIdentity", checked)
                     }
                     CheckBox {
+                        objectName: "editEntireImageCheckBox"
                         visible: controller.mode === "edit"
                         Layout.leftMargin: 14
                         text: "Edit entire image"
@@ -1083,6 +1081,7 @@ Rectangle {
                         text: "Post-upscale"
                     }
                     CheckBox {
+                        objectName: "postUpscaleCheckBox"
                         visible: controller.mode === "generation"
                         Layout.leftMargin: 14
                         text: "Post-upscale after releasing Krea VRAM"
@@ -1096,18 +1095,8 @@ Rectangle {
                         Layout.leftMargin: 14
                         Layout.rightMargin: 14
                         spacing: 8
-                        ComboBox {
-                            Layout.fillWidth: true
-                            model: [2, 4]
-                            currentIndex: model.indexOf(Number(controller.setting("upscaleScale")))
-                            onActivated: controller.setSetting("upscaleScale", currentValue)
-                        }
-                        ComboBox {
-                            Layout.fillWidth: true
-                            model: ["lanczos", "model"]
-                            currentIndex: model.indexOf(String(controller.setting("upscaleMethod")))
-                            onActivated: controller.setSetting("upscaleMethod", currentValue)
-                        }
+                        SettingCombo { label: "Scale"; settingName: "upscaleScale" }
+                        SettingCombo { label: "Method"; settingName: "upscaleMethod" }
                     }
                     ColumnLayout {
                         visible: controller.mode === "generation"
@@ -1135,6 +1124,7 @@ Rectangle {
                         text: "Projector"
                     }
                     CheckBox {
+                        objectName: "projectorEnabledCheckBox"
                         visible: controller.mode === "generation"
                         Layout.leftMargin: 14
                         text: "Apply global projector vector"
@@ -1148,12 +1138,7 @@ Rectangle {
                         Layout.leftMargin: 14
                         Layout.rightMargin: 14
                         spacing: 8
-                        ComboBox {
-                            Layout.fillWidth: true
-                            model: ["filter_bypass2", "filter_bypass3", "skc3vo", "z0jglf", "custom"]
-                            currentIndex: model.indexOf(String(controller.setting("projectorPreset")))
-                            onActivated: controller.setSetting("projectorPreset", currentValue)
-                        }
+                        SettingCombo { label: "Preset"; settingName: "projectorPreset" }
                         GridLayout {
                             Layout.fillWidth: true
                             columns: 3
@@ -1174,16 +1159,10 @@ Rectangle {
                         NumericSetting {
                             label: "Global multiplier"
                             settingName: "projectorMultiplier"
-                            minimum: -20
-                            maximum: 20
-                            decimals: 4
                         }
                         NumericSetting {
                             label: "Face identity protection"
                             settingName: "projectorIdentityProtection"
-                            minimum: 0
-                            maximum: 1
-                            decimals: 2
                         }
                     }
 

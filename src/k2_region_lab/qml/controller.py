@@ -209,6 +209,15 @@ class SetupController(QObject):
     def memoryPolicyOptions(self) -> list[dict[str, str]]:
         return [{"label": policy.label, "value": policy.key} for policy in MEMORY_POLICIES]
 
+    @Property("QVariantList", notify=changed)
+    def checkpointOptions(self) -> list[dict[str, str]]:
+        control = self.backend.diffusion_model_input
+        return [
+            {"label": control.itemText(index), "value": str(control.itemData(index))}
+            for index in range(control.count())
+            if control.itemData(index)
+        ]
+
     @Property(str, notify=changed)
     def workerStatus(self) -> str:
         return self.backend.worker_status.text()
@@ -222,6 +231,18 @@ class SetupController(QObject):
         if self.backend.artifacts is None:
             return "Models have not been discovered"
         return "Model set complete" if self.backend.artifacts.complete else "Model set incomplete"
+
+    @Property(str, notify=changed)
+    def transformerStatus(self) -> str:
+        return self.backend.transformer_status.text()
+
+    @Property(str, notify=changed)
+    def textEncoderStatus(self) -> str:
+        return self.backend.text_status.text()
+
+    @Property(str, notify=changed)
+    def vaeStatus(self) -> str:
+        return self.backend.vae_status.text()
 
     @Property(str, notify=changed)
     def memoryStatus(self) -> str:
@@ -402,6 +423,8 @@ class SetupController(QObject):
         if not self._require_applied():
             return
         self.backend.discover_models()
+        self._revision += 1
+        self.changed.emit()
         self.refreshStatus()
 
     @Slot()
@@ -436,6 +459,10 @@ class SetupController(QObject):
             self.acceleratorStatus,
             self.modelStatus,
             self.memoryStatus,
+            self.transformerStatus,
+            self.textEncoderStatus,
+            self.vaeStatus,
+            tuple((item["label"], item["value"]) for item in self.checkpointOptions),
         )
         if snapshot != self._status_snapshot:
             self._status_snapshot = snapshot
@@ -588,6 +615,24 @@ class QmlWorkspaceController(QObject):
         return self.backend.memory_status.text()
 
     @Property(str, notify=stateChanged)
+    def resourceGpuText(self) -> str:
+        return self.backend.resource_monitor.gpu_label.text()
+
+    @Property(str, notify=stateChanged)
+    def resourceRamText(self) -> str:
+        return self.backend.resource_monitor.ram_label.text()
+
+    @Property(str, notify=stateChanged)
+    def resourceActivityText(self) -> str:
+        return self.backend.resource_monitor.busy_label.text()
+
+    @Property("QStringList", notify=stateChanged)
+    def eventMessages(self) -> list[str]:
+        return [
+            self.backend.events.item(index).text() for index in range(self.backend.events.count())
+        ]
+
+    @Property(str, notify=stateChanged)
     def globalPrompt(self) -> str:
         if self._mode == self.IMAGE_EDIT:
             if self._edit_layer == "reference":
@@ -725,6 +770,16 @@ class QmlWorkspaceController(QObject):
         return [
             self.backend.scheduler_input.itemText(index)
             for index in range(self.backend.scheduler_input.count())
+        ]
+
+    @Property("QVariantList", notify=stateChanged)
+    def spatialRoleOptions(self) -> list[dict[str, str]]:
+        # These are the three choices exposed by every Widgets-era region editor.
+        # "edit" is an internal compiled role, not a selectable region definition role.
+        return [
+            {"label": "Auto (based on box width)", "value": "auto"},
+            {"label": "Subject target", "value": "subject"},
+            {"label": "Background band", "value": "background"},
         ]
 
     @Slot(str)
@@ -866,7 +921,7 @@ class QmlWorkspaceController(QObject):
             updated = replace(region, prompt=str(value))
         elif field == "facePrompt":
             updated = replace(region, face_identity_prompt=str(value))
-        elif field == "spatialRole" and str(value) in {"auto", "subject", "background", "edit"}:
+        elif field == "spatialRole" and str(value) in {"auto", "subject", "background"}:
             updated = replace(region, spatial_role=str(value))
         elif field == "enabled":
             updated = replace(region, enabled=bool(value))
@@ -911,6 +966,42 @@ class QmlWorkspaceController(QObject):
         if hasattr(control, "currentData"):
             return control.currentData()
         return control.value()
+
+    @Slot(str, result="QVariantMap")
+    def settingSpec(self, name: str) -> dict[str, Any]:
+        """Return the visible contract of the corresponding legacy control.
+
+        Qt Quick consumes this instead of copying numeric limits and ComboBox choices.
+        That keeps the replacement workspace byte-for-byte aligned with the Widgets-era
+        settings surface as controls evolve.
+        """
+        control = self._setting_control(name)
+        if control is None:
+            return {}
+        spec: dict[str, Any] = {"enabled": bool(control.isEnabled())}
+        if hasattr(control, "minimum"):
+            spec.update(
+                {
+                    "minimum": control.minimum(),
+                    "maximum": control.maximum(),
+                    "step": control.singleStep(),
+                    "decimals": control.decimals() if hasattr(control, "decimals") else 0,
+                    "suffix": control.suffix().strip() if hasattr(control, "suffix") else "",
+                }
+            )
+        if hasattr(control, "count") and hasattr(control, "itemData"):
+            spec["options"] = [
+                {
+                    "label": control.itemText(index),
+                    "value": control.itemData(index),
+                    "enabled": bool(
+                        control.model().item(index) is None
+                        or control.model().item(index).isEnabled()
+                    ),
+                }
+                for index in range(control.count())
+            ]
+        return spec
 
     @Slot(str, "QVariant")
     def setSetting(self, name: str, value) -> None:
@@ -1445,6 +1536,10 @@ class QmlWorkspaceController(QObject):
             self.upscaleModelPath,
             self.backend.statusBar().currentMessage(),
             self.backend.memory_status.text(),
+            self.resourceGpuText,
+            self.resourceRamText,
+            self.resourceActivityText,
+            tuple(self.eventMessages),
             face_state,
             settings,
         )

@@ -29,11 +29,15 @@ agent transfers/downloads/jobs, durable reconciliation, and verified migration.
 - A fixed contextual inspector holds Prompt, Regions, LoRAs, and Advanced controls.
 - A bottom action bar keeps status, memory telemetry, progress, Stop, and the mode-specific
   run action visible.
+- The lower rail activity button opens the complete Events history plus live GPU VRAM, system
+  RAM, and GPU-activity telemetry.
 - The gear button opens a dedicated matching setup window. It includes runtime, model,
   memory, output, worker, validation, and accelerator controls only; generation and editing
   settings are not duplicated there.
 - Setup changes are staged. **Apply settings** commits them. Closing with dirty values asks
   whether to apply, discard, or cancel; **Close window** does not close the main app.
+- Sampling choices and numeric constraints are read from the legacy controls at runtime, so
+  QML cannot maintain a divergent copy of seed modes, crop choices, or parameter bounds.
 
 ### Region editing behavior
 

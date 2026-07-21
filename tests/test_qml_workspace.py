@@ -21,7 +21,11 @@ if PYSIDE_AVAILABLE:
     from k2_region_lab.config import AppSettings, ModelDirectories
     from k2_region_lab.desktop.main_window import MainWindow
     from k2_region_lab.project import project_document
-    from k2_region_lab.regional_prompting import GLOBAL_EMPHASIS_SCOPE
+    from k2_region_lab.regional_prompting import (
+        GLOBAL_EMPHASIS_SCOPE,
+        compile_regional_prompt_plan,
+    )
+    from k2_region_lab.regions import PixelBox, RegionDefinition
     from k2_region_lab.qml.controller import QmlWorkspaceController
 
 
@@ -89,6 +93,9 @@ class QmlWorkspaceTests(unittest.TestCase):
             self.assertIsNotNone(comparison_mode)
             self.assertIsNotNone(canvas_stage)
             self.assertIsNotNone(result_clip)
+            self.assertIsNotNone(root_object.findChild(QObject, "activityButton"))
+            self.assertIsNotNone(root_object.findChild(QObject, "activityPanel"))
+            self.assertIsNotNone(root_object.findChild(QObject, "eventList"))
             comparison_mode.setProperty("currentIndex", 2)
             root_object.setProperty("compareValue", 0.25)
             self.application.processEvents()
@@ -294,6 +301,74 @@ class QmlWorkspaceTests(unittest.TestCase):
             root_object.close()
             backend.close()
 
+    def test_visible_prompt_edits_update_legacy_state_without_losing_focus(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            backend = self.make_window(Path(directory))
+            backend.regions = [
+                RegionDefinition(
+                    "person",
+                    "Foreground person",
+                    PixelBox(300, 180, 700, 1000),
+                    "old subject",
+                    face_identity_prompt="oval face and black hair",
+                    priority=2,
+                    spatial_role="subject",
+                ),
+                RegionDefinition(
+                    "forest",
+                    "Forest background",
+                    PixelBox(0, 0, 1024, 1024),
+                    "a misty pine forest",
+                    priority=1,
+                    spatial_role="background",
+                ),
+            ]
+            controller = QmlWorkspaceController(backend)
+            controller.refresh()
+            controller.selectRegion("person")
+            engine = QQmlApplicationEngine()
+            engine.rootContext().setContextProperty("controller", controller)
+            qml_path = (
+                Path(__file__).parents[1] / "src" / "k2_region_lab" / "qml" / "ui" / "Main.qml"
+            )
+            engine.load(QUrl.fromLocalFile(str(qml_path)))
+            self.application.processEvents()
+            root_object = engine.rootObjects()[0]
+            global_editor = root_object.findChild(QObject, "globalPromptEditor")
+            region_editor = root_object.findChild(QObject, "selectedPromptEditor")
+
+            global_editor.setProperty("text", "cinematic winter portrait")
+            region_editor.setProperty("text", "a woman in a red coat")
+            self.application.processEvents()
+
+            self.assertEqual(backend.global_prompt.toPlainText(), "cinematic winter portrait")
+            self.assertEqual(backend.regions[0].prompt, "a woman in a red coat")
+            plan = compile_regional_prompt_plan(
+                backend.width_input.value(),
+                backend.height_input.value(),
+                backend.global_prompt.toPlainText(),
+                tuple(backend.regions),
+            )
+            self.assertEqual(
+                plan.prompt,
+                "cinematic winter portrait.\n"
+                "In the middle portion center, render oval face and black hair. "
+                "a woman in a red coat as a large prominent near-frame-height foreground "
+                "subject. The visible subject itself should fill most of its assigned image "
+                "area with minimal empty margin. Keep the complete visible subject inside "
+                "that area without drawing guides, borders, coordinates, labels, text, or "
+                "annotations.\n"
+                "Across the middle portion of the image, occupying about 100% of its height, "
+                "there is a misty pine forest.",
+            )
+            self.assertEqual(
+                [(region.name, region.spatial_role) for region in plan.regions],
+                [("Foreground person", "subject"), ("Forest background", "background")],
+            )
+            root_object.close()
+            controller.deleteLater()
+            backend.close()
+
     def test_region_boundary_preview_resizes_continuously_before_commit(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             backend = self.make_window(Path(directory))
@@ -436,6 +511,102 @@ class QmlWorkspaceTests(unittest.TestCase):
             self.assertEqual(backend.minimum_ram_input.value(), 10.0)
             self.assertEqual(backend._output_directory, output.resolve())
             self.assertEqual(backend.filename_prefix_input.text(), "qml-setup")
+            controller.deleteLater()
+            backend.close()
+
+    def test_seed_modes_roles_and_parameter_contract_match_legacy_widgets(self) -> None:
+        expected_numeric = {
+            "generation": {
+                "width": (256, 4096),
+                "height": (256, 4096),
+                "steps": (1, 100),
+                "seed": (0, 2_147_483_647),
+                "batchCount": (1, 100),
+                "insideBoost": (0.1, 10.0),
+                "outsidePenalty": (0.0, 10.0),
+                "spatialFalloff": (0, 2048),
+                "lateStepScale": (0.0, 1.0),
+                "loraResponse": (0.0, 1.0),
+                "projectorMultiplier": (-20.0, 20.0),
+                "projectorIdentityProtection": (0.0, 1.0),
+            },
+            "edit": {
+                "steps": (1, 100),
+                "seed": (0, 2_147_483_647),
+                "denoise": (0.05, 1.0),
+                "latentFeather": (0, 256),
+                "compositeFeather": (0, 256),
+                "referenceRetention": (0.0, 1.0),
+                "insideBoost": (0.1, 10.0),
+                "outsidePenalty": (0.0, 10.0),
+                "spatialFalloff": (0, 2048),
+                "lateStepScale": (0.0, 1.0),
+                "loraResponse": (0.0, 1.0),
+            },
+            "face": {
+                "steps": (1, 100),
+                "seed": (0, 2_147_483_647),
+                "denoise": (0.05, 1.0),
+                "padding": (1.0, 4.0),
+                "feather": (0.0, 0.5),
+                "blend": (0.0, 1.0),
+                "loraScale": (0.0, 4.0),
+                "detectorThreshold": (0.05, 0.95),
+            },
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            backend = self.make_window(Path(directory))
+            controller = QmlWorkspaceController(backend)
+            self.assertEqual(
+                [item["value"] for item in controller.spatialRoleOptions],
+                ["auto", "subject", "background"],
+            )
+            for mode, contracts in expected_numeric.items():
+                controller.setMode(mode)
+                for setting, expected_range in contracts.items():
+                    spec = controller.settingSpec(setting)
+                    self.assertEqual((spec["minimum"], spec["maximum"]), expected_range, setting)
+
+            controller.setMode("generation")
+            seed_spec = controller.settingSpec("seedMode")
+            self.assertEqual(
+                [(item["label"], item["value"]) for item in seed_spec["options"]],
+                [("Fixed", "fixed"), ("Random", "random"), ("Increment", "increment")],
+            )
+            controller.setSetting("seedMode", "fixed")
+            controller.setSetting("batchMode", True)
+            self.assertEqual(controller.setting("seedMode"), "random")
+            self.assertFalse(controller.settingSpec("seedMode")["options"][0]["enabled"])
+
+            controller.setMode("face")
+            self.assertEqual(
+                [item["value"] for item in controller.settingSpec("cropSize")["options"]],
+                [256, 512, 768, 1024],
+            )
+            controller.deleteLater()
+            backend.close()
+
+    def test_qml_exposes_seed_role_and_checkpoint_selectors(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            backend = self.make_window(Path(directory))
+            controller = QmlWorkspaceController(backend)
+            controller.createRegion(20, 20, 300, 700)
+            engine = QQmlApplicationEngine()
+            engine.rootContext().setContextProperty("controller", controller)
+            qml_path = (
+                Path(__file__).parents[1] / "src" / "k2_region_lab" / "qml" / "ui" / "Main.qml"
+            )
+            engine.load(QUrl.fromLocalFile(str(qml_path)))
+            self.application.processEvents()
+            root_object = engine.rootObjects()[0]
+            self.assertIsNotNone(root_object.findChild(QObject, "seedModeCombo"))
+            role_combo = root_object.findChild(QObject, "spatialRoleCombo")
+            self.assertIsNotNone(role_combo)
+            self.assertEqual(role_combo.property("count"), 3)
+            self.assertTrue(QMetaObject.invokeMethod(root_object, "openSetupWindow"))
+            self.application.processEvents()
+            self.assertIsNotNone(root_object.findChild(QObject, "checkpointSelector"))
+            root_object.close()
             controller.deleteLater()
             backend.close()
 

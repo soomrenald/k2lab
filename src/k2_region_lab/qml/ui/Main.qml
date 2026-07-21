@@ -16,6 +16,7 @@ ApplicationWindow {
     color: "#090c13"
 
     property bool inspectorVisible: true
+    property bool activityVisible: false
     property real compareValue: 0.5
     property string lastWorkspaceMode: ""
     property string lastEditSource: ""
@@ -24,6 +25,13 @@ ApplicationWindow {
     property real comparisonPosition: resultMode.currentIndex === 0 ? 0
                                       : (resultMode.currentIndex === 1 ? 1 : compareValue)
     readonly property color accent: "#7c8cff"
+
+    Shortcut { sequence: StandardKey.New; onActivated: controller.newProject() }
+    Shortcut { sequence: StandardKey.Open; onActivated: controller.openProject() }
+    Shortcut { sequence: StandardKey.Save; onActivated: controller.saveProject() }
+    Shortcut { sequence: StandardKey.SaveAs; onActivated: controller.saveProjectAs() }
+    Shortcut { sequence: "Ctrl+Shift+O"; onActivated: controller.importProjectImage() }
+    Shortcut { sequence: StandardKey.Quit; onActivated: window.close() }
 
     function openSetupWindow() {
         if (setupWindowInstance === null) {
@@ -218,6 +226,15 @@ ApplicationWindow {
                     spacing: 8
 
                     ToolButton {
+                        objectName: "activityButton"
+                        width: 42
+                        height: 42
+                        text: "≋"
+                        ToolTip.visible: hovered
+                        ToolTip.text: "Events and live resource telemetry"
+                        onClicked: window.activityVisible = !window.activityVisible
+                    }
+                    ToolButton {
                         width: 42
                         height: 42
                         text: "⚙"
@@ -390,10 +407,69 @@ ApplicationWindow {
                                     Layout.preferredWidth: 205
                                     onValueEdited: value => window.compareValue = value
                                 }
-                            }
-                        }
+                }
+            }
 
-                        Rectangle {
+            Rectangle {
+                objectName: "activityPanel"
+                visible: window.activityVisible
+                Layout.preferredWidth: visible ? 350 : 0
+                Layout.fillHeight: true
+                color: "#0d121b"
+                border.color: "#262d3c"
+
+                ColumnLayout {
+                    anchors.fill: parent
+                    anchors.margins: 12
+                    spacing: 8
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Text {
+                            text: "Events & resources"
+                            color: "#f0f2f8"
+                            font.pixelSize: 14
+                            font.weight: Font.DemiBold
+                            Layout.fillWidth: true
+                        }
+                        ToolButton { text: "×"; onClicked: window.activityVisible = false }
+                    }
+                    Rectangle {
+                        Layout.fillWidth: true
+                        implicitHeight: telemetryColumn.implicitHeight + 18
+                        radius: 8
+                        color: "#151b27"
+                        border.color: "#2a3243"
+                        ColumnLayout {
+                            id: telemetryColumn
+                            anchors.fill: parent
+                            anchors.margins: 9
+                            Text { text: controller.resourceGpuText; color: "#42c7f5"; font.pixelSize: 11 }
+                            Text { text: controller.resourceRamText; color: "#f0a34a"; font.pixelSize: 11 }
+                            Text { text: controller.resourceActivityText; color: "#c7cddd"; font.pixelSize: 11 }
+                        }
+                    }
+                    ListView {
+                        objectName: "eventList"
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        clip: true
+                        model: controller.eventMessages
+                        spacing: 5
+                        onCountChanged: positionViewAtEnd()
+                        delegate: Text {
+                            required property string modelData
+                            width: ListView.view.width
+                            text: modelData
+                            color: "#aeb6c8"
+                            wrapMode: Text.Wrap
+                            font.pixelSize: 11
+                        }
+                        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+                    }
+                }
+            }
+
+            Rectangle {
                             id: toast
                             visible: false
                             anchors.horizontalCenter: parent.horizontalCenter
@@ -489,7 +565,10 @@ ApplicationWindow {
                     primary: true
                     enabled: controller.runEnabled
                     implicitWidth: 170
-                    onClicked: controller.runActive()
+                    onClicked: {
+                        inspector.commitPendingText()
+                        controller.runActive()
+                    }
                 }
             }
         }
