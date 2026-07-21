@@ -49,6 +49,28 @@ class StorageStatus(BaseModel):
     layout_version: int
 
 
+class ManifestEntry(BaseModel):
+    path: str
+    size_bytes: int = Field(ge=0)
+    sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+
+class WorkspaceManifest(BaseModel):
+    generation: int = Field(ge=1)
+    layout_version: int = Field(ge=1)
+    files: list[ManifestEntry]
+    file_count: int = Field(ge=0)
+    total_bytes: int = Field(ge=0)
+    root_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    created_at: datetime
+
+
+class MigrationChunkReceipt(BaseModel):
+    path: str
+    next_offset: int = Field(ge=0)
+    completed: bool = False
+
+
 class FileKind(StrEnum):
     DIFFUSION_MODELS = "diffusion_models"
     TEXT_ENCODERS = "text_encoders"

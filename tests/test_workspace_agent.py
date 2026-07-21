@@ -137,6 +137,98 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(self.temporary_directory.name, response.text)
         self.assertGreater(body["free_bytes"], 0)
 
+    async def test_workspace_manifest_is_allowlisted_deterministic_and_copyable(self) -> None:
+        project = self.root / "projects" / "portrait.json"
+        project.write_bytes(b'{"project":1}')
+        model = self.root / "models" / "loras" / "portrait.safetensors"
+        model.write_bytes(b"model-weights")
+        (self.root / "cache" / "huggingface" / "credential-like-cache").write_text(
+            "excluded", encoding="utf-8"
+        )
+        (self.root / "downloads" / "incomplete" / "partial.bin").write_bytes(b"excluded")
+
+        sealed = await self.client.post("/v1/migrations/seal", headers=self.headers)
+        self.assertEqual(sealed.status_code, 200, sealed.text)
+        source_manifest = sealed.json()
+        paths = {item["path"] for item in source_manifest["files"]}
+        self.assertIn("projects/portrait.json", paths)
+        self.assertIn("models/loras/portrait.safetensors", paths)
+        self.assertIn("state/layout.json", paths)
+        self.assertFalse(any(path.startswith("cache/") for path in paths))
+        self.assertFalse(any(path.startswith("downloads/incomplete/") for path in paths))
+        blocked = await self.client.post(
+            "/v1/uploads",
+            headers=self.headers,
+            json={
+                "filename": "blocked.bin",
+                "destination_kind": "inputs",
+                "size_bytes": 1,
+                "sha256": hashlib.sha256(b"x").hexdigest(),
+                "chunk_size_bytes": 1024,
+            },
+        )
+        self.assertEqual(blocked.status_code, 423)
+        self.assertEqual(blocked.json()["code"], "workspace_sealed_for_migration")
+
+        target_root = Path(self.temporary_directory.name) / "target-k2lab"
+        target_settings = AgentSettings(
+            session_token=self.settings.session_token,
+            workspace_id=self.settings.workspace_id,
+            image_version=self.settings.image_version,
+            workspace_root=target_root,
+            worker_python=self.settings.worker_python,
+        )
+        target_app = create_agent_app(target_settings)
+        target_app.state.layout.initialize()
+        async with AsyncClient(
+            transport=ASGITransport(app=target_app), base_url="http://target-agent.test"
+        ) as target:
+            target_sealed = await target.post("/v1/migrations/seal", headers=self.headers)
+            self.assertEqual(target_sealed.status_code, 200, target_sealed.text)
+            for entry in source_manifest["files"]:
+                source = await self.client.get(
+                    f"/v1/migrations/files/{entry['path']}",
+                    params={"generation": source_manifest["generation"]},
+                    headers={**self.headers, "Range": f"bytes=0-{entry['size_bytes'] - 1}"},
+                )
+                self.assertEqual(source.status_code, 206, source.text)
+                content = source.content
+                split = max(1, len(content) // 2)
+                chunks = [content[:split], content[split:]]
+                offset = 0
+                for index, chunk in enumerate(chunks):
+                    if not chunk:
+                        continue
+                    headers = {
+                        **self.headers,
+                        "X-Migration-ID": "migration123",
+                        "X-File-Offset": str(offset),
+                        "X-File-Size": str(len(content)),
+                        "X-File-SHA256": entry["sha256"],
+                        "X-Chunk-SHA256": hashlib.sha256(chunk).hexdigest(),
+                    }
+                    imported = await target.put(
+                        f"/v1/migrations/files/{entry['path']}",
+                        headers=headers,
+                        content=chunk,
+                    )
+                    self.assertEqual(imported.status_code, 200, imported.text)
+                    if index == 0 and len(chunks) > 1:
+                        retried = await target.put(
+                            f"/v1/migrations/files/{entry['path']}",
+                            headers=headers,
+                            content=chunk,
+                        )
+                        self.assertEqual(retried.status_code, 200, retried.text)
+                    offset += len(chunk)
+            target_manifest = await target.post("/v1/migrations/manifests", headers=self.headers)
+            self.assertEqual(target_manifest.status_code, 200, target_manifest.text)
+            self.assertEqual(target_manifest.json()["root_sha256"], source_manifest["root_sha256"])
+            self.assertEqual(target_manifest.json()["total_bytes"], source_manifest["total_bytes"])
+
+        unsealed = await self.client.delete("/v1/migrations/seal", headers=self.headers)
+        self.assertEqual(unsealed.status_code, 204)
+
     async def test_control_plane_agent_client_keeps_token_out_of_url(self) -> None:
         observed: dict[str, str] = {}
 
@@ -204,9 +296,7 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(output.headers["content-range"], "bytes 2-5/10")
         self.assertNotIn("x-agent-internal", output.headers)
         self.assertEqual(observed["range"], "bytes=2-5")
-        self.assertEqual(
-            observed["authorization"], f"Bearer {self.settings.session_token}"
-        )
+        self.assertEqual(observed["authorization"], f"Bearer {self.settings.session_token}")
         self.assertNotIn(self.settings.session_token, observed["url"])
 
     async def test_chunked_upload_resumes_verifies_and_updates_inventory(self) -> None:
@@ -271,9 +361,7 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(file_record["sha256"], digest)
         self.assertEqual((self.root / "inputs" / "portrait.bin").read_bytes(), content)
 
-        inventory = await self.client.get(
-            "/v1/files?kind=inputs", headers=self.headers
-        )
+        inventory = await self.client.get("/v1/files?kind=inputs", headers=self.headers)
         self.assertEqual(inventory.status_code, 200)
         self.assertEqual(inventory.json()["items"][0]["id"], file_record["id"])
 
@@ -334,21 +422,15 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
             },
         )
         upload_id = created.json()["id"]
-        cancelled = await self.client.delete(
-            f"/v1/uploads/{upload_id}", headers=self.headers
-        )
+        cancelled = await self.client.delete(f"/v1/uploads/{upload_id}", headers=self.headers)
         self.assertEqual(cancelled.status_code, 204)
-        missing = await self.client.get(
-            f"/v1/uploads/{upload_id}", headers=self.headers
-        )
+        missing = await self.client.get(f"/v1/uploads/{upload_id}", headers=self.headers)
         self.assertEqual(missing.status_code, 404)
 
     async def test_output_download_supports_authentication_and_byte_ranges(self) -> None:
         content = b"0123456789"
         (self.root / "outputs" / "render image.bin").write_bytes(content)
-        inventory = await self.client.get(
-            "/v1/files?kind=outputs", headers=self.headers
-        )
+        inventory = await self.client.get("/v1/files?kind=outputs", headers=self.headers)
         file_id = inventory.json()["items"][0]["id"]
 
         unauthenticated = await self.client.get(f"/v1/outputs/{file_id}")
@@ -372,9 +454,7 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(invalid.json()["code"], "invalid_range")
 
     async def test_remote_url_parsers_reject_untrusted_hosts_and_embedded_tokens(self) -> None:
-        civitai = parse_civitai_url(
-            "https://civitai.com/models/123/name?modelVersionId=456"
-        )
+        civitai = parse_civitai_url("https://civitai.com/models/123/name?modelVersionId=456")
         self.assertEqual(civitai.model_id, "123")
         self.assertEqual(civitai.version_id, "456")
         huggingface = parse_huggingface_url(
@@ -434,9 +514,7 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
                 )
             return httpx.Response(404)
 
-        app = create_agent_app(
-            self.settings, download_transport=httpx.MockTransport(handler)
-        )
+        app = create_agent_app(self.settings, download_transport=httpx.MockTransport(handler))
         app.state.layout.initialize()
         async with AsyncClient(
             transport=ASGITransport(app=app), base_url="http://agent.test"
@@ -467,11 +545,18 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
             )
         self.assertTrue(observed)
         self.assertTrue(
-            all(request.headers.get("Authorization") == "Bearer secret-download-token" for request in observed)
+            all(
+                request.headers.get("Authorization") == "Bearer secret-download-token"
+                for request in observed
+            )
         )
-        self.assertTrue(all("secret-download-token" not in str(request.url) for request in observed))
+        self.assertTrue(
+            all("secret-download-token" not in str(request.url) for request in observed)
+        )
 
-    async def test_huggingface_file_download_uses_cache_metadata_and_nested_destination(self) -> None:
+    async def test_huggingface_file_download_uses_cache_metadata_and_nested_destination(
+        self,
+    ) -> None:
         payload = self._safetensors_payload()
         cached = self.root / "cache" / "huggingface" / "downloaded.safetensors"
         captured: dict[str, object] = {}
@@ -479,11 +564,7 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
         def repo_info(**kwargs):
             captured["metadata_token"] = kwargs["token"]
             return SimpleNamespace(
-                siblings=[
-                    SimpleNamespace(
-                        rfilename="nested/model.safetensors", size=len(payload)
-                    )
-                ]
+                siblings=[SimpleNamespace(rfilename="nested/model.safetensors", size=len(payload))]
             )
 
         def file_download(**kwargs):
@@ -507,8 +588,7 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
                 headers={**self.headers, "X-Provider-Token": "hf_read_secret"},
                 json={
                     "source_url": (
-                        "https://huggingface.co/owner/repo/resolve/main/"
-                        "nested/model.safetensors"
+                        "https://huggingface.co/owner/repo/resolve/main/nested/model.safetensors"
                     )
                 },
             )
@@ -519,17 +599,14 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
                 headers={**self.headers, "X-Provider-Token": "hf_read_secret"},
                 json={
                     "source_url": (
-                        "https://huggingface.co/owner/repo/resolve/main/"
-                        "nested/model.safetensors"
+                        "https://huggingface.co/owner/repo/resolve/main/nested/model.safetensors"
                     ),
                     "destination_kind": "diffusion_models",
                 },
             )
             transfer = await self._wait_for_transfer(client, started.json()["id"])
             self.assertEqual(transfer["state"], "completed", transfer)
-            inventory = await client.get(
-                "/v1/files?kind=diffusion_models", headers=self.headers
-            )
+            inventory = await client.get("/v1/files?kind=diffusion_models", headers=self.headers)
             self.assertEqual(
                 inventory.json()["items"][0]["display_name"],
                 "nested/model.safetensors",
@@ -557,13 +634,15 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
                         "id": 456,
                         "name": "Resume",
                         "model": {"id": 123, "name": "Resume", "type": "LORA"},
-                        "files": [{
-                            "id": 789,
-                            "name": "resume.safetensors",
-                            "sizeKB": len(payload) / 1024,
-                            "downloadUrl": "https://civitai.com/api/download/models/456",
-                            "hashes": {"SHA256": digest},
-                        }],
+                        "files": [
+                            {
+                                "id": 789,
+                                "name": "resume.safetensors",
+                                "sizeKB": len(payload) / 1024,
+                                "downloadUrl": "https://civitai.com/api/download/models/456",
+                                "hashes": {"SHA256": digest},
+                            }
+                        ],
                     },
                 )
             downloads += 1
@@ -580,9 +659,7 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
                 content=payload[split:],
             )
 
-        app = create_agent_app(
-            self.settings, download_transport=httpx.MockTransport(handler)
-        )
+        app = create_agent_app(self.settings, download_transport=httpx.MockTransport(handler))
         app.state.layout.initialize()
         async with AsyncClient(
             transport=ASGITransport(app=app), base_url="http://agent.test"
@@ -592,9 +669,7 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
                 "file_id": "789",
                 "destination_kind": "loras",
             }
-            started = await client.post(
-                "/v1/downloads/civitai", headers=self.headers, json=request
-            )
+            started = await client.post("/v1/downloads/civitai", headers=self.headers, json=request)
             failed = await self._wait_for_transfer(client, started.json()["id"])
             self.assertEqual(failed["state"], "failed")
             self.assertEqual(failed["bytes_complete"], split)
@@ -656,9 +731,7 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
             )
             completed = await self._wait_for_transfer(client, started.json()["id"])
             self.assertEqual(completed["state"], "completed", completed)
-            inventory = await client.get(
-                "/v1/files?kind=diffusion_models", headers=self.headers
-            )
+            inventory = await client.get("/v1/files?kind=diffusion_models", headers=self.headers)
             self.assertEqual(
                 [item["display_name"] for item in inventory.json()["items"]],
                 ["config.json", "nested/model.safetensors"],
@@ -676,36 +749,40 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
                 target = commands[-1]
                 output = Path(target["payload"]["output_directory"]) / "result.png"
                 output.write_bytes(b"fake-png")
-                await on_event({
-                    "command_id": target["command_id"],
-                    "state": "running",
-                    "message": "Denoising step 1/2",
-                    "payload": {
-                        "step": 1,
-                        "total_steps": 2,
-                        "prompt": "must not reach event storage",
-                    },
-                })
-                await on_event({
-                    "command_id": target["command_id"],
-                    "state": "running",
-                    "message": "Preparing decoder",
-                    "payload": {},
-                })
-                await on_event({
-                    "command_id": target["command_id"],
-                    "state": "ready",
-                    "message": "Generation complete",
-                    "payload": {"image_path": str(output)},
-                })
+                await on_event(
+                    {
+                        "command_id": target["command_id"],
+                        "state": "running",
+                        "message": "Denoising step 1/2",
+                        "payload": {
+                            "step": 1,
+                            "total_steps": 2,
+                            "prompt": "must not reach event storage",
+                        },
+                    }
+                )
+                await on_event(
+                    {
+                        "command_id": target["command_id"],
+                        "state": "running",
+                        "message": "Preparing decoder",
+                        "payload": {},
+                    }
+                )
+                await on_event(
+                    {
+                        "command_id": target["command_id"],
+                        "state": "ready",
+                        "message": "Generation complete",
+                        "payload": {"image_path": str(output)},
+                    }
+                )
                 return 0
 
             async def cancel(self):
                 return None
 
-        app = create_agent_app(
-            self.settings, job_executor_factory=lambda: FakeExecutor()
-        )
+        app = create_agent_app(self.settings, job_executor_factory=lambda: FakeExecutor())
         app.state.layout.initialize()
         request = {
             "command_id": "browser-command-1",
@@ -718,22 +795,16 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
         ) as client:
             unauthorized = await client.post("/v1/jobs", json=request)
             self.assertEqual(unauthorized.status_code, 401)
-            submitted = await client.post(
-                "/v1/jobs", headers=self.headers, json=request
-            )
+            submitted = await client.post("/v1/jobs", headers=self.headers, json=request)
             self.assertEqual(submitted.status_code, 202, submitted.text)
-            duplicate = await client.post(
-                "/v1/jobs", headers=self.headers, json=request
-            )
+            duplicate = await client.post("/v1/jobs", headers=self.headers, json=request)
             self.assertEqual(duplicate.json()["id"], submitted.json()["id"])
             job = await self._wait_for_job(client, submitted.json()["id"])
             self.assertEqual(job["state"], "completed", job)
             self.assertEqual(job["progress_current"], 1)
             self.assertEqual(job["progress_total"], 2)
             self.assertEqual(len(job["output_file_ids"]), 1)
-            page = await client.get(
-                f"/v1/jobs/{job['id']}/events", headers=self.headers
-            )
+            page = await client.get(f"/v1/jobs/{job['id']}/events", headers=self.headers)
             self.assertEqual(page.status_code, 200, page.text)
             self.assertNotIn("private portrait prompt", page.text)
             self.assertNotIn(str(self.root), page.text)
@@ -742,21 +813,15 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
                 f"/v1/jobs/{job['id']}/events?cursor={cursor}", headers=self.headers
             )
             self.assertEqual(empty.json()["items"], [])
-            inventory = await client.get(
-                "/v1/files?kind=outputs", headers=self.headers
-            )
-            self.assertEqual(
-                inventory.json()["items"][0]["id"], job["output_file_ids"][0]
-            )
+            inventory = await client.get("/v1/files?kind=outputs", headers=self.headers)
+            self.assertEqual(inventory.json()["items"][0]["id"], job["output_file_ids"][0])
         self.assertEqual(executions, 1)
         self.assertEqual(
             [command["kind"] for command in observed_commands],
             ["probe", "validate_models", "load_model", "generate_baseline"],
         )
         saved_project = json.loads(
-            (self.root / "projects" / "portrait-project.json").read_text(
-                encoding="utf-8"
-            )
+            (self.root / "projects" / "portrait-project.json").read_text(encoding="utf-8")
         )
         self.assertEqual(saved_project["schema"], "k2-region-lab-project")
 
@@ -766,12 +831,14 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
 
         class BlockingExecutor:
             async def run(self, commands, on_event):
-                await on_event({
-                    "command_id": commands[-1]["command_id"],
-                    "state": "running",
-                    "message": "Generation started",
-                    "payload": {},
-                })
+                await on_event(
+                    {
+                        "command_id": commands[-1]["command_id"],
+                        "state": "running",
+                        "message": "Generation started",
+                        "payload": {},
+                    }
+                )
                 started.set()
                 await cancelled.wait()
                 return -15
@@ -779,9 +846,7 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
             async def cancel(self):
                 cancelled.set()
 
-        app = create_agent_app(
-            self.settings, job_executor_factory=lambda: BlockingExecutor()
-        )
+        app = create_agent_app(self.settings, job_executor_factory=lambda: BlockingExecutor())
         app.state.layout.initialize()
         async with AsyncClient(
             transport=ASGITransport(app=app), base_url="http://agent.test"
@@ -803,9 +868,7 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(response.json()["state"], "cancelled")
             self.assertTrue(cancelled.is_set())
             await asyncio.sleep(0)
-            status = await client.get(
-                f"/v1/jobs/{submitted.json()['id']}", headers=self.headers
-            )
+            status = await client.get(f"/v1/jobs/{submitted.json()['id']}", headers=self.headers)
             self.assertEqual(status.json()["state"], "cancelled")
 
     async def test_remote_job_reports_missing_worker_runtime(self) -> None:
@@ -824,22 +887,16 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(job["state"], "failed")
         self.assertEqual(job["error_code"], "worker_unavailable")
 
-    async def _wait_for_transfer(
-        self, client: AsyncClient, transfer_id: str
-    ) -> dict[str, object]:
+    async def _wait_for_transfer(self, client: AsyncClient, transfer_id: str) -> dict[str, object]:
         for _attempt in range(100):
-            response = await client.get(
-                f"/v1/transfers/{transfer_id}", headers=self.headers
-            )
+            response = await client.get(f"/v1/transfers/{transfer_id}", headers=self.headers)
             body = response.json()
             if body["state"] in {"completed", "failed", "cancelled", "paused"}:
                 return body
             await asyncio.sleep(0.01)
         self.fail("transfer did not reach a terminal state")
 
-    async def _wait_for_job(
-        self, client: AsyncClient, job_id: str
-    ) -> dict[str, object]:
+    async def _wait_for_job(self, client: AsyncClient, job_id: str) -> dict[str, object]:
         for _attempt in range(100):
             response = await client.get(f"/v1/jobs/{job_id}", headers=self.headers)
             body = response.json()

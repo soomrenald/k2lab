@@ -30,15 +30,18 @@ from k2_region_lab.agent.domain import (
     HuggingFacePreviewRequest,
     JobEventPage,
     JobSubmitRequest,
+    MigrationChunkReceipt,
     ReadinessStages,
     RemoteTransfer,
     StorageStatus,
     UploadCompleteResponse,
     UploadCreateRequest,
     UploadSession,
+    WorkspaceManifest,
 )
 from k2_region_lab.agent.downloads import RemoteDownloadManager
 from k2_region_lab.agent.jobs import JobError, JobManager
+from k2_region_lab.agent.migrations import WorkspaceMigrationManager
 from k2_region_lab.agent.storage import LAYOUT_VERSION, WorkspaceLayout
 from k2_region_lab.agent.transfers import TransferError, TransferManager
 from k2_region_lab.http_security import SlidingWindowRateLimiter
@@ -98,12 +101,8 @@ class AgentSettings:
             comfyui_root=Path(os.environ.get("K2LAB_COMFYUI_ROOT", "/opt/ComfyUI")),
             cuda_version=os.environ.get("K2LAB_CUDA_VERSION"),
             pytorch_version=os.environ.get("K2LAB_PYTORCH_VERSION"),
-            read_requests_per_minute=int(
-                os.environ.get("K2LAB_AGENT_READ_RATE_LIMIT", "600")
-            ),
-            write_requests_per_minute=int(
-                os.environ.get("K2LAB_AGENT_WRITE_RATE_LIMIT", "120")
-            ),
+            read_requests_per_minute=int(os.environ.get("K2LAB_AGENT_READ_RATE_LIMIT", "600")),
+            write_requests_per_minute=int(os.environ.get("K2LAB_AGENT_WRITE_RATE_LIMIT", "120")),
             provisioning_requests_per_minute=int(
                 os.environ.get("K2LAB_AGENT_JOB_RATE_LIMIT", "30")
             ),
@@ -113,15 +112,11 @@ class AgentSettings:
         )
 
 
-def _agent_rate_limit(
-    request: Request, settings: AgentSettings
-) -> tuple[str, int]:
+def _agent_rate_limit(request: Request, settings: AgentSettings) -> tuple[str, int]:
     path = request.url.path
     if "/uploads/" in path and "/chunks/" in path:
         return "upload-chunk", settings.upload_chunk_requests_per_minute
-    if request.method == "POST" and (
-        path == "/v1/jobs" or path.startswith("/v1/downloads/")
-    ):
+    if request.method == "POST" and (path == "/v1/jobs" or path.startswith("/v1/downloads/")):
         return "job-start", settings.provisioning_requests_per_minute
     if request.method in {"GET", "HEAD", "OPTIONS"}:
         return "read", settings.read_requests_per_minute
@@ -177,11 +172,11 @@ def create_agent_app(
         worker_python=configured.worker_python,
         comfyui_root=configured.comfyui_root,
         executor_factory=job_executor_factory,
-        readiness_callback=lambda ready: setattr(
-            application.state, "worker_ready", ready
-        ),
+        readiness_callback=lambda ready: setattr(application.state, "worker_ready", ready),
     )
     application.state.job_manager = job_manager
+    migration_manager = WorkspaceMigrationManager(layout)
+    application.state.migration_manager = migration_manager
     rate_limiter = SlidingWindowRateLimiter()
 
     @application.middleware("http")
@@ -218,6 +213,18 @@ def create_agent_app(
                             "message": "Too many agent requests; retry shortly.",
                         },
                     )
+                elif (
+                    migration_manager.sealed
+                    and request.method not in {"GET", "HEAD", "OPTIONS"}
+                    and not request.url.path.startswith("/v1/migrations/")
+                ):
+                    response = JSONResponse(
+                        status_code=423,
+                        content={
+                            "code": "workspace_sealed_for_migration",
+                            "message": "Workspace writes are sealed during migration.",
+                        },
+                    )
                 else:
                     response = await call_next(request)
         response.headers["Cache-Control"] = "no-store"
@@ -227,9 +234,7 @@ def create_agent_app(
         return response
 
     @application.exception_handler(TransferError)
-    async def transfer_error_handler(
-        _request: Request, error: TransferError
-    ) -> JSONResponse:
+    async def transfer_error_handler(_request: Request, error: TransferError) -> JSONResponse:
         return JSONResponse(
             status_code=error.status_code,
             content={"code": error.code, "message": error.message},
@@ -256,9 +261,7 @@ def create_agent_app(
 
     authentication = [Depends(require_agent_token)]
 
-    @application.get(
-        "/v1/health", response_model=AgentHealth, dependencies=authentication
-    )
+    @application.get("/v1/health", response_model=AgentHealth, dependencies=authentication)
     async def health() -> AgentHealth:
         writable = layout.is_writable()
         readiness = ReadinessStages(
@@ -290,9 +293,7 @@ def create_agent_app(
             pytorch_version=configured.pytorch_version,
         )
 
-    @application.get(
-        "/v1/storage", response_model=StorageStatus, dependencies=authentication
-    )
+    @application.get("/v1/storage", response_model=StorageStatus, dependencies=authentication)
     async def storage() -> StorageStatus:
         usage = shutil.disk_usage(layout.root)
         return StorageStatus(
@@ -304,9 +305,105 @@ def create_agent_app(
             layout_version=LAYOUT_VERSION,
         )
 
-    @application.get(
-        "/v1/files", response_model=FilePage, dependencies=authentication
+    @application.post(
+        "/v1/migrations/seal",
+        response_model=WorkspaceManifest,
+        dependencies=authentication,
     )
+    async def seal_for_migration() -> WorkspaceManifest:
+        await migration_manager.seal()
+        await job_manager.close()
+        await download_manager.close()
+        return await migration_manager.create_manifest()
+
+    @application.delete(
+        "/v1/migrations/seal",
+        dependencies=authentication,
+        status_code=204,
+    )
+    async def unseal_after_migration() -> None:
+        await migration_manager.unseal()
+
+    @application.post(
+        "/v1/migrations/manifests",
+        response_model=WorkspaceManifest,
+        dependencies=authentication,
+    )
+    async def create_migration_manifest() -> WorkspaceManifest:
+        return await migration_manager.create_manifest()
+
+    @application.get(
+        "/v1/migrations/manifests/{generation}",
+        response_model=WorkspaceManifest,
+        dependencies=authentication,
+    )
+    async def migration_manifest(generation: int) -> WorkspaceManifest:
+        return await migration_manager.get_manifest(generation)
+
+    @application.get("/v1/migrations/files/{relative_path:path}", dependencies=authentication)
+    async def migration_file(
+        relative_path: str,
+        generation: int = Query(ge=1),
+        range_header: str | None = Header(default=None, alias="Range"),
+    ) -> StreamingResponse:
+        start = 0
+        end: int | None = None
+        if range_header:
+            if not range_header.startswith("bytes=") or "," in range_header:
+                raise TransferError("invalid_range", "Only one byte range is supported.", 416)
+            start_text, separator, end_text = range_header[6:].partition("-")
+            if not separator or not start_text:
+                raise TransferError("invalid_range", "The migration byte range is invalid.", 416)
+            try:
+                start = int(start_text)
+                end = int(end_text) if end_text else None
+            except ValueError as error:
+                raise TransferError(
+                    "invalid_range", "The migration byte range is invalid.", 416
+                ) from error
+        entry, content, first, last = await migration_manager.read_file(
+            generation, relative_path, start, end
+        )
+        status_code = 206 if range_header else 200
+        headers = {
+            "Accept-Ranges": "bytes",
+            "Content-Length": str(len(content)),
+            "X-File-SHA256": entry.sha256,
+        }
+        if range_header:
+            headers["Content-Range"] = f"bytes {first}-{last}/{entry.size_bytes}"
+        return StreamingResponse(
+            iter([content]),
+            status_code=status_code,
+            media_type="application/octet-stream",
+            headers=headers,
+        )
+
+    @application.put(
+        "/v1/migrations/files/{relative_path:path}",
+        response_model=MigrationChunkReceipt,
+        dependencies=authentication,
+    )
+    async def import_migration_file(
+        relative_path: str,
+        request: Request,
+        migration_id: str = Header(alias="X-Migration-ID"),
+        offset: int = Header(alias="X-File-Offset", ge=0),
+        total_size: int = Header(alias="X-File-Size", ge=0),
+        file_sha256: str = Header(alias="X-File-SHA256"),
+        chunk_sha256: str = Header(alias="X-Chunk-SHA256"),
+    ) -> MigrationChunkReceipt:
+        return await migration_manager.write_chunk(
+            migration_id=migration_id,
+            relative_path=relative_path,
+            offset=offset,
+            total_size=total_size,
+            file_sha256=file_sha256,
+            chunk_sha256=chunk_sha256,
+            content=await request.body(),
+        )
+
+    @application.get("/v1/files", response_model=FilePage, dependencies=authentication)
     async def files(
         kind: FileKind,
         cursor: str | None = None,
@@ -467,9 +564,7 @@ def create_agent_app(
     async def output_file(
         file_id: str, range_header: str | None = Header(default=None, alias="Range")
     ):
-        record, path = await transfer_manager.resolve_file(
-            file_id, required_kind=FileKind.OUTPUTS
-        )
+        record, path = await transfer_manager.resolve_file(file_id, required_kind=FileKind.OUTPUTS)
         if not range_header:
             return FileResponse(
                 path,

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import re
 from typing import Any, Protocol
+from urllib.parse import quote
 
 import httpx
 
@@ -20,11 +22,13 @@ from k2_region_lab.agent.domain import (
     HuggingFacePreviewRequest,
     JobEventPage,
     JobSubmitRequest,
+    MigrationChunkReceipt,
     RemoteTransfer,
     StorageStatus,
     UploadCompleteResponse,
     UploadCreateRequest,
     UploadSession,
+    WorkspaceManifest,
 )
 from k2_region_lab.web.domain import WorkspaceError, WorkspaceOutput
 
@@ -36,9 +40,28 @@ class WorkspaceAgentApi(Protocol):
 
     async def storage(self) -> StorageStatus: ...
 
-    async def inventory(
-        self, kind: FileKind, *, cursor: str | None = None
-    ) -> FilePage: ...
+    async def seal_for_migration(self) -> WorkspaceManifest: ...
+
+    async def unseal_after_migration(self) -> None: ...
+
+    async def create_migration_manifest(self) -> WorkspaceManifest: ...
+
+    async def migration_file(
+        self, generation: int, relative_path: str, *, start: int, end: int
+    ) -> bytes: ...
+
+    async def import_migration_chunk(
+        self,
+        migration_id: str,
+        relative_path: str,
+        *,
+        offset: int,
+        total_size: int,
+        file_sha256: str,
+        content: bytes,
+    ) -> MigrationChunkReceipt: ...
+
+    async def inventory(self, kind: FileKind, *, cursor: str | None = None) -> FilePage: ...
 
     async def create_upload(self, request: UploadCreateRequest) -> UploadSession: ...
 
@@ -76,15 +99,11 @@ class WorkspaceAgentApi(Protocol):
 
     async def job_status(self, job_id: str) -> GenerationJob: ...
 
-    async def job_events(
-        self, job_id: str, *, cursor: str | None = None
-    ) -> JobEventPage: ...
+    async def job_events(self, job_id: str, *, cursor: str | None = None) -> JobEventPage: ...
 
     async def cancel_job(self, job_id: str) -> GenerationJob: ...
 
-    async def output(
-        self, file_id: str, *, range_header: str | None = None
-    ) -> WorkspaceOutput: ...
+    async def output(self, file_id: str, *, range_header: str | None = None) -> WorkspaceOutput: ...
 
 
 class WorkspaceAgentClient:
@@ -116,9 +135,78 @@ class WorkspaceAgentClient:
     async def storage(self) -> StorageStatus:
         return StorageStatus.model_validate(await self._request("/v1/storage"))
 
-    async def inventory(
-        self, kind: FileKind, *, cursor: str | None = None
-    ) -> FilePage:
+    async def seal_for_migration(self) -> WorkspaceManifest:
+        return WorkspaceManifest.model_validate(
+            await self._request("/v1/migrations/seal", method="POST")
+        )
+
+    async def unseal_after_migration(self) -> None:
+        await self._request("/v1/migrations/seal", method="DELETE")
+
+    async def create_migration_manifest(self) -> WorkspaceManifest:
+        return WorkspaceManifest.model_validate(
+            await self._request("/v1/migrations/manifests", method="POST")
+        )
+
+    async def migration_file(
+        self, generation: int, relative_path: str, *, start: int, end: int
+    ) -> bytes:
+        path = quote(relative_path, safe="/")
+        headers = {
+            "Authorization": f"Bearer {self._session_token}",
+            "Range": f"bytes={start}-{end}",
+        }
+        try:
+            async with httpx.AsyncClient(
+                base_url=self._base_url,
+                timeout=max(self._timeout_seconds, 60.0),
+                transport=self._transport,
+            ) as client:
+                response = await client.get(
+                    f"/v1/migrations/files/{path}",
+                    params={"generation": generation},
+                    headers=headers,
+                )
+        except httpx.HTTPError as error:
+            raise WorkspaceError(
+                "agent_unavailable",
+                "The source workspace file could not be retrieved.",
+                status_code=502,
+            ) from error
+        if response.status_code not in {200, 206}:
+            raise WorkspaceError(
+                "migration_read_failed",
+                "The source workspace file could not be retrieved.",
+                status_code=response.status_code,
+            )
+        return response.content
+
+    async def import_migration_chunk(
+        self,
+        migration_id: str,
+        relative_path: str,
+        *,
+        offset: int,
+        total_size: int,
+        file_sha256: str,
+        content: bytes,
+    ) -> MigrationChunkReceipt:
+        return MigrationChunkReceipt.model_validate(
+            await self._request(
+                f"/v1/migrations/files/{quote(relative_path, safe='/')}",
+                method="PUT",
+                content=content,
+                extra_headers={
+                    "X-Migration-ID": migration_id,
+                    "X-File-Offset": str(offset),
+                    "X-File-Size": str(total_size),
+                    "X-File-SHA256": file_sha256,
+                    "X-Chunk-SHA256": hashlib.sha256(content).hexdigest(),
+                },
+            )
+        )
+
+    async def inventory(self, kind: FileKind, *, cursor: str | None = None) -> FilePage:
         params = {"kind": kind.value}
         if cursor:
             params["cursor"] = cursor
@@ -201,9 +289,7 @@ class WorkspaceAgentClient:
         )
 
     async def transfer_status(self, transfer_id: str) -> RemoteTransfer:
-        return RemoteTransfer.model_validate(
-            await self._request(f"/v1/transfers/{transfer_id}")
-        )
+        return RemoteTransfer.model_validate(await self._request(f"/v1/transfers/{transfer_id}"))
 
     async def cancel_transfer(self, transfer_id: str) -> RemoteTransfer:
         return RemoteTransfer.model_validate(
@@ -222,9 +308,7 @@ class WorkspaceAgentClient:
     async def job_status(self, job_id: str) -> GenerationJob:
         return GenerationJob.model_validate(await self._request(f"/v1/jobs/{job_id}"))
 
-    async def job_events(
-        self, job_id: str, *, cursor: str | None = None
-    ) -> JobEventPage:
+    async def job_events(self, job_id: str, *, cursor: str | None = None) -> JobEventPage:
         params = {"cursor": cursor} if cursor else None
         return JobEventPage.model_validate(
             await self._request(f"/v1/jobs/{job_id}/events", params=params)
@@ -235,9 +319,7 @@ class WorkspaceAgentClient:
             await self._request(f"/v1/jobs/{job_id}/cancel", method="POST")
         )
 
-    async def output(
-        self, file_id: str, *, range_header: str | None = None
-    ) -> WorkspaceOutput:
+    async def output(self, file_id: str, *, range_header: str | None = None) -> WorkspaceOutput:
         headers = {"Authorization": f"Bearer {self._session_token}"}
         if range_header:
             headers["Range"] = range_header
@@ -264,7 +346,13 @@ class WorkspaceAgentClient:
             key: value
             for key, value in response.headers.items()
             if key.casefold()
-            in {"accept-ranges", "content-disposition", "content-length", "content-range", "content-type"}
+            in {
+                "accept-ranges",
+                "content-disposition",
+                "content-length",
+                "content-range",
+                "content-type",
+            }
         }
         return WorkspaceOutput(
             content=response.content,
