@@ -7,6 +7,15 @@ from typing import Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from k2_region_lab.agent.domain import (
+    ChunkReceipt,
+    FileKind,
+    FilePage,
+    UploadCompleteResponse,
+    UploadCreateRequest,
+    UploadSession,
+)
+
 
 class WorkspaceMode(StrEnum):
     PERSISTENT_POD = "persistent_pod"
@@ -185,6 +194,31 @@ class WorkspaceBackend(Protocol):
 
     @abstractmethod
     async def get_cost_snapshot(self, workspace_id: str) -> CostSnapshot: ...
+
+    async def get_file_inventory(
+        self, workspace_id: str, kind: FileKind, cursor: str | None = None
+    ) -> FilePage: ...
+
+    async def create_upload(
+        self, workspace_id: str, request: UploadCreateRequest
+    ) -> UploadSession: ...
+
+    async def get_upload(self, workspace_id: str, upload_id: str) -> UploadSession: ...
+
+    async def write_upload_chunk(
+        self,
+        workspace_id: str,
+        upload_id: str,
+        index: int,
+        content: bytes,
+        sha256: str,
+    ) -> ChunkReceipt: ...
+
+    async def complete_upload(
+        self, workspace_id: str, upload_id: str
+    ) -> UploadCompleteResponse: ...
+
+    async def cancel_upload(self, workspace_id: str, upload_id: str) -> None: ...
 
 
 def utc_now() -> datetime:

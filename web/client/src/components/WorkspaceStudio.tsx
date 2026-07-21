@@ -3,6 +3,7 @@ import type { WorkspaceRecord } from "../api";
 import { controlPlane } from "../api";
 import { Icon, type IconName } from "./Icon";
 import { Inspector } from "./Inspector";
+import { AssetPanel } from "./AssetPanel";
 import {
   RegionCanvas,
   type RegionBox,
@@ -38,6 +39,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, onWorkspace, on
   });
   const [showCloud, setShowCloud] = useState(false);
   const [showDelete, setShowDelete] = useState(false);
+  const [showAssets, setShowAssets] = useState(false);
   const [deleteConfirmation, setDeleteConfirmation] = useState("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
@@ -164,7 +166,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, onWorkspace, on
           <RailButton icon="face" label="Faces" active={mode === "face"} onClick={() => switchMode("face")} />
         </div>
         <div className="utility-rail">
-          <RailButton icon="folder" label="Assets" active={false} onClick={() => setMessage("Cloud file inventory is the next implementation milestone.")} />
+          <RailButton icon="folder" label="Assets" active={showAssets} onClick={() => setShowAssets(true)} />
           <RailButton icon="transfer" label="Transfers" active={false} onClick={() => setMessage("Resumable transfers are the next implementation milestone.")} />
           <RailButton icon="settings" label="Setup" active={false} onClick={() => setShowCloud(true)} />
         </div>
@@ -233,6 +235,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, onWorkspace, on
           </section>
         </div>
       )}
+      {showAssets && <AssetPanel workspaceId={workspace.id} onClose={() => setShowAssets(false)} />}
     </div>
   );
 }

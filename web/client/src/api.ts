@@ -86,6 +86,35 @@ export interface ApiErrorBody {
   message: string;
 }
 
+export type FileKind = "diffusion_models" | "text_encoders" | "vae" | "loras" | "upscale_models" | "face_detection" | "projects" | "inputs" | "outputs";
+
+export interface FileRecord {
+  id: string;
+  kind: FileKind;
+  display_name: string;
+  size_bytes: number;
+  sha256: string;
+  modified_at: string;
+}
+
+export interface FilePage {
+  items: FileRecord[];
+  next_cursor: string | null;
+}
+
+export interface UploadSession {
+  id: string;
+  filename: string;
+  display_name: string;
+  destination_kind: FileKind;
+  size_bytes: number;
+  sha256: string;
+  chunk_size_bytes: number;
+  chunk_count: number;
+  completed_chunks: number[];
+  state: string;
+}
+
 export class ApiError extends Error {
   readonly code: string;
   readonly status: number;
@@ -106,6 +135,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       ...init?.headers,
     },
   });
+  if (response.status === 204) return undefined as T;
   const body = (await response.json()) as T | ApiErrorBody;
   if (!response.ok) {
     throw new ApiError(response.status, body as ApiErrorBody);
@@ -157,4 +187,23 @@ export const controlPlane = {
       method: "POST",
       body: JSON.stringify({ confirmation }),
     }),
+  files: (workspaceId: string, kind: FileKind, cursor?: string) =>
+    request<FilePage>(`/api/v1/workspaces/${workspaceId}/files?kind=${kind}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`),
+  createUpload: (workspaceId: string, payload: {
+    filename: string; destination_kind: FileKind; size_bytes: number; sha256: string; chunk_size_bytes: number;
+  }) => request<UploadSession>(`/api/v1/workspaces/${workspaceId}/uploads`, {
+    method: "POST", body: JSON.stringify(payload),
+  }),
+  uploadStatus: (workspaceId: string, uploadId: string) =>
+    request<UploadSession>(`/api/v1/workspaces/${workspaceId}/uploads/${uploadId}`),
+  uploadChunk: (workspaceId: string, uploadId: string, index: number, content: ArrayBuffer, sha256: string) =>
+    request<{ upload_id: string; index: number }>(`/api/v1/workspaces/${workspaceId}/uploads/${uploadId}/chunks/${index}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/octet-stream", "X-Chunk-SHA256": sha256 },
+      body: content,
+    }),
+  completeUpload: (workspaceId: string, uploadId: string) =>
+    request<{ file: FileRecord; duplicate: boolean }>(`/api/v1/workspaces/${workspaceId}/uploads/${uploadId}/complete`, { method: "POST" }),
+  cancelUpload: (workspaceId: string, uploadId: string) =>
+    request<void>(`/api/v1/workspaces/${workspaceId}/uploads/${uploadId}`, { method: "DELETE" }),
 };

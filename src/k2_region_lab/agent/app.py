@@ -8,17 +8,26 @@ from collections.abc import Sequence
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import AsyncIterator
+from typing import AsyncIterator, Iterator
+from urllib.parse import quote
 
-from fastapi import Depends, FastAPI, Header, HTTPException, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from k2_region_lab.agent.domain import (
     AgentCapabilities,
     AgentHealth,
+    ChunkReceipt,
+    FileKind,
+    FilePage,
     ReadinessStages,
     StorageStatus,
+    UploadCompleteResponse,
+    UploadCreateRequest,
+    UploadSession,
 )
 from k2_region_lab.agent.storage import LAYOUT_VERSION, WorkspaceLayout
+from k2_region_lab.agent.transfers import TransferError, TransferManager
 
 
 class AgentSettings:
@@ -85,6 +94,17 @@ def create_agent_app(settings: AgentSettings | None = None) -> FastAPI:
     application.state.settings = configured
     application.state.layout = layout
     application.state.worker_ready = False
+    transfer_manager = TransferManager(layout)
+    application.state.transfer_manager = transfer_manager
+
+    @application.exception_handler(TransferError)
+    async def transfer_error_handler(
+        _request: Request, error: TransferError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=error.status_code,
+            content={"code": error.code, "message": error.message},
+        )
 
     async def require_agent_token(authorization: str | None = Header(default=None)) -> None:
         scheme, _, supplied = (authorization or "").partition(" ")
@@ -148,6 +168,104 @@ def create_agent_app(settings: AgentSettings | None = None) -> FastAPI:
             layout_version=LAYOUT_VERSION,
         )
 
+    @application.get(
+        "/v1/files", response_model=FilePage, dependencies=authentication
+    )
+    async def files(
+        kind: FileKind,
+        cursor: str | None = None,
+        limit: int = Query(default=100, ge=1, le=250),
+    ) -> FilePage:
+        return await transfer_manager.inventory(kind, cursor=cursor, limit=limit)
+
+    @application.post(
+        "/v1/uploads",
+        response_model=UploadSession,
+        dependencies=authentication,
+        status_code=201,
+    )
+    async def create_upload(request: UploadCreateRequest) -> UploadSession:
+        return await transfer_manager.create_upload(request)
+
+    @application.get(
+        "/v1/uploads/{upload_id}",
+        response_model=UploadSession,
+        dependencies=authentication,
+    )
+    async def upload_status(upload_id: str) -> UploadSession:
+        return await transfer_manager.get_upload(upload_id)
+
+    @application.put(
+        "/v1/uploads/{upload_id}/chunks/{index}",
+        response_model=ChunkReceipt,
+        dependencies=authentication,
+    )
+    async def upload_chunk(
+        upload_id: str,
+        index: int,
+        request: Request,
+        x_chunk_sha256: str = Header(alias="X-Chunk-SHA256"),
+    ) -> ChunkReceipt:
+        return await transfer_manager.write_chunk(
+            upload_id, index, await request.body(), x_chunk_sha256
+        )
+
+    @application.post(
+        "/v1/uploads/{upload_id}/complete",
+        response_model=UploadCompleteResponse,
+        dependencies=authentication,
+    )
+    async def complete_upload(upload_id: str) -> UploadCompleteResponse:
+        return await transfer_manager.complete_upload(upload_id)
+
+    @application.delete(
+        "/v1/uploads/{upload_id}",
+        dependencies=authentication,
+        status_code=204,
+    )
+    async def cancel_upload(upload_id: str) -> None:
+        await transfer_manager.cancel_upload(upload_id)
+
+    @application.get("/v1/outputs/{file_id}", dependencies=authentication)
+    async def output_file(
+        file_id: str, range_header: str | None = Header(default=None, alias="Range")
+    ):
+        record, path = await transfer_manager.resolve_file(
+            file_id, required_kind=FileKind.OUTPUTS
+        )
+        if not range_header:
+            return FileResponse(
+                path,
+                filename=record.display_name,
+                headers={"Accept-Ranges": "bytes"},
+            )
+        start, end = _parse_byte_range(range_header, record.size_bytes)
+
+        def content() -> Iterator[bytes]:
+            remaining = end - start + 1
+            with path.open("rb") as source:
+                source.seek(start)
+                while remaining:
+                    block = source.read(min(1024 * 1024, remaining))
+                    if not block:
+                        break
+                    remaining -= len(block)
+                    yield block
+
+        return StreamingResponse(
+            content(),
+            status_code=206,
+            media_type="application/octet-stream",
+            headers={
+                "Accept-Ranges": "bytes",
+                "Content-Range": f"bytes {start}-{end}/{record.size_bytes}",
+                "Content-Length": str(end - start + 1),
+                "Content-Disposition": (
+                    "attachment; filename*=UTF-8''" + quote(record.display_name)
+                ),
+            },
+        )
+
     return application
 
 
@@ -161,6 +279,27 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     uvicorn.run(create_agent_app(), host=args.host, port=args.port)
     return 0
+
+
+def _parse_byte_range(value: str, size: int) -> tuple[int, int]:
+    if not value.startswith("bytes=") or "," in value:
+        raise TransferError("invalid_range", "Only one byte range is supported.", 416)
+    start_text, separator, end_text = value[6:].partition("-")
+    if not separator:
+        raise TransferError("invalid_range", "The byte range is invalid.", 416)
+    try:
+        if start_text:
+            start = int(start_text)
+            end = int(end_text) if end_text else size - 1
+        else:
+            suffix = int(end_text)
+            start = max(0, size - suffix)
+            end = size - 1
+    except ValueError as error:
+        raise TransferError("invalid_range", "The byte range is invalid.", 416) from error
+    if start < 0 or end < start or start >= size:
+        raise TransferError("invalid_range", "The byte range is outside the file.", 416)
+    return start, min(end, size - 1)
 
 
 if __name__ == "__main__":

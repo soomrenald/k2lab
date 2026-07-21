@@ -28,11 +28,14 @@ The entrypoint rejects missing values or an unavailable volume, then starts
 `k2lab-agent` on port 8080. The agent creates and versions the required layout beneath
 `/workspace/k2lab` and requires the bearer session token on every `/v1` endpoint.
 
-## Current readiness boundary
+## Current agent boundary
 
-The image exposes authenticated health, capabilities, and storage status. Storage and
-model readiness are discovered from the persistent volume. Worker readiness remains false
-until the remote job runner milestone starts and validates the isolated worker process.
+The image exposes authenticated health, capabilities, storage status, paginated file
+inventory, checksum-verified resumable uploads, and ranged output retrieval. Transfer
+manifests, chunks, and the opaque file index are stored beneath the persistent workspace
+layout. Storage and model readiness are discovered from that volume. Worker readiness
+remains false until the remote job runner milestone starts and validates the isolated
+worker process.
 
 Publishing, vulnerability scanning, signing, and live RunPod acceptance are intentionally
 separate release operations; local tests never push an image or provision a Pod.

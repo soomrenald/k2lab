@@ -81,6 +81,26 @@ class WebControlPlaneTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(workspace["state"], "ready")
         self.assertTrue(workspace["readiness"]["storage"])
 
+        inventory = await self.client.get(
+            f"/api/v1/workspaces/{workspace['id']}/files?kind=inputs"
+        )
+        self.assertEqual(inventory.status_code, 200)
+        self.assertEqual(inventory.json(), {"items": [], "next_cursor": None})
+        unavailable_upload = await self.client.post(
+            f"/api/v1/workspaces/{workspace['id']}/uploads",
+            json={
+                "filename": "test.bin",
+                "destination_kind": "inputs",
+                "size_bytes": 1024,
+                "sha256": "0" * 64,
+                "chunk_size_bytes": 1024,
+            },
+        )
+        self.assertEqual(unavailable_upload.status_code, 501)
+        self.assertEqual(
+            unavailable_upload.json()["code"], "development_feature_unavailable"
+        )
+
         stopped = await self.client.post(
             f"/api/v1/workspaces/{workspace['id']}/stop"
         )

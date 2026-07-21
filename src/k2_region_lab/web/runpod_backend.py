@@ -6,8 +6,16 @@ from datetime import timedelta
 from typing import Any
 from uuid import uuid4
 
-from k2_region_lab.web.credential_vault import CredentialVault
+from k2_region_lab.agent.domain import (
+    ChunkReceipt,
+    FileKind,
+    FilePage,
+    UploadCompleteResponse,
+    UploadCreateRequest,
+    UploadSession,
+)
 from k2_region_lab.web.agent_client import WorkspaceAgentApi, WorkspaceAgentClient
+from k2_region_lab.web.credential_vault import CredentialVault
 from k2_region_lab.web.domain import (
     CloudType,
     CostSnapshot,
@@ -426,6 +434,58 @@ class RunPodPersistentPodBackend:
                     workspace, "runpod.workspace.reconcile", error
                 )
         return reconciled
+
+    async def get_file_inventory(
+        self, workspace_id: str, kind: FileKind, cursor: str | None = None
+    ) -> FilePage:
+        return await (await self._workspace_agent(workspace_id)).inventory(
+            kind, cursor=cursor
+        )
+
+    async def create_upload(
+        self, workspace_id: str, request: UploadCreateRequest
+    ) -> UploadSession:
+        return await (await self._workspace_agent(workspace_id)).create_upload(request)
+
+    async def get_upload(self, workspace_id: str, upload_id: str) -> UploadSession:
+        return await (await self._workspace_agent(workspace_id)).upload_status(upload_id)
+
+    async def write_upload_chunk(
+        self,
+        workspace_id: str,
+        upload_id: str,
+        index: int,
+        content: bytes,
+        sha256: str,
+    ) -> ChunkReceipt:
+        return await (await self._workspace_agent(workspace_id)).write_chunk(
+            upload_id, index, content, sha256
+        )
+
+    async def complete_upload(
+        self, workspace_id: str, upload_id: str
+    ) -> UploadCompleteResponse:
+        return await (await self._workspace_agent(workspace_id)).complete_upload(upload_id)
+
+    async def cancel_upload(self, workspace_id: str, upload_id: str) -> None:
+        await (await self._workspace_agent(workspace_id)).cancel_upload(upload_id)
+
+    async def _workspace_agent(self, workspace_id: str) -> WorkspaceAgentApi:
+        workspace = await self._workspace(workspace_id)
+        if workspace.state not in {WorkspaceState.STARTING, WorkspaceState.READY}:
+            raise WorkspaceError(
+                "workspace_not_running",
+                "Start the workspace before accessing its files.",
+                status_code=409,
+            )
+        secret = await self._vault.retrieve(f"agent:{workspace.id}")
+        if not secret:
+            raise WorkspaceError(
+                "agent_credential_missing",
+                "The workspace agent credential is missing.",
+                status_code=500,
+            )
+        return self._agent_factory(self._provider_id(workspace), secret)
 
     async def _workspace_from_provider(
         self, workspace: WorkspaceRecord, provider: dict[str, Any]

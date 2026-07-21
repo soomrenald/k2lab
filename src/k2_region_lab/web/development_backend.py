@@ -2,8 +2,17 @@ from __future__ import annotations
 
 import asyncio
 from datetime import timedelta
+from typing import NoReturn
 from uuid import uuid4
 
+from k2_region_lab.agent.domain import (
+    ChunkReceipt,
+    FileKind,
+    FilePage,
+    UploadCompleteResponse,
+    UploadCreateRequest,
+    UploadSession,
+)
 from k2_region_lab.web.domain import (
     CloudType,
     CostSnapshot,
@@ -306,6 +315,52 @@ class DevelopmentWorkspaceBackend:
             ),
             accrued_compute_estimate=accrued,
             observed_at=utc_now(),
+        )
+
+    async def get_file_inventory(
+        self, workspace_id: str, kind: FileKind, cursor: str | None = None
+    ) -> FilePage:
+        del kind, cursor
+        self._workspace(workspace_id)
+        return FilePage(items=[])
+
+    async def create_upload(
+        self, workspace_id: str, request: UploadCreateRequest
+    ) -> UploadSession:
+        del request
+        self._transfer_unavailable(workspace_id)
+
+    async def get_upload(self, workspace_id: str, upload_id: str) -> UploadSession:
+        del upload_id
+        self._transfer_unavailable(workspace_id)
+
+    async def write_upload_chunk(
+        self,
+        workspace_id: str,
+        upload_id: str,
+        index: int,
+        content: bytes,
+        sha256: str,
+    ) -> ChunkReceipt:
+        del upload_id, index, content, sha256
+        self._transfer_unavailable(workspace_id)
+
+    async def complete_upload(
+        self, workspace_id: str, upload_id: str
+    ) -> UploadCompleteResponse:
+        del upload_id
+        self._transfer_unavailable(workspace_id)
+
+    async def cancel_upload(self, workspace_id: str, upload_id: str) -> None:
+        del upload_id
+        self._transfer_unavailable(workspace_id)
+
+    def _transfer_unavailable(self, workspace_id: str) -> NoReturn:
+        self._workspace(workspace_id)
+        raise WorkspaceError(
+            "development_feature_unavailable",
+            "Uploads require a connected workspace agent.",
+            status_code=501,
         )
 
     def _require_credentials(self) -> None:

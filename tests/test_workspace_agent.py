@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import json
 import os
 import unittest
@@ -16,6 +17,7 @@ if FASTAPI_AVAILABLE:
 
     from k2_region_lab.agent.app import AgentSettings, create_agent_app
     from k2_region_lab.agent.storage import LAYOUT_VERSION, WorkspaceLayout
+    from k2_region_lab.agent.transfers import TransferManager
     from k2_region_lab.web.agent_client import WorkspaceAgentClient
 
 
@@ -142,6 +144,168 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
             observed["authorization"],
             f"Bearer {self.settings.session_token}",
         )
+
+    async def test_chunked_upload_resumes_verifies_and_updates_inventory(self) -> None:
+        content = bytes(range(256)) * 8 + b"xx"
+        digest = hashlib.sha256(content).hexdigest()
+        created = await self.client.post(
+            "/v1/uploads",
+            headers=self.headers,
+            json={
+                "filename": "portrait.bin",
+                "destination_kind": "inputs",
+                "size_bytes": len(content),
+                "sha256": digest,
+                "chunk_size_bytes": 1024,
+            },
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        upload = created.json()
+        self.assertEqual(upload["chunk_count"], 3)
+
+        rejected = await self.client.put(
+            f"/v1/uploads/{upload['id']}/chunks/0",
+            headers={**self.headers, "X-Chunk-SHA256": "0" * 64},
+            content=content[:1024],
+        )
+        self.assertEqual(rejected.status_code, 409)
+        self.assertEqual(rejected.json()["code"], "chunk_hash_mismatch")
+
+        for index, chunk in ((1, content[1024:2048]), (0, content[:1024])):
+            response = await self.client.put(
+                f"/v1/uploads/{upload['id']}/chunks/{index}",
+                headers={
+                    **self.headers,
+                    "X-Chunk-SHA256": hashlib.sha256(chunk).hexdigest(),
+                },
+                content=chunk,
+            )
+            self.assertEqual(response.status_code, 200, response.text)
+
+        resumed = await TransferManager(WorkspaceLayout(self.root)).get_upload(upload["id"])
+        self.assertEqual(resumed.completed_chunks, [0, 1])
+        incomplete = await self.client.post(
+            f"/v1/uploads/{upload['id']}/complete", headers=self.headers
+        )
+        self.assertEqual(incomplete.status_code, 409)
+
+        final_chunk = content[2048:]
+        accepted = await self.client.put(
+            f"/v1/uploads/{upload['id']}/chunks/2",
+            headers={
+                **self.headers,
+                "X-Chunk-SHA256": hashlib.sha256(final_chunk).hexdigest(),
+            },
+            content=final_chunk,
+        )
+        self.assertEqual(accepted.status_code, 200)
+        completed = await self.client.post(
+            f"/v1/uploads/{upload['id']}/complete", headers=self.headers
+        )
+        self.assertEqual(completed.status_code, 200, completed.text)
+        file_record = completed.json()["file"]
+        self.assertEqual(file_record["sha256"], digest)
+        self.assertEqual((self.root / "inputs" / "portrait.bin").read_bytes(), content)
+
+        inventory = await self.client.get(
+            "/v1/files?kind=inputs", headers=self.headers
+        )
+        self.assertEqual(inventory.status_code, 200)
+        self.assertEqual(inventory.json()["items"][0]["id"], file_record["id"])
+
+    async def test_duplicate_upload_returns_existing_opaque_file(self) -> None:
+        content = b"same-content" * 86
+        content = content[:1024]
+        digest = hashlib.sha256(content).hexdigest()
+        (self.root / "inputs" / "first.bin").write_bytes(content)
+        await self.client.get("/v1/files?kind=inputs", headers=self.headers)
+        created = await self.client.post(
+            "/v1/uploads",
+            headers=self.headers,
+            json={
+                "filename": "second.bin",
+                "destination_kind": "inputs",
+                "size_bytes": len(content),
+                "sha256": digest,
+                "chunk_size_bytes": 1024,
+            },
+        )
+        upload_id = created.json()["id"]
+        await self.client.put(
+            f"/v1/uploads/{upload_id}/chunks/0",
+            headers={**self.headers, "X-Chunk-SHA256": digest},
+            content=content,
+        )
+        completed = await self.client.post(
+            f"/v1/uploads/{upload_id}/complete", headers=self.headers
+        )
+        self.assertTrue(completed.json()["duplicate"])
+        self.assertEqual(completed.json()["file"]["display_name"], "first.bin")
+        self.assertFalse((self.root / "inputs" / "second.bin").exists())
+
+    async def test_upload_rejects_unsafe_name_and_can_be_cancelled(self) -> None:
+        unsafe = await self.client.post(
+            "/v1/uploads",
+            headers=self.headers,
+            json={
+                "filename": "../escape.bin",
+                "destination_kind": "inputs",
+                "size_bytes": 1024,
+                "sha256": hashlib.sha256(b"x" * 1024).hexdigest(),
+                "chunk_size_bytes": 1024,
+            },
+        )
+        self.assertEqual(unsafe.status_code, 400)
+        self.assertEqual(unsafe.json()["code"], "unsafe_filename")
+
+        created = await self.client.post(
+            "/v1/uploads",
+            headers=self.headers,
+            json={
+                "filename": "cancel.bin",
+                "destination_kind": "inputs",
+                "size_bytes": 1024,
+                "sha256": hashlib.sha256(b"x" * 1024).hexdigest(),
+                "chunk_size_bytes": 1024,
+            },
+        )
+        upload_id = created.json()["id"]
+        cancelled = await self.client.delete(
+            f"/v1/uploads/{upload_id}", headers=self.headers
+        )
+        self.assertEqual(cancelled.status_code, 204)
+        missing = await self.client.get(
+            f"/v1/uploads/{upload_id}", headers=self.headers
+        )
+        self.assertEqual(missing.status_code, 404)
+
+    async def test_output_download_supports_authentication_and_byte_ranges(self) -> None:
+        content = b"0123456789"
+        (self.root / "outputs" / "render image.bin").write_bytes(content)
+        inventory = await self.client.get(
+            "/v1/files?kind=outputs", headers=self.headers
+        )
+        file_id = inventory.json()["items"][0]["id"]
+
+        unauthenticated = await self.client.get(f"/v1/outputs/{file_id}")
+        self.assertEqual(unauthenticated.status_code, 401)
+
+        partial = await self.client.get(
+            f"/v1/outputs/{file_id}",
+            headers={**self.headers, "Range": "bytes=2-5"},
+        )
+        self.assertEqual(partial.status_code, 206)
+        self.assertEqual(partial.content, b"2345")
+        self.assertEqual(partial.headers["accept-ranges"], "bytes")
+        self.assertEqual(partial.headers["content-range"], "bytes 2-5/10")
+        self.assertIn("render%20image.bin", partial.headers["content-disposition"])
+
+        invalid = await self.client.get(
+            f"/v1/outputs/{file_id}",
+            headers={**self.headers, "Range": "bytes=20-30"},
+        )
+        self.assertEqual(invalid.status_code, 416)
+        self.assertEqual(invalid.json()["code"], "invalid_range")
 
 
 if __name__ == "__main__":

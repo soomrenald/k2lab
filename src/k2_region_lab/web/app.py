@@ -7,10 +7,19 @@ from collections.abc import Sequence
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
+
+from k2_region_lab.agent.domain import (
+    ChunkReceipt,
+    FileKind,
+    FilePage,
+    UploadCompleteResponse,
+    UploadCreateRequest,
+    UploadSession,
+)
 
 from k2_region_lab.web.development_backend import DevelopmentWorkspaceBackend
 from k2_region_lab.web.domain import (
@@ -100,8 +109,8 @@ def create_app(backend: WorkspaceBackend | None = None) -> FastAPI:
         CORSMiddleware,
         allow_origins=["http://127.0.0.1:5173", "http://localhost:5173"],
         allow_credentials=True,
-        allow_methods=["GET", "POST", "DELETE"],
-        allow_headers=["Content-Type"],
+        allow_methods=["GET", "POST", "PUT", "DELETE"],
+        allow_headers=["Content-Type", "X-Chunk-SHA256"],
     )
 
     @application.exception_handler(WorkspaceError)
@@ -188,6 +197,67 @@ def create_app(backend: WorkspaceBackend | None = None) -> FastAPI:
     )
     async def cost_snapshot(workspace_id: str) -> CostSnapshot:
         return await workspace_backend.get_cost_snapshot(workspace_id)
+
+    @application.get(
+        "/api/v1/workspaces/{workspace_id}/files", response_model=FilePage
+    )
+    async def file_inventory(
+        workspace_id: str,
+        kind: FileKind,
+        cursor: str | None = None,
+    ) -> FilePage:
+        return await workspace_backend.get_file_inventory(workspace_id, kind, cursor)
+
+    @application.post(
+        "/api/v1/workspaces/{workspace_id}/uploads",
+        response_model=UploadSession,
+        status_code=201,
+    )
+    async def create_upload(
+        workspace_id: str, request: UploadCreateRequest
+    ) -> UploadSession:
+        return await workspace_backend.create_upload(workspace_id, request)
+
+    @application.get(
+        "/api/v1/workspaces/{workspace_id}/uploads/{upload_id}",
+        response_model=UploadSession,
+    )
+    async def upload_status(workspace_id: str, upload_id: str) -> UploadSession:
+        return await workspace_backend.get_upload(workspace_id, upload_id)
+
+    @application.put(
+        "/api/v1/workspaces/{workspace_id}/uploads/{upload_id}/chunks/{index}",
+        response_model=ChunkReceipt,
+    )
+    async def upload_chunk(
+        workspace_id: str,
+        upload_id: str,
+        index: int,
+        request: Request,
+        x_chunk_sha256: str = Header(alias="X-Chunk-SHA256"),
+    ) -> ChunkReceipt:
+        return await workspace_backend.write_upload_chunk(
+            workspace_id,
+            upload_id,
+            index,
+            await request.body(),
+            x_chunk_sha256,
+        )
+
+    @application.post(
+        "/api/v1/workspaces/{workspace_id}/uploads/{upload_id}/complete",
+        response_model=UploadCompleteResponse,
+    )
+    async def complete_upload(
+        workspace_id: str, upload_id: str
+    ) -> UploadCompleteResponse:
+        return await workspace_backend.complete_upload(workspace_id, upload_id)
+
+    @application.delete(
+        "/api/v1/workspaces/{workspace_id}/uploads/{upload_id}", status_code=204
+    )
+    async def cancel_upload(workspace_id: str, upload_id: str) -> None:
+        await workspace_backend.cancel_upload(workspace_id, upload_id)
 
     return application
 

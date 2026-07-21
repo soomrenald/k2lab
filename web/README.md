@@ -23,12 +23,16 @@ Implemented:
 - live GPU inventory/pricing plans and persistent-Pod create/start/stop/delete requests.
 - a separate versioned workspace-agent image with authenticated health, capabilities,
   storage validation, and idempotent persistent-layout initialization.
+- durable cloud-file inventory, checksum-verified resumable uploads, duplicate detection,
+  and authenticated ranged output retrieval;
+- an Assets panel with streaming SHA-256 hashing, pause/resume/retry/cancel controls,
+  transfer progress, throughput, and ETA.
 
 Not yet implemented:
 
 - durable PostgreSQL persistence, a KMS-backed credential repository, and the lease reaper;
 - a published and signed CUDA workspace image (the build definition and agent are present);
-- cloud file inventory, resumable transfer, Civitai, or Hugging Face downloads;
+- Civitai or Hugging Face provider-side downloads;
 - remote generation/image-edit/face-refinement job submission and event streaming;
 - production authentication, authorization, CSRF protection, or hosted deployment.
 
@@ -57,6 +61,10 @@ provider-resource mappings, the operation-journal schema, and redacted audit eve
 durable. Startup reconciliation refreshes known Pod state, and a background reaper stops
 compute after lease expiry. The Pod remains in `starting` until the versioned workspace
 image and authenticated agent are available.
+
+Browser uploads currently pass through the authenticated control plane to the workspace
+agent. Upload manifests and completed chunks live on the persistent workspace volume, so
+an interrupted browser transfer can query the session and send only missing chunks.
 
 ## Local development
 
