@@ -25,6 +25,7 @@ export function App() {
     let cancelled = false;
     async function bootstrap() {
       try {
+        await controlPlane.openSession();
         const [capabilities, credential, workspaces] = await Promise.all([
           controlPlane.capabilities(),
           controlPlane.credentialStatus(),

@@ -1,0 +1,103 @@
+name: Workspace image
+
+on:
+  pull_request:
+    paths:
+      - Dockerfile.workspace
+      - deploy/workspace/**
+      - pyproject.toml
+      - src/**
+      - uv.lock
+      - .github/workflows/workspace-image.yml
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/k2-region-lab-workspace
+  LOCAL_IMAGE: k2-region-lab-workspace:${{ github.sha }}
+
+jobs:
+  build-scan-sign:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    steps:
+      - name: Check out source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Require immutable base image
+        env:
+        run: |
+          case "${RUNPOD_BASE_IMAGE}" in
+            *@sha256:????????????????????????????????????????????????????????????????) ;;
+          esac
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+
+      - name: Log in to GHCR for release builds
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build immutable workspace image
+        id: build
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        with:
+          context: .
+          file: Dockerfile.workspace
+          tags: ${{ startsWith(github.ref, 'refs/tags/v') && format('{0}:{1}', env.IMAGE, github.ref_name) || env.LOCAL_IMAGE }}
+          load: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+          push: ${{ startsWith(github.ref, 'refs/tags/v') }}
+          provenance: mode=max
+          sbom: true
+
+      - name: Select scan target
+        id: target
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            printf 'image=%s@%s\n' "${IMAGE}" "${DIGEST}" >> "${GITHUB_OUTPUT}"
+          else
+            printf 'image=%s\n' "${LOCAL_IMAGE}" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Scan image for high and critical vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ steps.target.outputs.image }}
+          format: table
+          exit-code: "1"
+          ignore-unfixed: true
+          severity: HIGH,CRITICAL
+          version: v0.70.0
+
+      - name: Generate SPDX SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          image: ${{ steps.target.outputs.image }}
+          artifact-name: workspace-image.spdx.json
+          output-file: workspace-image.spdx.json
+
+      - name: Install Cosign
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Sign release digest with GitHub OIDC
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: cosign sign --yes "${IMAGE}@${DIGEST}"

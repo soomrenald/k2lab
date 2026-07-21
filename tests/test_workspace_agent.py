@@ -63,6 +63,30 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
             accepted = await self.client.get(path, headers=self.headers)
             self.assertEqual(accepted.status_code, 200, accepted.text)
 
+    async def test_agent_rate_limit_and_security_headers(self) -> None:
+        settings = AgentSettings(
+            session_token=self.settings.session_token,
+            workspace_id=self.settings.workspace_id,
+            image_version=self.settings.image_version,
+            workspace_root=self.root,
+            worker_python=self.settings.worker_python,
+            read_requests_per_minute=2,
+        )
+        app = create_agent_app(settings)
+        app.state.layout.initialize()
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://agent.test"
+        ) as client:
+            first = await client.get("/v1/health", headers=self.headers)
+            second = await client.get("/v1/health", headers=self.headers)
+            blocked = await client.get("/v1/health", headers=self.headers)
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(first.headers["x-content-type-options"], "nosniff")
+        self.assertEqual(blocked.status_code, 429)
+        self.assertEqual(blocked.json()["code"], "rate_limit_exceeded")
+        self.assertIn("Retry-After", blocked.headers)
+
     async def test_health_reports_identity_and_staged_readiness(self) -> None:
         response = await self.client.get("/v1/health", headers=self.headers)
         body = response.json()

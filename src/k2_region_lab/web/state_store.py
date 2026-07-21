@@ -5,6 +5,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Protocol
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from uuid import uuid4
 
 from sqlalchemy import DateTime, ForeignKey, Integer, JSON, LargeBinary, String, select
@@ -70,6 +71,24 @@ class RunPodStateStore(Protocol):
         workspace_id: str | None = None,
         context: dict[str, Any] | None = None,
     ) -> None: ...
+
+    async def begin_operation(
+        self,
+        *,
+        operation: str,
+        workspace_id: str | None = None,
+        context: dict[str, Any] | None = None,
+    ) -> str: ...
+
+    async def update_operation(
+        self,
+        operation_id: str,
+        *,
+        state: str,
+        context: dict[str, Any] | None = None,
+    ) -> None: ...
+
+    async def incomplete_operations(self) -> list[dict[str, Any]]: ...
 
     async def save_transfer(
         self, workspace_id: str, transfer: RemoteTransfer
@@ -443,10 +462,77 @@ class SqlRunPodStateStore:
                     workspace_id=workspace_id,
                     action=action,
                     result=result,
-                    redacted_context=context or {},
+                    redacted_context=_redact_context(context or {}),
                     created_at=utc_now(),
                 )
             )
+
+    async def begin_operation(
+        self,
+        *,
+        operation: str,
+        workspace_id: str | None = None,
+        context: dict[str, Any] | None = None,
+    ) -> str:
+        await self.initialize()
+        operation_id = uuid4().hex
+        now = utc_now()
+        async with self._sessions.begin() as session:
+            session.add(
+                OperationJournalEntity(
+                    id=operation_id,
+                    workspace_id=workspace_id,
+                    operation=operation[:80],
+                    state="started",
+                    redacted_context=_redact_context(context or {}),
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+        return operation_id
+
+    async def update_operation(
+        self,
+        operation_id: str,
+        *,
+        state: str,
+        context: dict[str, Any] | None = None,
+    ) -> None:
+        await self.initialize()
+        async with self._sessions.begin() as session:
+            entity = await session.get(OperationJournalEntity, operation_id)
+            if entity is None:
+                raise WorkspaceError(
+                    "operation_not_found",
+                    "The durable operation journal entry does not exist.",
+                    status_code=404,
+                )
+            entity.state = state[:32]
+            if context:
+                entity.redacted_context = {
+                    **entity.redacted_context,
+                    **_redact_context(context),
+                }
+            entity.updated_at = utc_now()
+
+    async def incomplete_operations(self) -> list[dict[str, Any]]:
+        await self.initialize()
+        terminal = {"completed", "failed", "compensated"}
+        async with self._sessions() as session:
+            result = await session.scalars(
+                select(OperationJournalEntity).order_by(OperationJournalEntity.created_at)
+            )
+            return [
+                {
+                    "id": entity.id,
+                    "workspace_id": entity.workspace_id,
+                    "operation": entity.operation,
+                    "state": entity.state,
+                    "context": entity.redacted_context,
+                }
+                for entity in result
+                if entity.state not in terminal
+            ]
 
     async def save_transfer(
         self, workspace_id: str, transfer: RemoteTransfer
@@ -608,3 +694,65 @@ class SqlRunPodStateStore:
         lease.hard_expires_at = workspace.hard_expires_at
         lease.last_activity_at = workspace.updated_at
         lease.reason = "workspace_activity"
+
+
+_SENSITIVE_CONTEXT_PARTS = (
+    "authorization",
+    "credential",
+    "api_key",
+    "apikey",
+    "password",
+    "prompt",
+    "project",
+    "secret",
+    "token",
+)
+_SENSITIVE_QUERY_KEYS = frozenset(
+    {"authorization", "auth", "api_key", "apikey", "password", "secret", "token"}
+)
+
+
+def _redact_context(context: dict[str, Any]) -> dict[str, Any]:
+    def clean(value: Any, depth: int = 0) -> Any:
+        if depth > 5:
+            return "[truncated]"
+        if isinstance(value, dict):
+            return {
+                str(key)[:128]: (
+                    "[redacted]"
+                    if any(part in str(key).casefold() for part in _SENSITIVE_CONTEXT_PARTS)
+                    else clean(item, depth + 1)
+                )
+                for key, item in list(value.items())[:256]
+            }
+        if isinstance(value, (list, tuple)):
+            return [clean(item, depth + 1) for item in value[:256]]
+        if isinstance(value, str):
+            return _redact_url(value)[:2048]
+        if isinstance(value, (int, float, bool)) or value is None:
+            return value
+        return type(value).__name__
+
+    return clean(context)
+
+
+def _redact_url(value: str) -> str:
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        return value
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return value
+    query = urlencode(
+        [
+            (key, "[redacted]" if key.casefold() in _SENSITIVE_QUERY_KEYS else item)
+            for key, item in parse_qsl(parsed.query, keep_blank_values=True)
+        ]
+    )
+    try:
+        hostname = parsed.hostname or ""
+        port_value = parsed.port
+    except ValueError:
+        return "[invalid-url]"
+    port = f":{port_value}" if port_value else ""
+    return urlunsplit((parsed.scheme, f"{hostname}{port}", parsed.path, query, ""))

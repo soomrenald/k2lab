@@ -46,6 +46,13 @@ from k2_region_lab.web.domain import (
     WorkspaceRecord,
     WorkspaceTerminateRequest,
 )
+from k2_region_lab.web.security import (
+    BrowserSession,
+    BrowserSessionManager,
+    ControlPlaneSecurityMiddleware,
+    ControlPlaneSecuritySettings,
+    SessionSecurityError,
+)
 
 
 def backend_from_environment() -> WorkspaceBackend:
@@ -87,8 +94,14 @@ class ErrorBody(BaseModel):
     message: str
 
 
-def create_app(backend: WorkspaceBackend | None = None) -> FastAPI:
+def create_app(
+    backend: WorkspaceBackend | None = None,
+    *,
+    security: ControlPlaneSecuritySettings | None = None,
+) -> FastAPI:
     workspace_backend = backend or DevelopmentWorkspaceBackend()
+    security_settings = security or ControlPlaneSecuritySettings()
+    session_manager = BrowserSessionManager(security_settings)
 
     @asynccontextmanager
     async def lifespan(_application: FastAPI) -> AsyncIterator[None]:
@@ -120,12 +133,19 @@ def create_app(backend: WorkspaceBackend | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     application.state.workspace_backend = workspace_backend
+    application.state.security_settings = security_settings
+    application.state.session_manager = session_manager
     application.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://127.0.0.1:5173", "http://localhost:5173"],
+        allow_origins=list(security_settings.allowed_origins),
         allow_credentials=True,
         allow_methods=["GET", "POST", "PUT", "DELETE"],
-        allow_headers=["Content-Type", "X-Chunk-SHA256"],
+        allow_headers=["Content-Type", "Range", "X-Chunk-SHA256", "X-CSRF-Token"],
+    )
+    application.add_middleware(
+        ControlPlaneSecurityMiddleware,
+        settings=security_settings,
+        sessions=session_manager,
     )
 
     @application.exception_handler(WorkspaceError)
@@ -137,9 +157,28 @@ def create_app(backend: WorkspaceBackend | None = None) -> FastAPI:
             content=ErrorBody(code=error.code, message=error.message).model_dump(),
         )
 
+    @application.exception_handler(SessionSecurityError)
+    async def session_security_error_handler(
+        _request: Request, error: SessionSecurityError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=error.status_code,
+            content=ErrorBody(code=error.code, message=error.message).model_dump(),
+        )
+
     @application.get("/api/v1/health")
     async def health() -> dict[str, str]:
         return {"status": "ok", "backend": type(workspace_backend).__name__}
+
+    @application.post("/api/v1/auth/session", response_model=BrowserSession)
+    async def open_browser_session(
+        request: Request, response: Response
+    ) -> BrowserSession:
+        return session_manager.open(request, response)
+
+    @application.delete("/api/v1/auth/session", status_code=204)
+    async def close_browser_session(request: Request, response: Response) -> None:
+        session_manager.close(request, response)
 
     @application.get("/api/v1/capabilities", response_model=CapabilityManifest)
     async def capabilities() -> CapabilityManifest:
@@ -397,7 +436,13 @@ def create_app(backend: WorkspaceBackend | None = None) -> FastAPI:
     return application
 
 
-app = create_app(backend_from_environment())
+_configured_backend = backend_from_environment()
+app = create_app(
+    _configured_backend,
+    security=ControlPlaneSecuritySettings.from_environment(
+        production=not isinstance(_configured_backend, DevelopmentWorkspaceBackend)
+    ),
+)
 
 
 def main(argv: Sequence[str] | None = None) -> int:

@@ -86,6 +86,13 @@ export interface ApiErrorBody {
   message: string;
 }
 
+export interface BrowserSession {
+  authenticated: boolean;
+  subject: string;
+  mfa_verified: boolean;
+  expires_at: string;
+}
+
 export type FileKind = "diffusion_models" | "text_encoders" | "vae" | "loras" | "upscale_models" | "face_detection" | "projects" | "inputs" | "outputs";
 
 export interface FileRecord {
@@ -212,10 +219,19 @@ export class ApiError extends Error {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const method = (init?.method ?? "GET").toUpperCase();
+  const csrfToken = document.cookie
+    .split("; ")
+    .find((item) => item.startsWith("k2lab-csrf="))
+    ?.slice("k2lab-csrf=".length);
   const response = await fetch(path, {
     ...init,
+    credentials: "same-origin",
     headers: {
       "Content-Type": "application/json",
+      ...(csrfToken && !["GET", "HEAD", "OPTIONS"].includes(method)
+        ? { "X-CSRF-Token": decodeURIComponent(csrfToken) }
+        : {}),
       ...init?.headers,
     },
   });
@@ -228,6 +244,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const controlPlane = {
+  openSession: () => request<BrowserSession>("/api/v1/auth/session", { method: "POST" }),
   capabilities: () => request<CapabilityManifest>("/api/v1/capabilities"),
   credentialStatus: () =>
     request<CredentialStatus>("/api/v1/credentials/runpod"),

@@ -193,6 +193,11 @@ class RunPodPersistentPodBackend:
             )
 
         workspace_id = uuid4().hex
+        operation_id = await self.state_store.begin_operation(
+            operation="runpod.workspace.create",
+            workspace_id=workspace_id,
+            context={"plan_id": plan.id},
+        )
         secret_id = f"agent:{workspace_id}"
         agent_secret = secrets.token_urlsafe(32)
         await self._vault.store(secret_id, agent_secret)
@@ -203,6 +208,7 @@ class RunPodPersistentPodBackend:
             provider_id = self._required_string(provider, "id")
         except Exception:
             await self._vault.delete(secret_id)
+            await self.state_store.update_operation(operation_id, state="failed")
             await self.state_store.append_audit(
                 action="runpod.workspace.create",
                 result="failure",
@@ -210,6 +216,11 @@ class RunPodPersistentPodBackend:
                 context={"plan_id": plan.id},
             )
             raise
+        await self.state_store.update_operation(
+            operation_id,
+            state="provider_created",
+            context={"provider_resource_id": provider_id},
+        )
 
         now = utc_now()
         provider_status = str(provider.get("desiredStatus", "RUNNING"))
@@ -239,6 +250,7 @@ class RunPodPersistentPodBackend:
             readiness=self._readiness(provider_status),
         )
         await self.state_store.save_workspace(workspace, image_digest=self._image_digest)
+        await self.state_store.update_operation(operation_id, state="completed")
         await self.state_store.append_audit(
             action="runpod.workspace.create",
             result="success",
@@ -345,11 +357,18 @@ class RunPodPersistentPodBackend:
             },
             claimed_state=WorkspaceState.DELETING,
         )
+        operation_id = await self.state_store.begin_operation(
+            operation="runpod.workspace.delete",
+            workspace_id=workspace_id,
+            context={"provider_resource_id": self._provider_id(workspace)},
+        )
         try:
             await (await self._api()).delete_pod(self._provider_id(workspace))
         except Exception as error:
+            await self.state_store.update_operation(operation_id, state="failed")
             await self._record_provider_failure(workspace, "runpod.workspace.delete", error)
             raise
+        await self.state_store.update_operation(operation_id, state="provider_deleted")
         updated = workspace.model_copy(
             update={
                 "state": WorkspaceState.DELETED,
@@ -362,6 +381,7 @@ class RunPodPersistentPodBackend:
         )
         await self._vault.delete(f"agent:{workspace_id}")
         await self.state_store.save_workspace(updated, image_digest=self._image_digest)
+        await self.state_store.update_operation(operation_id, state="completed")
         await self.state_store.append_audit(
             action="runpod.workspace.delete", result="success", workspace_id=workspace_id
         )
@@ -421,6 +441,7 @@ class RunPodPersistentPodBackend:
             return []
         reconciled: list[WorkspaceRecord] = []
         api = await self._api()
+        await self._reconcile_operation_journal(api)
         for workspace in await self.state_store.list_workspaces():
             if workspace.state == WorkspaceState.DELETED or not workspace.provider_resource_id:
                 continue
@@ -447,6 +468,58 @@ class RunPodPersistentPodBackend:
                     workspace, "runpod.workspace.reconcile", error
                 )
         return reconciled
+
+    async def _reconcile_operation_journal(self, api: RunPodApi) -> None:
+        for operation in await self.state_store.incomplete_operations():
+            operation_id = str(operation["id"])
+            workspace_id = operation.get("workspace_id")
+            context = operation.get("context", {})
+            provider_id = context.get("provider_resource_id")
+            workspace = (
+                await self.state_store.get_workspace(str(workspace_id))
+                if workspace_id
+                else None
+            )
+            if operation["operation"] == "runpod.workspace.create":
+                if workspace is not None:
+                    await self.state_store.update_operation(
+                        operation_id, state="completed"
+                    )
+                    continue
+                if isinstance(provider_id, str) and provider_id:
+                    await api.stop_pod(provider_id)
+                    await self.state_store.append_audit(
+                        action="runpod.workspace.orphan_stop",
+                        result="success",
+                        workspace_id=str(workspace_id) if workspace_id else None,
+                        context={"provider_resource_id": provider_id},
+                    )
+                if workspace_id:
+                    await self._vault.delete(f"agent:{workspace_id}")
+                await self.state_store.update_operation(
+                    operation_id,
+                    state="compensated" if provider_id else "failed",
+                )
+            elif (
+                operation["operation"] == "runpod.workspace.delete"
+                and operation["state"] == "provider_deleted"
+                and workspace is not None
+            ):
+                deleted = workspace.model_copy(
+                    update={
+                        "state": WorkspaceState.DELETED,
+                        "provider_resource_id": None,
+                        "readiness": {},
+                        "updated_at": utc_now(),
+                    }
+                )
+                await self._vault.delete(f"agent:{workspace.id}")
+                await self.state_store.save_workspace(
+                    deleted, image_digest=self._image_digest
+                )
+                await self.state_store.update_operation(
+                    operation_id, state="completed"
+                )
 
     async def get_file_inventory(
         self, workspace_id: str, kind: FileKind, cursor: str | None = None

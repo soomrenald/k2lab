@@ -216,6 +216,25 @@ class RunPodBackendTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(events[-1]["context"], {"provider": "huggingface"})
         self.assertNotIn("hf_read_secret_token", json.dumps(events))
 
+    async def test_audit_store_redacts_nested_secrets_and_authenticated_urls(self) -> None:
+        await self.state_store.append_audit(
+            action="security.redaction.test",
+            result="success",
+            context={
+                "nested": {"api_key": "runpod-secret", "safe": "retained"},
+                "source": "https://example.test/model?token=url-secret&revision=main#fragment",
+                "prompt_text": "private portrait prompt",
+            },
+        )
+        event = (await self.state_store.audit_events())[-1]
+        serialized = json.dumps(event)
+        self.assertEqual(event["context"]["nested"]["safe"], "retained")
+        self.assertEqual(event["context"]["nested"]["api_key"], "[redacted]")
+        self.assertNotIn("runpod-secret", serialized)
+        self.assertNotIn("url-secret", serialized)
+        self.assertNotIn("private portrait prompt", serialized)
+        self.assertNotIn("fragment", serialized)
+
     async def test_plan_uses_selected_cloud_price(self) -> None:
         await self.backend.validate_credentials("secret-runpod-key")
         plan = await self.backend.plan_workspace(
@@ -405,6 +424,32 @@ class RunPodBackendTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(reconciled[0].state, "stopped")
         finally:
             await reopened_store.close()
+
+    async def test_startup_reconciliation_stops_journaled_orphan_pod(self) -> None:
+        await self.vault.store(
+            self.backend.PROVIDER_CREDENTIAL_ID,
+            "secret-runpod-key",
+        )
+        await self.vault.store("agent:orphan-workspace", "a" * 43)
+        operation_id = await self.state_store.begin_operation(
+            operation="runpod.workspace.create",
+            workspace_id="orphan-workspace",
+            context={"plan_id": "consumed-plan"},
+        )
+        await self.state_store.update_operation(
+            operation_id,
+            state="provider_created",
+            context={"provider_resource_id": "pod-orphan"},
+        )
+
+        reconciled = await self.backend.reconcile_workspaces()
+
+        self.assertEqual(reconciled, [])
+        self.assertEqual(self.api.status, "EXITED")
+        self.assertIsNone(await self.vault.retrieve("agent:orphan-workspace"))
+        self.assertEqual(await self.state_store.incomplete_operations(), [])
+        events = await self.state_store.audit_events()
+        self.assertEqual(events[-1]["action"], "runpod.workspace.orphan_stop")
 
 
 if __name__ == "__main__":

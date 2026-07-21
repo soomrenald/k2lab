@@ -1,4 +1,4 @@
-ARG RUNPOD_BASE_IMAGE=runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404
+ARG RUNPOD_BASE_IMAGE
 FROM ${RUNPOD_BASE_IMAGE}
 
 ARG COMFYUI_REPOSITORY=https://github.com/comfyanonymous/ComfyUI.git

@@ -11,6 +11,7 @@ if FASTAPI_AVAILABLE:
 
     from k2_region_lab.web.app import create_app
     from k2_region_lab.web.development_backend import DevelopmentWorkspaceBackend
+    from k2_region_lab.web.security import ControlPlaneSecuritySettings
 
 
 @unittest.skipUnless(FASTAPI_AVAILABLE, "web dependencies are not installed")
@@ -168,6 +169,130 @@ class WebControlPlaneTests(unittest.IsolatedAsyncioTestCase):
         duplicate = await self.client.post("/api/v1/workspaces", json=payload)
         self.assertEqual(duplicate.status_code, 409)
         self.assertEqual(duplicate.json()["code"], "workspace_plan_missing")
+
+
+@unittest.skipUnless(FASTAPI_AVAILABLE, "web dependencies are not installed")
+class HostedWebSecurityTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        self.origin = "https://studio.example"
+        self.proxy_secret = "p" * 48
+        self.security = ControlPlaneSecuritySettings(
+            enabled=True,
+            trusted_proxy_secret=self.proxy_secret,
+            allowed_subject="user-123",
+            allowed_origins=(self.origin,),
+            provisioning_requests_per_minute=20,
+        )
+        self.client = AsyncClient(
+            transport=ASGITransport(
+                app=create_app(DevelopmentWorkspaceBackend(), security=self.security)
+            ),
+            base_url=self.origin,
+        )
+
+    async def asyncTearDown(self) -> None:
+        await self.client.aclose()
+
+    async def open_session(self) -> str:
+        response = await self.client.post(
+            "/api/v1/auth/session",
+            headers={
+                "X-K2-Proxy-Secret": self.proxy_secret,
+                "X-K2-Authenticated-User": "user-123",
+                "X-K2-Authenticated-MFA": "true",
+            },
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertTrue(response.json()["mfa_verified"])
+        self.assertIn("HttpOnly", response.headers.get_list("set-cookie")[0])
+        return self.client.cookies["k2lab-csrf"]
+
+    async def test_hosted_session_requires_trusted_mfa_assertion(self) -> None:
+        blocked = await self.client.get("/api/v1/capabilities")
+        self.assertEqual(blocked.status_code, 401)
+        self.assertEqual(blocked.json()["code"], "authentication_required")
+
+        missing_assertion = await self.client.post("/api/v1/auth/session")
+        self.assertEqual(missing_assertion.status_code, 401)
+
+        missing_mfa = await self.client.post(
+            "/api/v1/auth/session",
+            headers={
+                "X-K2-Proxy-Secret": self.proxy_secret,
+                "X-K2-Authenticated-User": "user-123",
+            },
+        )
+        self.assertEqual(missing_mfa.status_code, 403)
+        self.assertEqual(missing_mfa.json()["code"], "mfa_required")
+
+        await self.open_session()
+        accepted = await self.client.get("/api/v1/capabilities")
+        self.assertEqual(accepted.status_code, 200)
+        self.assertEqual(accepted.headers["x-frame-options"], "DENY")
+        self.assertEqual(accepted.headers["cache-control"], "no-store")
+
+    async def test_hosted_mutations_require_origin_and_double_submit_csrf(self) -> None:
+        csrf = await self.open_session()
+        no_origin = await self.client.post(
+            "/api/v1/credentials/runpod", json={"api_key": "development-key"}
+        )
+        self.assertEqual(no_origin.status_code, 403)
+        self.assertEqual(no_origin.json()["code"], "origin_forbidden")
+
+        no_csrf = await self.client.post(
+            "/api/v1/credentials/runpod",
+            headers={"Origin": self.origin},
+            json={"api_key": "development-key"},
+        )
+        self.assertEqual(no_csrf.status_code, 403)
+        self.assertEqual(no_csrf.json()["code"], "csrf_failed")
+
+        connected = await self.client.post(
+            "/api/v1/credentials/runpod",
+            headers={"Origin": self.origin, "X-CSRF-Token": csrf},
+            json={"api_key": "development-key"},
+        )
+        self.assertEqual(connected.status_code, 200, connected.text)
+
+        signed_out = await self.client.delete(
+            "/api/v1/auth/session",
+            headers={"Origin": self.origin, "X-CSRF-Token": csrf},
+        )
+        self.assertEqual(signed_out.status_code, 204)
+        blocked = await self.client.get("/api/v1/capabilities")
+        self.assertEqual(blocked.status_code, 401)
+
+    async def test_hosted_provisioning_rate_limit_is_stable(self) -> None:
+        security = ControlPlaneSecuritySettings(
+            enabled=True,
+            trusted_proxy_secret=self.proxy_secret,
+            allowed_subject="user-123",
+            allowed_origins=(self.origin,),
+            provisioning_requests_per_minute=1,
+        )
+        async with AsyncClient(
+            transport=ASGITransport(
+                app=create_app(DevelopmentWorkspaceBackend(), security=security)
+            ),
+            base_url=self.origin,
+        ) as client:
+            opened = await client.post(
+                "/api/v1/auth/session",
+                headers={
+                    "X-K2-Proxy-Secret": self.proxy_secret,
+                    "X-K2-Authenticated-User": "user-123",
+                    "X-K2-Authenticated-MFA": "true",
+                },
+            )
+            self.assertEqual(opened.status_code, 200)
+            csrf = client.cookies["k2lab-csrf"]
+            headers = {"Origin": self.origin, "X-CSRF-Token": csrf}
+            first = await client.post("/api/v1/workspace-plans", headers=headers, json={})
+            second = await client.post("/api/v1/workspace-plans", headers=headers, json={})
+            self.assertEqual(first.status_code, 422)
+            self.assertEqual(second.status_code, 429)
+            self.assertEqual(second.json()["code"], "rate_limit_exceeded")
+            self.assertIn("Retry-After", second.headers)
 
 
 if __name__ == "__main__":

@@ -5,10 +5,13 @@ port 8080.
 
 ## Build
 
-Use an immutable version tag and record the registry digest returned by the push:
+The base image is deliberately required as an immutable digest. Use an immutable version
+tag for the result and record the registry digest returned by the push:
 
 ```bash
-docker build --file Dockerfile.workspace --tag registry.example/k2lab:0.1.0 .
+docker build --file Dockerfile.workspace \
+  --build-arg RUNPOD_BASE_IMAGE='runpod/pytorch@sha256:<verified-digest>' \
+  --tag registry.example/k2lab:0.1.0 .
 docker push registry.example/k2lab:0.1.0
 docker inspect --format='{{index .RepoDigests 0}}' registry.example/k2lab:0.1.0
 ```
@@ -16,6 +19,11 @@ docker inspect --format='{{index .RepoDigests 0}}' registry.example/k2lab:0.1.0
 Configure the control plane with the resulting `name@sha256:digest`, never a mutable tag.
 The image build pins ComfyUI and the CUDA/PyTorch versions through build arguments. Pod
 startup performs no package installation or source checkout.
+
+The `Workspace image` GitHub workflow requires the repository variable
+scan without publishing. Version tags publish to GHCR only after a high/critical
+vulnerability scan, attach an SPDX SBOM, generate BuildKit provenance, and sign the
+published digest with GitHub OIDC. Every external action is pinned to an immutable commit.
 
 ## Required runtime environment
 

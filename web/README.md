@@ -36,9 +36,9 @@ Implemented:
 
 Not yet implemented:
 
-- durable PostgreSQL persistence, a KMS-backed credential repository, and the lease reaper;
+- a cloud-KMS adapter (the production vault currently uses a persisted Fernet root key);
 - a published and signed CUDA workspace image (the build definition and agent are present);
-- production authentication, authorization, CSRF protection, or hosted deployment.
+- multi-account tenancy or a hosted deployment.
 
 The development backend is labelled throughout the UI. Its generation buttons are
 disabled so it cannot be confused with a connected GPU worker.
@@ -52,6 +52,9 @@ selected explicitly and requires an immutable runtime image plus a Fernet encryp
 export K2LAB_WEB_BACKEND=runpod
 export K2LAB_CREDENTIAL_FERNET_KEY="<persisted-secret-from-your-KMS-bootstrap>"
 export K2LAB_DATABASE_URL="postgresql+asyncpg://k2lab:<password>@<host>/k2lab"
+export K2LAB_ALLOWED_ORIGINS="https://studio.example.com"
+export K2LAB_AUTH_ALLOWED_SUBJECT="<stable-subject-from-your-identity-provider>"
+export K2LAB_TRUSTED_PROXY_SECRET="<random-secret-at-least-32-characters>"
 uv run k2lab-web
 ```
 
@@ -59,6 +62,15 @@ Generate the Fernet value once with `Fernet.generate_key()`, store it in a secre
 and reuse it after every restart. Rotating or losing it makes existing provider credentials
 unreadable. SQLite (`sqlite+aiosqlite:////absolute/path`) is supported for isolated local
 tests, while PostgreSQL is the production store.
+
+The RunPod backend refuses to start without the hosted security settings above. Deploy it
+behind a TLS authentication proxy that removes all inbound `X-K2-*` headers, completes
+identity-provider login/MFA, and then injects `X-K2-Authenticated-User`,
+`X-K2-Authenticated-MFA: true`, and `X-K2-Proxy-Secret` on the session-bootstrap request.
+The allowed subject makes this deployment single-account by design. The control plane then
+uses a rotating opaque `Secure`, `HttpOnly`, `SameSite=Strict` browser session plus a
+double-submit CSRF token, strict Origin checks, request bounds, and endpoint-class rate
+limits. Do not expose the Uvicorn port directly to the internet.
 
 This mode can create billable Pods. Workspace records, leases, encrypted credentials,
 provider-resource mappings, the operation-journal schema, and redacted audit events are
@@ -117,3 +129,14 @@ npm run build
 ```
 
 The production bundle is written to the ignored `web/client/dist/` directory.
+
+The ordinary suite never provisions a Pod. A destructive live acceptance test exists for
+a dedicated disposable RunPod account and remains skipped unless every required variable
+and this exact sentinel are provided:
+
+```bash
+uv run pytest -q tests/test_runpod_live_acceptance.py
+```
+
+That test creates a billable Pod and 50 GB volume, verifies readiness and upload persistence
+across stop/start, and permanently deletes the Pod and volume in cleanup.

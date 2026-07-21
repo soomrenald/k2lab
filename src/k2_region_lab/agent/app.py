@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import hmac
 import os
 import shutil
@@ -40,6 +41,7 @@ from k2_region_lab.agent.downloads import RemoteDownloadManager
 from k2_region_lab.agent.jobs import JobError, JobManager
 from k2_region_lab.agent.storage import LAYOUT_VERSION, WorkspaceLayout
 from k2_region_lab.agent.transfers import TransferError, TransferManager
+from k2_region_lab.http_security import SlidingWindowRateLimiter
 
 
 class AgentSettings:
@@ -54,6 +56,11 @@ class AgentSettings:
         comfyui_root: Path = Path("/opt/ComfyUI"),
         cuda_version: str | None = None,
         pytorch_version: str | None = None,
+        read_requests_per_minute: int = 600,
+        write_requests_per_minute: int = 120,
+        provisioning_requests_per_minute: int = 30,
+        upload_chunk_requests_per_minute: int = 600,
+        max_request_bytes: int = 65 * 1024 * 1024,
     ) -> None:
         if len(session_token) < 32:
             raise ValueError("agent session token must contain at least 32 characters")
@@ -69,6 +76,11 @@ class AgentSettings:
         self.comfyui_root = comfyui_root
         self.cuda_version = cuda_version
         self.pytorch_version = pytorch_version
+        self.read_requests_per_minute = read_requests_per_minute
+        self.write_requests_per_minute = write_requests_per_minute
+        self.provisioning_requests_per_minute = provisioning_requests_per_minute
+        self.upload_chunk_requests_per_minute = upload_chunk_requests_per_minute
+        self.max_request_bytes = max_request_bytes
 
     @classmethod
     def from_environment(cls) -> AgentSettings:
@@ -86,7 +98,34 @@ class AgentSettings:
             comfyui_root=Path(os.environ.get("K2LAB_COMFYUI_ROOT", "/opt/ComfyUI")),
             cuda_version=os.environ.get("K2LAB_CUDA_VERSION"),
             pytorch_version=os.environ.get("K2LAB_PYTORCH_VERSION"),
+            read_requests_per_minute=int(
+                os.environ.get("K2LAB_AGENT_READ_RATE_LIMIT", "600")
+            ),
+            write_requests_per_minute=int(
+                os.environ.get("K2LAB_AGENT_WRITE_RATE_LIMIT", "120")
+            ),
+            provisioning_requests_per_minute=int(
+                os.environ.get("K2LAB_AGENT_JOB_RATE_LIMIT", "30")
+            ),
+            upload_chunk_requests_per_minute=int(
+                os.environ.get("K2LAB_AGENT_CHUNK_RATE_LIMIT", "600")
+            ),
         )
+
+
+def _agent_rate_limit(
+    request: Request, settings: AgentSettings
+) -> tuple[str, int]:
+    path = request.url.path
+    if "/uploads/" in path and "/chunks/" in path:
+        return "upload-chunk", settings.upload_chunk_requests_per_minute
+    if request.method == "POST" and (
+        path == "/v1/jobs" or path.startswith("/v1/downloads/")
+    ):
+        return "job-start", settings.provisioning_requests_per_minute
+    if request.method in {"GET", "HEAD", "OPTIONS"}:
+        return "read", settings.read_requests_per_minute
+    return "write", settings.write_requests_per_minute
 
 
 def create_agent_app(
@@ -143,6 +182,49 @@ def create_agent_app(
         ),
     )
     application.state.job_manager = job_manager
+    rate_limiter = SlidingWindowRateLimiter()
+
+    @application.middleware("http")
+    async def secure_agent_requests(request: Request, call_next):
+        try:
+            content_length = int(request.headers.get("Content-Length", "0"))
+        except ValueError:
+            response = JSONResponse(
+                status_code=400,
+                content={"code": "request_size_invalid", "message": "Invalid request size."},
+            )
+        else:
+            if content_length > configured.max_request_bytes:
+                response = JSONResponse(
+                    status_code=413,
+                    content={
+                        "code": "request_too_large",
+                        "message": "The request body is too large.",
+                    },
+                )
+            else:
+                authorization = request.headers.get("Authorization", "")
+                identity = hashlib.sha256(authorization.encode()).hexdigest()[:16]
+                rate_class, limit = _agent_rate_limit(request, configured)
+                allowed, retry_after = await rate_limiter.allow(
+                    f"{identity}:{rate_class}", limit=limit
+                )
+                if not allowed:
+                    response = JSONResponse(
+                        status_code=429,
+                        headers={"Retry-After": str(retry_after)},
+                        content={
+                            "code": "rate_limit_exceeded",
+                            "message": "Too many agent requests; retry shortly.",
+                        },
+                    )
+                else:
+                    response = await call_next(request)
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["X-Frame-Options"] = "DENY"
+        return response
 
     @application.exception_handler(TransferError)
     async def transfer_error_handler(
