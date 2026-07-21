@@ -18,7 +18,13 @@ if WEB_PROVIDER_AVAILABLE:
     import httpx
     from cryptography.fernet import Fernet
 
-    from k2_region_lab.agent.domain import AgentHealth
+    from k2_region_lab.agent.domain import (
+        AgentHealth,
+        FileKind,
+        RemoteProvider,
+        RemoteTransfer,
+        TransferState,
+    )
     from k2_region_lab.web.credential_vault import (
         DatabaseCredentialVault,
         EncryptedMemoryCredentialVault,
@@ -193,6 +199,19 @@ class RunPodBackendTests(unittest.IsolatedAsyncioTestCase):
             "secret-runpod-key",
         )
 
+    async def test_download_provider_token_is_encrypted_and_audited_without_secret(self) -> None:
+        status = await self.backend.store_download_credential(
+            RemoteProvider.HUGGINGFACE, "hf_read_secret_token"
+        )
+        self.assertEqual(status.key_hint, "••••oken")
+        self.assertEqual(
+            await self.vault.retrieve("provider:huggingface"),
+            "hf_read_secret_token",
+        )
+        events = await self.state_store.audit_events()
+        self.assertEqual(events[-1]["context"], {"provider": "huggingface"})
+        self.assertNotIn("hf_read_secret_token", json.dumps(events))
+
     async def test_plan_uses_selected_cloud_price(self) -> None:
         await self.backend.validate_credentials("secret-runpod-key")
         plan = await self.backend.plan_workspace(
@@ -249,6 +268,18 @@ class RunPodBackendTests(unittest.IsolatedAsyncioTestCase):
         workspace = await self.backend.create_workspace(
             WorkspaceCreateRequest(plan_id=plan.id, name="Durable lab")
         )
+        transfer = RemoteTransfer(
+            id="transfer-123",
+            provider=RemoteProvider.CIVITAI,
+            source_url="https://civitai.com/models/123",
+            destination_kind=FileKind.LORAS,
+            state=TransferState.DOWNLOADING,
+            bytes_total=1024,
+            bytes_complete=512,
+            created_at=workspace.created_at,
+            updated_at=workspace.updated_at,
+        )
+        await self.state_store.save_transfer(workspace.id, transfer)
 
         reopened_store = SqlRunPodStateStore(self.database_url)
         try:
@@ -258,6 +289,8 @@ class RunPodBackendTests(unittest.IsolatedAsyncioTestCase):
             events = await reopened_store.audit_events()
             self.assertEqual(events[-1]["action"], "runpod.workspace.create")
             self.assertNotIn("secret-runpod-key", json.dumps(events))
+            restored_transfer = await reopened_store.get_transfer(transfer.id)
+            self.assertEqual(restored_transfer, (workspace.id, transfer))
         finally:
             await reopened_store.close()
 

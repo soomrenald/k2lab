@@ -11,6 +11,7 @@ from sqlalchemy import DateTime, ForeignKey, Integer, JSON, LargeBinary, String,
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
+from k2_region_lab.agent.domain import RemoteTransfer
 from k2_region_lab.web.domain import (
     WorkspaceError,
     WorkspacePlan,
@@ -69,6 +70,14 @@ class RunPodStateStore(Protocol):
         workspace_id: str | None = None,
         context: dict[str, Any] | None = None,
     ) -> None: ...
+
+    async def save_transfer(
+        self, workspace_id: str, transfer: RemoteTransfer
+    ) -> None: ...
+
+    async def get_transfer(
+        self, transfer_id: str
+    ) -> tuple[str, RemoteTransfer] | None: ...
 
 
 class Base(DeclarativeBase):
@@ -158,6 +167,26 @@ class OperationJournalEntity(Base):
     operation: Mapped[str] = mapped_column(String(80), nullable=False)
     state: Mapped[str] = mapped_column(String(32), nullable=False)
     redacted_context: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class TransferEntity(Base):
+    __tablename__ = "transfers"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    workspace_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    source: Mapped[str] = mapped_column(String(2048), nullable=False)
+    destination_kind: Mapped[str] = mapped_column(String(40), nullable=False)
+    state: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    bytes_total: Mapped[int | None] = mapped_column()
+    bytes_complete: Mapped[int] = mapped_column(Integer, nullable=False)
+    sha256: Mapped[str | None] = mapped_column(String(64))
+    error_code: Mapped[str | None] = mapped_column(String(80))
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
@@ -374,6 +403,43 @@ class SqlRunPodStateStore:
                     created_at=utc_now(),
                 )
             )
+
+    async def save_transfer(
+        self, workspace_id: str, transfer: RemoteTransfer
+    ) -> None:
+        await self.initialize()
+        async with self._sessions.begin() as session:
+            entity = await session.get(TransferEntity, transfer.id)
+            if entity is None:
+                entity = TransferEntity(id=transfer.id, workspace_id=workspace_id)
+                session.add(entity)
+            elif entity.workspace_id != workspace_id:
+                raise WorkspaceError(
+                    "transfer_workspace_mismatch",
+                    "The transfer belongs to another workspace.",
+                    status_code=409,
+                )
+            entity.kind = transfer.provider.value
+            entity.source = transfer.source_url
+            entity.destination_kind = transfer.destination_kind.value
+            entity.state = transfer.state.value
+            entity.bytes_total = transfer.bytes_total
+            entity.bytes_complete = transfer.bytes_complete
+            entity.sha256 = transfer.sha256
+            entity.error_code = transfer.error_code
+            entity.payload = transfer.model_dump(mode="json")
+            entity.created_at = transfer.created_at
+            entity.updated_at = transfer.updated_at
+
+    async def get_transfer(
+        self, transfer_id: str
+    ) -> tuple[str, RemoteTransfer] | None:
+        await self.initialize()
+        async with self._sessions() as session:
+            entity = await session.get(TransferEntity, transfer_id)
+            if entity is None:
+                return None
+            return entity.workspace_id, RemoteTransfer.model_validate(entity.payload)
 
     async def audit_events(self) -> list[dict[str, Any]]:
         await self.initialize()

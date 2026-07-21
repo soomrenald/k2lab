@@ -8,7 +8,7 @@ from collections.abc import Sequence
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import AsyncIterator, Iterator
+from typing import Any, AsyncIterator, Iterator
 from urllib.parse import quote
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
@@ -18,14 +18,22 @@ from k2_region_lab.agent.domain import (
     AgentCapabilities,
     AgentHealth,
     ChunkReceipt,
+    CivitaiDownloadRequest,
+    CivitaiPreview,
+    CivitaiPreviewRequest,
     FileKind,
     FilePage,
+    HuggingFaceDownloadRequest,
+    HuggingFacePreview,
+    HuggingFacePreviewRequest,
     ReadinessStages,
+    RemoteTransfer,
     StorageStatus,
     UploadCompleteResponse,
     UploadCreateRequest,
     UploadSession,
 )
+from k2_region_lab.agent.downloads import RemoteDownloadManager
 from k2_region_lab.agent.storage import LAYOUT_VERSION, WorkspaceLayout
 from k2_region_lab.agent.transfers import TransferError, TransferManager
 
@@ -74,14 +82,24 @@ class AgentSettings:
         )
 
 
-def create_agent_app(settings: AgentSettings | None = None) -> FastAPI:
+def create_agent_app(
+    settings: AgentSettings | None = None,
+    *,
+    download_transport: Any | None = None,
+    hf_file_download: Any | None = None,
+    hf_snapshot_download: Any | None = None,
+    hf_repo_info: Any | None = None,
+) -> FastAPI:
     configured = settings or AgentSettings.from_environment()
     layout = WorkspaceLayout(configured.workspace_root)
 
     @asynccontextmanager
     async def lifespan(_application: FastAPI) -> AsyncIterator[None]:
         layout.initialize()
-        yield
+        try:
+            yield
+        finally:
+            await download_manager.close()
 
     application = FastAPI(
         title="K2 Region Lab Workspace Agent",
@@ -96,6 +114,15 @@ def create_agent_app(settings: AgentSettings | None = None) -> FastAPI:
     application.state.worker_ready = False
     transfer_manager = TransferManager(layout)
     application.state.transfer_manager = transfer_manager
+    download_manager = RemoteDownloadManager(
+        layout,
+        transfer_manager,
+        transport=download_transport,
+        hf_file_download=hf_file_download,
+        hf_snapshot_download=hf_snapshot_download,
+        hf_repo_info=hf_repo_info,
+    )
+    application.state.download_manager = download_manager
 
     @application.exception_handler(TransferError)
     async def transfer_error_handler(
@@ -225,6 +252,70 @@ def create_agent_app(settings: AgentSettings | None = None) -> FastAPI:
     )
     async def cancel_upload(upload_id: str) -> None:
         await transfer_manager.cancel_upload(upload_id)
+
+    @application.post(
+        "/v1/downloads/civitai/preview",
+        response_model=CivitaiPreview,
+        dependencies=authentication,
+    )
+    async def preview_civitai(
+        request: CivitaiPreviewRequest,
+        provider_token: str | None = Header(default=None, alias="X-Provider-Token"),
+    ) -> CivitaiPreview:
+        return await download_manager.preview_civitai(request.source_url, provider_token)
+
+    @application.post(
+        "/v1/downloads/civitai",
+        response_model=RemoteTransfer,
+        dependencies=authentication,
+        status_code=202,
+    )
+    async def start_civitai_download(
+        request: CivitaiDownloadRequest,
+        provider_token: str | None = Header(default=None, alias="X-Provider-Token"),
+    ) -> RemoteTransfer:
+        return await download_manager.start_civitai(request, provider_token)
+
+    @application.post(
+        "/v1/downloads/huggingface/preview",
+        response_model=HuggingFacePreview,
+        dependencies=authentication,
+    )
+    async def preview_huggingface(
+        request: HuggingFacePreviewRequest,
+        provider_token: str | None = Header(default=None, alias="X-Provider-Token"),
+    ) -> HuggingFacePreview:
+        return await download_manager.preview_huggingface(
+            request.source_url, provider_token, request.allow_patterns
+        )
+
+    @application.post(
+        "/v1/downloads/huggingface",
+        response_model=RemoteTransfer,
+        dependencies=authentication,
+        status_code=202,
+    )
+    async def start_huggingface_download(
+        request: HuggingFaceDownloadRequest,
+        provider_token: str | None = Header(default=None, alias="X-Provider-Token"),
+    ) -> RemoteTransfer:
+        return await download_manager.start_huggingface(request, provider_token)
+
+    @application.get(
+        "/v1/transfers/{transfer_id}",
+        response_model=RemoteTransfer,
+        dependencies=authentication,
+    )
+    async def transfer_status(transfer_id: str) -> RemoteTransfer:
+        return await download_manager.get(transfer_id)
+
+    @application.post(
+        "/v1/transfers/{transfer_id}/cancel",
+        response_model=RemoteTransfer,
+        dependencies=authentication,
+    )
+    async def cancel_transfer(transfer_id: str) -> RemoteTransfer:
+        return await download_manager.cancel(transfer_id)
 
     @application.get("/v1/outputs/{file_id}", dependencies=authentication)
     async def output_file(

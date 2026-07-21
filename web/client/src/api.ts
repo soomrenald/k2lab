@@ -115,6 +115,59 @@ export interface UploadSession {
   state: string;
 }
 
+export type RemoteProvider = "civitai" | "huggingface";
+export type TransferState = "pending" | "resolving" | "downloading" | "verifying" | "paused" | "completed" | "cancelled" | "failed";
+
+export interface CivitaiFilePreview {
+  id: string;
+  filename: string;
+  size_bytes: number | null;
+  format: string | null;
+  sha256: string | null;
+  pickle_scan: string | null;
+  virus_scan: string | null;
+  preferred: boolean;
+  requires_unsafe_confirmation: boolean;
+}
+
+export interface CivitaiPreview {
+  model_id: string;
+  version_id: string;
+  model_name: string;
+  version_name: string;
+  model_type: string | null;
+  base_model: string | null;
+  training_words: string[];
+  files: CivitaiFilePreview[];
+}
+
+export interface HuggingFacePreview {
+  repo_id: string;
+  repo_type: string;
+  revision: string;
+  filename: string | null;
+  mirror_repository: boolean;
+  files: { filename: string; size_bytes: number; cached: boolean }[];
+  required_bytes: number;
+}
+
+export interface RemoteTransfer {
+  id: string;
+  provider: RemoteProvider;
+  source_url: string;
+  destination_kind: FileKind;
+  state: TransferState;
+  filename: string | null;
+  bytes_total: number | null;
+  bytes_complete: number;
+  sha256: string | null;
+  files: FileRecord[];
+  error_code: string | null;
+  error_message: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export class ApiError extends Error {
   readonly code: string;
   readonly status: number;
@@ -206,4 +259,34 @@ export const controlPlane = {
     request<{ file: FileRecord; duplicate: boolean }>(`/api/v1/workspaces/${workspaceId}/uploads/${uploadId}/complete`, { method: "POST" }),
   cancelUpload: (workspaceId: string, uploadId: string) =>
     request<void>(`/api/v1/workspaces/${workspaceId}/uploads/${uploadId}`, { method: "DELETE" }),
+  downloadCredential: (provider: RemoteProvider) =>
+    request<CredentialStatus>(`/api/v1/credentials/downloads/${provider}`),
+  storeDownloadCredential: (provider: RemoteProvider, token: string) =>
+    request<CredentialStatus>(`/api/v1/credentials/downloads/${provider}`, {
+      method: "POST", body: JSON.stringify({ token }),
+    }),
+  clearDownloadCredential: (provider: RemoteProvider) =>
+    request<CredentialStatus>(`/api/v1/credentials/downloads/${provider}`, { method: "DELETE" }),
+  previewCivitai: (workspaceId: string, sourceUrl: string) =>
+    request<CivitaiPreview>(`/api/v1/workspaces/${workspaceId}/downloads/civitai/preview`, {
+      method: "POST", body: JSON.stringify({ source_url: sourceUrl }),
+    }),
+  startCivitai: (workspaceId: string, payload: {
+    source_url: string; file_id: string; destination_kind: FileKind; allow_unsafe_format: boolean; resume_transfer_id?: string;
+  }) => request<RemoteTransfer>(`/api/v1/workspaces/${workspaceId}/downloads/civitai`, {
+    method: "POST", body: JSON.stringify(payload),
+  }),
+  previewHuggingFace: (workspaceId: string, sourceUrl: string, allowPatterns: string[]) =>
+    request<HuggingFacePreview>(`/api/v1/workspaces/${workspaceId}/downloads/huggingface/preview`, {
+      method: "POST", body: JSON.stringify({ source_url: sourceUrl, allow_patterns: allowPatterns }),
+    }),
+  startHuggingFace: (workspaceId: string, payload: {
+    source_url: string; destination_kind: FileKind; allow_patterns: string[]; allow_unsafe_format: boolean; resume_transfer_id?: string;
+  }) => request<RemoteTransfer>(`/api/v1/workspaces/${workspaceId}/downloads/huggingface`, {
+    method: "POST", body: JSON.stringify(payload),
+  }),
+  transfer: (workspaceId: string, transferId: string) =>
+    request<RemoteTransfer>(`/api/v1/workspaces/${workspaceId}/transfers/${transferId}`),
+  cancelTransfer: (workspaceId: string, transferId: string) =>
+    request<RemoteTransfer>(`/api/v1/workspaces/${workspaceId}/transfers/${transferId}/cancel`, { method: "POST" }),
 };

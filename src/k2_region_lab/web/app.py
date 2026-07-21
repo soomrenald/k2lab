@@ -14,8 +14,16 @@ from pydantic import BaseModel, Field
 
 from k2_region_lab.agent.domain import (
     ChunkReceipt,
+    CivitaiDownloadRequest,
+    CivitaiPreview,
+    CivitaiPreviewRequest,
     FileKind,
     FilePage,
+    HuggingFaceDownloadRequest,
+    HuggingFacePreview,
+    HuggingFacePreviewRequest,
+    RemoteProvider,
+    RemoteTransfer,
     UploadCompleteResponse,
     UploadCreateRequest,
     UploadSession,
@@ -65,6 +73,10 @@ def backend_from_environment() -> WorkspaceBackend:
 
 class RunPodCredentialRequest(BaseModel):
     api_key: str = Field(min_length=1, max_length=512)
+
+
+class ProviderTokenRequest(BaseModel):
+    token: str = Field(min_length=1, max_length=512)
 
 
 class ErrorBody(BaseModel):
@@ -258,6 +270,78 @@ def create_app(backend: WorkspaceBackend | None = None) -> FastAPI:
     )
     async def cancel_upload(workspace_id: str, upload_id: str) -> None:
         await workspace_backend.cancel_upload(workspace_id, upload_id)
+
+    @application.get(
+        "/api/v1/credentials/downloads/{provider}", response_model=CredentialStatus
+    )
+    async def download_credential_status(provider: RemoteProvider) -> CredentialStatus:
+        return await workspace_backend.download_credential_status(provider)
+
+    @application.post(
+        "/api/v1/credentials/downloads/{provider}", response_model=CredentialStatus
+    )
+    async def store_download_credential(
+        provider: RemoteProvider, request: ProviderTokenRequest
+    ) -> CredentialStatus:
+        return await workspace_backend.store_download_credential(provider, request.token)
+
+    @application.delete(
+        "/api/v1/credentials/downloads/{provider}", response_model=CredentialStatus
+    )
+    async def clear_download_credential(provider: RemoteProvider) -> CredentialStatus:
+        return await workspace_backend.clear_download_credential(provider)
+
+    @application.post(
+        "/api/v1/workspaces/{workspace_id}/downloads/civitai/preview",
+        response_model=CivitaiPreview,
+    )
+    async def preview_civitai_download(
+        workspace_id: str, request: CivitaiPreviewRequest
+    ) -> CivitaiPreview:
+        return await workspace_backend.preview_civitai_download(workspace_id, request)
+
+    @application.post(
+        "/api/v1/workspaces/{workspace_id}/downloads/civitai",
+        response_model=RemoteTransfer,
+        status_code=202,
+    )
+    async def start_civitai_download(
+        workspace_id: str, request: CivitaiDownloadRequest
+    ) -> RemoteTransfer:
+        return await workspace_backend.start_civitai_download(workspace_id, request)
+
+    @application.post(
+        "/api/v1/workspaces/{workspace_id}/downloads/huggingface/preview",
+        response_model=HuggingFacePreview,
+    )
+    async def preview_huggingface_download(
+        workspace_id: str, request: HuggingFacePreviewRequest
+    ) -> HuggingFacePreview:
+        return await workspace_backend.preview_huggingface_download(workspace_id, request)
+
+    @application.post(
+        "/api/v1/workspaces/{workspace_id}/downloads/huggingface",
+        response_model=RemoteTransfer,
+        status_code=202,
+    )
+    async def start_huggingface_download(
+        workspace_id: str, request: HuggingFaceDownloadRequest
+    ) -> RemoteTransfer:
+        return await workspace_backend.start_huggingface_download(workspace_id, request)
+
+    @application.get(
+        "/api/v1/workspaces/{workspace_id}/transfers/{transfer_id}",
+        response_model=RemoteTransfer,
+    )
+    async def transfer_status(workspace_id: str, transfer_id: str) -> RemoteTransfer:
+        return await workspace_backend.get_transfer(workspace_id, transfer_id)
+
+    @application.post(
+        "/api/v1/workspaces/{workspace_id}/transfers/{transfer_id}/cancel",
+        response_model=RemoteTransfer,
+    )
+    async def cancel_transfer(workspace_id: str, transfer_id: str) -> RemoteTransfer:
+        return await workspace_backend.cancel_transfer(workspace_id, transfer_id)
 
     return application
 

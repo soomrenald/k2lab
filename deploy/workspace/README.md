@@ -33,9 +33,12 @@ The entrypoint rejects missing values or an unavailable volume, then starts
 The image exposes authenticated health, capabilities, storage status, paginated file
 inventory, checksum-verified resumable uploads, and ranged output retrieval. Transfer
 manifests, chunks, and the opaque file index are stored beneath the persistent workspace
-layout. Storage and model readiness are discovered from that volume. Worker readiness
-remains false until the remote job runner milestone starts and validates the isolated
-worker process.
+layout. It also runs durable Civitai and Hugging Face download jobs with strict source
+parsing, redirect allowlists, resumable Civitai ranges, the persistent Hugging Face cache,
+checksum/size verification, and safetensors header inspection. Provider credentials are
+held only in process memory for one operation and never written to the volume. Storage and
+model readiness are discovered from that volume. Worker readiness remains false until the
+remote job runner milestone starts and validates the isolated worker process.
 
 Publishing, vulnerability scanning, signing, and live RunPod acceptance are intentionally
 separate release operations; local tests never push an image or provision a Pod.

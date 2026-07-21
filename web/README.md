@@ -27,12 +27,14 @@ Implemented:
   and authenticated ranged output retrieval;
 - an Assets panel with streaming SHA-256 hashing, pause/resume/retry/cancel controls,
   transfer progress, throughput, and ETA.
+- provider-side Civitai and Hugging Face inspection/download jobs with encrypted
+  least-privilege tokens, strict URL/redirect validation, resumable Civitai ranges,
+  Hugging Face cache reuse, unsafe-format confirmation, and safetensors validation.
 
 Not yet implemented:
 
 - durable PostgreSQL persistence, a KMS-backed credential repository, and the lease reaper;
 - a published and signed CUDA workspace image (the build definition and agent are present);
-- Civitai or Hugging Face provider-side downloads;
 - remote generation/image-edit/face-refinement job submission and event streaming;
 - production authentication, authorization, CSRF protection, or hosted deployment.
 
@@ -65,6 +67,9 @@ image and authenticated agent are available.
 Browser uploads currently pass through the authenticated control plane to the workspace
 agent. Upload manifests and completed chunks live on the persistent workspace volume, so
 an interrupted browser transfer can query the session and send only missing chunks.
+Provider downloads run inside the workspace, so large model files do not pass through the
+browser or control plane. Provider tokens are encrypted at rest and are forwarded in an
+agent request header for one operation; they are not written into transfer records.
 
 ## Local development
 

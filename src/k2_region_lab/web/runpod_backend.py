@@ -8,8 +8,16 @@ from uuid import uuid4
 
 from k2_region_lab.agent.domain import (
     ChunkReceipt,
+    CivitaiDownloadRequest,
+    CivitaiPreview,
+    CivitaiPreviewRequest,
     FileKind,
     FilePage,
+    HuggingFaceDownloadRequest,
+    HuggingFacePreview,
+    HuggingFacePreviewRequest,
+    RemoteProvider,
+    RemoteTransfer,
     UploadCompleteResponse,
     UploadCreateRequest,
     UploadSession,
@@ -469,6 +477,143 @@ class RunPodPersistentPodBackend:
 
     async def cancel_upload(self, workspace_id: str, upload_id: str) -> None:
         await (await self._workspace_agent(workspace_id)).cancel_upload(upload_id)
+
+    async def download_credential_status(
+        self, provider: RemoteProvider
+    ) -> CredentialStatus:
+        return await self._vault.status(self._download_credential_id(provider))
+
+    async def store_download_credential(
+        self, provider: RemoteProvider, token: str
+    ) -> CredentialStatus:
+        value = token.strip()
+        if len(value) < 8:
+            raise WorkspaceError(
+                "invalid_provider_token",
+                "Enter a complete read-only provider token.",
+                status_code=400,
+            )
+        await self._vault.store(
+            self._download_credential_id(provider),
+            value,
+            key_hint=f"••••{value[-4:]}",
+        )
+        await self.state_store.append_audit(
+            action="download_credential.store",
+            result="success",
+            context={"provider": provider.value},
+        )
+        return await self.download_credential_status(provider)
+
+    async def clear_download_credential(
+        self, provider: RemoteProvider
+    ) -> CredentialStatus:
+        await self._vault.delete(self._download_credential_id(provider))
+        await self.state_store.append_audit(
+            action="download_credential.delete",
+            result="success",
+            context={"provider": provider.value},
+        )
+        return await self.download_credential_status(provider)
+
+    async def preview_civitai_download(
+        self, workspace_id: str, request: CivitaiPreviewRequest
+    ) -> CivitaiPreview:
+        token = await self._download_token(RemoteProvider.CIVITAI)
+        return await (await self._workspace_agent(workspace_id)).preview_civitai(
+            request, token
+        )
+
+    async def start_civitai_download(
+        self, workspace_id: str, request: CivitaiDownloadRequest
+    ) -> RemoteTransfer:
+        token = await self._download_token(RemoteProvider.CIVITAI)
+        transfer = await (await self._workspace_agent(workspace_id)).start_civitai(
+            request, token
+        )
+        await self.state_store.save_transfer(workspace_id, transfer)
+        await self._touch_workspace_lease(workspace_id)
+        await self.state_store.append_audit(
+            action="download.civitai.start",
+            result="success",
+            workspace_id=workspace_id,
+            context={"transfer_id": transfer.id, "destination": request.destination_kind.value},
+        )
+        return transfer
+
+    async def preview_huggingface_download(
+        self, workspace_id: str, request: HuggingFacePreviewRequest
+    ) -> HuggingFacePreview:
+        token = await self._download_token(RemoteProvider.HUGGINGFACE)
+        return await (await self._workspace_agent(workspace_id)).preview_huggingface(
+            request, token
+        )
+
+    async def start_huggingface_download(
+        self, workspace_id: str, request: HuggingFaceDownloadRequest
+    ) -> RemoteTransfer:
+        token = await self._download_token(RemoteProvider.HUGGINGFACE)
+        transfer = await (await self._workspace_agent(workspace_id)).start_huggingface(
+            request, token
+        )
+        await self.state_store.save_transfer(workspace_id, transfer)
+        await self._touch_workspace_lease(workspace_id)
+        await self.state_store.append_audit(
+            action="download.huggingface.start",
+            result="success",
+            workspace_id=workspace_id,
+            context={"transfer_id": transfer.id, "destination": request.destination_kind.value},
+        )
+        return transfer
+
+    async def get_transfer(
+        self, workspace_id: str, transfer_id: str
+    ) -> RemoteTransfer:
+        transfer = await (await self._workspace_agent(workspace_id)).transfer_status(
+            transfer_id
+        )
+        await self.state_store.save_transfer(workspace_id, transfer)
+        if transfer.state.value in {"pending", "resolving", "downloading", "verifying"}:
+            await self._touch_workspace_lease(workspace_id)
+        return transfer
+
+    async def cancel_transfer(
+        self, workspace_id: str, transfer_id: str
+    ) -> RemoteTransfer:
+        transfer = await (await self._workspace_agent(workspace_id)).cancel_transfer(
+            transfer_id
+        )
+        await self.state_store.save_transfer(workspace_id, transfer)
+        await self.state_store.append_audit(
+            action="download.cancel",
+            result="success",
+            workspace_id=workspace_id,
+            context={"transfer_id": transfer.id},
+        )
+        return transfer
+
+    async def _download_token(self, provider: RemoteProvider) -> str | None:
+        return await self._vault.retrieve(self._download_credential_id(provider))
+
+    @staticmethod
+    def _download_credential_id(provider: RemoteProvider) -> str:
+        return f"provider:{provider.value}"
+
+    async def _touch_workspace_lease(self, workspace_id: str) -> None:
+        workspace = await self._workspace(workspace_id)
+        if workspace.state not in {WorkspaceState.STARTING, WorkspaceState.READY}:
+            return
+        now = utc_now()
+        updated = workspace.model_copy(
+            update={
+                "lease_expires_at": min(
+                    now + timedelta(seconds=workspace.idle_timeout_seconds),
+                    workspace.hard_expires_at,
+                ),
+                "updated_at": now,
+            }
+        )
+        await self.state_store.save_workspace(updated, image_digest=self._image_digest)
 
     async def _workspace_agent(self, workspace_id: str) -> WorkspaceAgentApi:
         workspace = await self._workspace(workspace_id)

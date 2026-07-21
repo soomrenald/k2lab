@@ -100,6 +100,21 @@ class WebControlPlaneTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             unavailable_upload.json()["code"], "development_feature_unavailable"
         )
+        provider_status = await self.client.get(
+            "/api/v1/credentials/downloads/huggingface"
+        )
+        self.assertEqual(provider_status.status_code, 200)
+        self.assertFalse(provider_status.json()["configured"])
+        rejected_token = await self.client.post(
+            "/api/v1/credentials/downloads/huggingface",
+            json={"token": "hf_read_test_token"},
+        )
+        self.assertEqual(rejected_token.status_code, 501)
+        rejected_download = await self.client.post(
+            f"/api/v1/workspaces/{workspace['id']}/downloads/civitai/preview",
+            json={"source_url": "https://civitai.com/models/123"},
+        )
+        self.assertEqual(rejected_download.status_code, 501)
 
         stopped = await self.client.post(
             f"/api/v1/workspaces/{workspace['id']}/stop"

@@ -7,8 +7,16 @@ from uuid import uuid4
 
 from k2_region_lab.agent.domain import (
     ChunkReceipt,
+    CivitaiDownloadRequest,
+    CivitaiPreview,
+    CivitaiPreviewRequest,
     FileKind,
     FilePage,
+    HuggingFaceDownloadRequest,
+    HuggingFacePreview,
+    HuggingFacePreviewRequest,
+    RemoteProvider,
+    RemoteTransfer,
     UploadCompleteResponse,
     UploadCreateRequest,
     UploadSession,
@@ -362,6 +370,63 @@ class DevelopmentWorkspaceBackend:
             "Uploads require a connected workspace agent.",
             status_code=501,
         )
+
+    async def download_credential_status(
+        self, provider: RemoteProvider
+    ) -> CredentialStatus:
+        del provider
+        return CredentialStatus(configured=False, development_only=True)
+
+    async def store_download_credential(
+        self, provider: RemoteProvider, token: str
+    ) -> CredentialStatus:
+        del provider, token
+        raise WorkspaceError(
+            "development_feature_unavailable",
+            "Provider downloads require a connected workspace agent.",
+            status_code=501,
+        )
+
+    async def clear_download_credential(
+        self, provider: RemoteProvider
+    ) -> CredentialStatus:
+        return await self.download_credential_status(provider)
+
+    async def preview_civitai_download(
+        self, workspace_id: str, request: CivitaiPreviewRequest
+    ) -> CivitaiPreview:
+        del request
+        self._transfer_unavailable(workspace_id)
+
+    async def start_civitai_download(
+        self, workspace_id: str, request: CivitaiDownloadRequest
+    ) -> RemoteTransfer:
+        del request
+        self._transfer_unavailable(workspace_id)
+
+    async def preview_huggingface_download(
+        self, workspace_id: str, request: HuggingFacePreviewRequest
+    ) -> HuggingFacePreview:
+        del request
+        self._transfer_unavailable(workspace_id)
+
+    async def start_huggingface_download(
+        self, workspace_id: str, request: HuggingFaceDownloadRequest
+    ) -> RemoteTransfer:
+        del request
+        self._transfer_unavailable(workspace_id)
+
+    async def get_transfer(
+        self, workspace_id: str, transfer_id: str
+    ) -> RemoteTransfer:
+        del transfer_id
+        self._transfer_unavailable(workspace_id)
+
+    async def cancel_transfer(
+        self, workspace_id: str, transfer_id: str
+    ) -> RemoteTransfer:
+        del transfer_id
+        self._transfer_unavailable(workspace_id)
 
     def _require_credentials(self) -> None:
         if not self._credential.configured:

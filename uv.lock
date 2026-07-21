@@ -508,6 +508,7 @@ web = [
     { name = "cryptography" },
     { name = "fastapi" },
     { name = "httpx" },
+    { name = "huggingface-hub" },
     { name = "sqlalchemy", extra = ["asyncio"] },
     { name = "uvicorn", extra = ["standard"] },
 ]
@@ -520,6 +521,7 @@ requires-dist = [
     { name = "diffusers", marker = "extra == 'model'", specifier = ">=0.32" },
     { name = "fastapi", marker = "extra == 'web'", specifier = ">=0.115,<1" },
     { name = "httpx", marker = "extra == 'web'", specifier = ">=0.28,<1" },
+    { name = "huggingface-hub", marker = "extra == 'web'", specifier = ">=0.36,<1" },
     { name = "numpy", specifier = ">=2.1" },
     { name = "onnxruntime", specifier = ">=1.20" },
     { name = "pillow", specifier = ">=11.0" },

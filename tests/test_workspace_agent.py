@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import hashlib
 import json
 import os
+import struct
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 
 
 FASTAPI_AVAILABLE = importlib.util.find_spec("fastapi") is not None
@@ -16,8 +19,9 @@ if FASTAPI_AVAILABLE:
     from httpx import ASGITransport, AsyncClient
 
     from k2_region_lab.agent.app import AgentSettings, create_agent_app
+    from k2_region_lab.agent.downloads import parse_civitai_url, parse_huggingface_url
     from k2_region_lab.agent.storage import LAYOUT_VERSION, WorkspaceLayout
-    from k2_region_lab.agent.transfers import TransferManager
+    from k2_region_lab.agent.transfers import TransferError, TransferManager
     from k2_region_lab.web.agent_client import WorkspaceAgentClient
 
 
@@ -306,6 +310,319 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(invalid.status_code, 416)
         self.assertEqual(invalid.json()["code"], "invalid_range")
+
+    async def test_remote_url_parsers_reject_untrusted_hosts_and_embedded_tokens(self) -> None:
+        civitai = parse_civitai_url(
+            "https://civitai.com/models/123/name?modelVersionId=456"
+        )
+        self.assertEqual(civitai.model_id, "123")
+        self.assertEqual(civitai.version_id, "456")
+        huggingface = parse_huggingface_url(
+            "https://huggingface.co/owner/repo/blob/revision/models/model.safetensors"
+        )
+        self.assertEqual(huggingface.repo_id, "owner/repo")
+        self.assertEqual(huggingface.filename, "models/model.safetensors")
+
+        for unsafe in (
+            "http://civitai.com/models/123",
+            "https://evil.example/models/123",
+            "https://civitai.com/models/123?token=secret",
+            "https://huggingface.co/owner/repo?api_key=secret",
+        ):
+            with self.subTest(unsafe=unsafe), self.assertRaises(TransferError):
+                if "huggingface" in unsafe:
+                    parse_huggingface_url(unsafe)
+                else:
+                    parse_civitai_url(unsafe)
+
+    async def test_civitai_download_uses_header_verifies_and_installs(self) -> None:
+        payload = self._safetensors_payload()
+        digest = hashlib.sha256(payload).hexdigest()
+        observed: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            observed.append(request)
+            if "/api/v1/model-versions/456" in request.url.path:
+                return httpx.Response(
+                    200,
+                    json={
+                        "id": 456,
+                        "name": "Version One",
+                        "baseModel": "Krea",
+                        "trainedWords": ["portrait"],
+                        "model": {"id": 123, "name": "Portrait", "type": "LORA"},
+                        "files": [
+                            {
+                                "id": 789,
+                                "name": "portrait.safetensors",
+                                "sizeKB": len(payload) / 1024,
+                                "primary": True,
+                                "downloadUrl": "https://civitai.com/api/download/models/456",
+                                "hashes": {"SHA256": digest.upper()},
+                                "pickleScanResult": "Success",
+                                "virusScanResult": "Success",
+                                "metadata": {"format": "SafeTensor"},
+                            }
+                        ],
+                    },
+                )
+            if "/api/download/models/456" in request.url.path:
+                return httpx.Response(
+                    200,
+                    headers={"Content-Type": "application/octet-stream"},
+                    content=payload,
+                )
+            return httpx.Response(404)
+
+        app = create_agent_app(
+            self.settings, download_transport=httpx.MockTransport(handler)
+        )
+        app.state.layout.initialize()
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://agent.test"
+        ) as client:
+            preview = await client.post(
+                "/v1/downloads/civitai/preview",
+                headers={**self.headers, "X-Provider-Token": "secret-download-token"},
+                json={"source_url": "https://civitai.com/models/123?modelVersionId=456"},
+            )
+            self.assertEqual(preview.status_code, 200, preview.text)
+            self.assertEqual(preview.json()["files"][0]["sha256"], digest)
+            started = await client.post(
+                "/v1/downloads/civitai",
+                headers={**self.headers, "X-Provider-Token": "secret-download-token"},
+                json={
+                    "source_url": "https://civitai.com/models/123?modelVersionId=456",
+                    "file_id": "789",
+                    "destination_kind": "loras",
+                },
+            )
+            self.assertEqual(started.status_code, 202, started.text)
+            transfer = await self._wait_for_transfer(client, started.json()["id"])
+            self.assertEqual(transfer["state"], "completed", transfer)
+            self.assertNotIn("secret-download-token", json.dumps(transfer))
+            self.assertEqual(
+                (self.root / "models" / "loras" / "portrait.safetensors").read_bytes(),
+                payload,
+            )
+        self.assertTrue(observed)
+        self.assertTrue(
+            all(request.headers.get("Authorization") == "Bearer secret-download-token" for request in observed)
+        )
+        self.assertTrue(all("secret-download-token" not in str(request.url) for request in observed))
+
+    async def test_huggingface_file_download_uses_cache_metadata_and_nested_destination(self) -> None:
+        payload = self._safetensors_payload()
+        cached = self.root / "cache" / "huggingface" / "downloaded.safetensors"
+        captured: dict[str, object] = {}
+
+        def repo_info(**kwargs):
+            captured["metadata_token"] = kwargs["token"]
+            return SimpleNamespace(
+                siblings=[
+                    SimpleNamespace(
+                        rfilename="nested/model.safetensors", size=len(payload)
+                    )
+                ]
+            )
+
+        def file_download(**kwargs):
+            captured["download_token"] = kwargs["token"]
+            cached.parent.mkdir(parents=True, exist_ok=True)
+            cached.write_bytes(payload)
+            return str(cached)
+
+        app = create_agent_app(
+            self.settings,
+            hf_repo_info=repo_info,
+            hf_file_download=file_download,
+            hf_snapshot_download=lambda **_kwargs: "unused",
+        )
+        app.state.layout.initialize()
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://agent.test"
+        ) as client:
+            preview = await client.post(
+                "/v1/downloads/huggingface/preview",
+                headers={**self.headers, "X-Provider-Token": "hf_read_secret"},
+                json={
+                    "source_url": (
+                        "https://huggingface.co/owner/repo/resolve/main/"
+                        "nested/model.safetensors"
+                    )
+                },
+            )
+            self.assertEqual(preview.status_code, 200, preview.text)
+            self.assertEqual(preview.json()["required_bytes"], len(payload))
+            started = await client.post(
+                "/v1/downloads/huggingface",
+                headers={**self.headers, "X-Provider-Token": "hf_read_secret"},
+                json={
+                    "source_url": (
+                        "https://huggingface.co/owner/repo/resolve/main/"
+                        "nested/model.safetensors"
+                    ),
+                    "destination_kind": "diffusion_models",
+                },
+            )
+            transfer = await self._wait_for_transfer(client, started.json()["id"])
+            self.assertEqual(transfer["state"], "completed", transfer)
+            inventory = await client.get(
+                "/v1/files?kind=diffusion_models", headers=self.headers
+            )
+            self.assertEqual(
+                inventory.json()["items"][0]["display_name"],
+                "nested/model.safetensors",
+            )
+        self.assertEqual(captured["metadata_token"], "hf_read_secret")
+        self.assertEqual(captured["download_token"], "hf_read_secret")
+
+    async def test_civitai_download_resumes_with_http_range_after_disconnect(self) -> None:
+        payload = self._safetensors_payload() + b"x" * (2 * 1024 * 1024)
+        split = 1024 * 1024
+        digest = hashlib.sha256(payload).hexdigest()
+        downloads = 0
+
+        class BrokenStream(httpx.AsyncByteStream):
+            async def __aiter__(self):
+                yield payload[:split]
+                raise httpx.ReadError("simulated disconnect")
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal downloads
+            if "/api/v1/model-versions/456" in request.url.path:
+                return httpx.Response(
+                    200,
+                    json={
+                        "id": 456,
+                        "name": "Resume",
+                        "model": {"id": 123, "name": "Resume", "type": "LORA"},
+                        "files": [{
+                            "id": 789,
+                            "name": "resume.safetensors",
+                            "sizeKB": len(payload) / 1024,
+                            "downloadUrl": "https://civitai.com/api/download/models/456",
+                            "hashes": {"SHA256": digest},
+                        }],
+                    },
+                )
+            downloads += 1
+            if downloads == 1:
+                return httpx.Response(
+                    200,
+                    headers={"Content-Type": "application/octet-stream"},
+                    stream=BrokenStream(),
+                )
+            self.assertEqual(request.headers["Range"], f"bytes={split}-")
+            return httpx.Response(
+                206,
+                headers={"Content-Type": "application/octet-stream"},
+                content=payload[split:],
+            )
+
+        app = create_agent_app(
+            self.settings, download_transport=httpx.MockTransport(handler)
+        )
+        app.state.layout.initialize()
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://agent.test"
+        ) as client:
+            request = {
+                "source_url": "https://civitai.com/api/download/models/456",
+                "file_id": "789",
+                "destination_kind": "loras",
+            }
+            started = await client.post(
+                "/v1/downloads/civitai", headers=self.headers, json=request
+            )
+            failed = await self._wait_for_transfer(client, started.json()["id"])
+            self.assertEqual(failed["state"], "failed")
+            self.assertEqual(failed["bytes_complete"], split)
+            resumed = await client.post(
+                "/v1/downloads/civitai",
+                headers=self.headers,
+                json={**request, "resume_transfer_id": started.json()["id"]},
+            )
+            completed = await self._wait_for_transfer(client, resumed.json()["id"])
+            self.assertEqual(completed["state"], "completed", completed)
+        self.assertEqual(downloads, 2)
+
+    async def test_huggingface_repository_mirror_preserves_safe_relative_paths(self) -> None:
+        payload = self._safetensors_payload()
+        snapshot_root = self.root / "cache" / "mock-snapshot"
+
+        def repo_info(**_kwargs):
+            return SimpleNamespace(
+                siblings=[
+                    SimpleNamespace(rfilename="nested/model.safetensors", size=len(payload)),
+                    SimpleNamespace(rfilename="config.json", size=2),
+                ]
+            )
+
+        def snapshot_download(**kwargs):
+            self.assertEqual(kwargs["allow_patterns"], ["*.safetensors", "*.json"])
+            (snapshot_root / "nested").mkdir(parents=True, exist_ok=True)
+            (snapshot_root / "nested" / "model.safetensors").write_bytes(payload)
+            (snapshot_root / "config.json").write_text("{}", encoding="utf-8")
+            return str(snapshot_root)
+
+        app = create_agent_app(
+            self.settings,
+            hf_repo_info=repo_info,
+            hf_file_download=lambda **_kwargs: "unused",
+            hf_snapshot_download=snapshot_download,
+        )
+        app.state.layout.initialize()
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://agent.test"
+        ) as client:
+            preview = await client.post(
+                "/v1/downloads/huggingface/preview",
+                headers=self.headers,
+                json={
+                    "source_url": "https://huggingface.co/owner/repo",
+                    "allow_patterns": ["*.safetensors", "*.json"],
+                },
+            )
+            self.assertTrue(preview.json()["mirror_repository"])
+            started = await client.post(
+                "/v1/downloads/huggingface",
+                headers=self.headers,
+                json={
+                    "source_url": "https://huggingface.co/owner/repo",
+                    "destination_kind": "diffusion_models",
+                    "allow_patterns": ["*.safetensors", "*.json"],
+                },
+            )
+            completed = await self._wait_for_transfer(client, started.json()["id"])
+            self.assertEqual(completed["state"], "completed", completed)
+            inventory = await client.get(
+                "/v1/files?kind=diffusion_models", headers=self.headers
+            )
+            self.assertEqual(
+                [item["display_name"] for item in inventory.json()["items"]],
+                ["config.json", "nested/model.safetensors"],
+            )
+
+    async def _wait_for_transfer(
+        self, client: AsyncClient, transfer_id: str
+    ) -> dict[str, object]:
+        for _attempt in range(100):
+            response = await client.get(
+                f"/v1/transfers/{transfer_id}", headers=self.headers
+            )
+            body = response.json()
+            if body["state"] in {"completed", "failed", "cancelled", "paused"}:
+                return body
+            await asyncio.sleep(0.01)
+        self.fail("transfer did not reach a terminal state")
+
+    @staticmethod
+    def _safetensors_payload() -> bytes:
+        header = json.dumps(
+            {"tensor": {"dtype": "F32", "shape": [1], "data_offsets": [0, 4]}}
+        ).encode("utf-8")
+        return struct.pack("<Q", len(header)) + header + b"\0\0\0\0"
 
 
 if __name__ == "__main__":

@@ -325,6 +325,20 @@ button:disabled { cursor: not-allowed; opacity: .42; }
 .asset-list span { min-width: 0; display: grid; }
 .asset-list strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 9px; }
 .asset-list small { margin-top: 3px; color: var(--muted); font-size: 8px; }
+.transfer-panel { max-height: min(860px, calc(100vh - 40px)); overflow-y: auto; }
+.provider-credential { display: flex; align-items: center; gap: 9px; padding: 12px; margin-bottom: 14px; background: #0d1016; border: 1px solid var(--line-soft); border-radius: 9px; }
+.provider-credential > span { flex: 1; color: var(--muted-bright); font-size: 9px; line-height: 1.45; }
+.provider-credential .text-input { width: 220px; }
+.download-form { display: grid; grid-template-columns: minmax(0, 2fr) minmax(150px, .7fr); gap: 10px; align-items: end; padding: 14px; background: #0d1016; border-radius: 10px; }
+.download-form label > span { display: block; margin-bottom: 6px; color: var(--muted-bright); font-size: 9px; }
+.download-form label small { display: block; margin-top: 5px; color: var(--muted); font-size: 8px; }
+.download-form .primary-button { align-self: end; }
+.download-preview { display: grid; gap: 7px; margin: 14px 0; padding: 13px; color: var(--muted-bright); background: rgba(169,255,111,.035); border: 1px solid rgba(169,255,111,.13); border-radius: 10px; }
+.download-preview > strong { color: var(--text); font-size: 11px; }
+.download-preview > small { font-size: 9px; }
+.warning-check { color: #ead4b3; }
+.remote-transfer { margin-top: 14px; }
+.success-line { margin: 10px 0; color: #bfe8a6; font-size: 10px; }
 
 @media (max-width: 1050px) {
   .onboarding-shell { grid-template-columns: 1fr; gap: 36px; padding-top: 45px; }
@@ -364,4 +378,6 @@ button:disabled { cursor: not-allowed; opacity: .42; }
   .cloud-popover { right: 10px; left: 10px; width: auto; }
   .asset-backdrop { inset: 106px 0 64px; }
   .asset-upload { align-items: stretch; flex-direction: column; }
+  .provider-credential, .download-form { display: flex; align-items: stretch; flex-direction: column; }
+  .provider-credential .text-input { width: 100%; }
 }

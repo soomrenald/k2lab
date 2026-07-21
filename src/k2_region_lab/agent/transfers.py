@@ -208,18 +208,86 @@ class TransferManager:
                 record = FileRecord.model_validate(record_data)
                 if required_kind is not None and record.kind != required_kind:
                     break
-                path = self._layout.resolve_child(record.kind.value, record.display_name)
+                path = self._layout.resolve_relative(record.kind.value, record.display_name)
                 if path.is_file() and not path.is_symlink():
                     return record, path
         raise TransferError("file_not_found", "The file does not exist.", 404)
 
+    async def install_download(
+        self,
+        staged_path: Path,
+        kind: FileKind,
+        relative_path: str,
+        sha256: str,
+    ) -> tuple[FileRecord, bool]:
+        installed = await self.install_download_batch(
+            [(staged_path, kind, relative_path, sha256)]
+        )
+        return installed[0]
+
+    async def install_download_batch(
+        self,
+        downloads: list[tuple[Path, FileKind, str, str]],
+    ) -> list[tuple[FileRecord, bool]]:
+        if not downloads:
+            return []
+        for staged_path, _kind, _relative_path, _sha256 in downloads:
+            if not staged_path.is_file() or staged_path.is_symlink():
+                raise TransferError(
+                    "download_missing", "A downloaded file is unavailable.", 409
+                )
+        async with self._lock:
+            planned: list[tuple[Path, Path, FileKind, str, str, FileRecord | None]] = []
+            destinations: set[Path] = set()
+            for staged_path, kind, relative_path, sha256 in downloads:
+                existing = self._find_by_sha256(
+                    sha256, kind=kind, display_name=relative_path
+                )
+                try:
+                    destination = self._layout.resolve_relative(
+                        kind.value, relative_path, create=True
+                    )
+                except ValueError as error:
+                    raise TransferError(
+                        "unsafe_filename", "A downloaded filename is unsafe."
+                    ) from error
+                if destination in destinations:
+                    raise TransferError(
+                        "destination_conflict",
+                        "The download contains duplicate destination paths.",
+                        409,
+                    )
+                destinations.add(destination)
+                if existing is None and destination.exists():
+                    raise TransferError(
+                        "destination_exists",
+                        "A file with this name already exists in the destination.",
+                        409,
+                    )
+                planned.append(
+                    (staged_path, destination, kind, relative_path, sha256, existing)
+                )
+            results: list[tuple[FileRecord, bool]] = []
+            for staged_path, destination, kind, _relative_path, sha256, existing in planned:
+                if existing is not None:
+                    staged_path.unlink(missing_ok=True)
+                    results.append((existing, True))
+                    continue
+                staged_path.replace(destination)
+                record = self._record_file(kind, destination, sha256)
+                self._upsert_record(record)
+                results.append((record, False))
+            return results
+
     def _scan_kind(self, kind: FileKind) -> list[FileRecord]:
         index = self._read_index()
         records: list[FileRecord] = []
-        for path in sorted(self._layout.destination(kind.value).iterdir()):
+        destination = self._layout.destination(kind.value)
+        for path in sorted(destination.rglob("*")):
             if path.is_symlink() or not path.is_file():
                 continue
-            key = f"{kind.value}/{path.name}"
+            relative_path = path.relative_to(destination).as_posix()
+            key = f"{kind.value}/{relative_path}"
             stat = path.stat()
             cached = index.get(key)
             if (
@@ -246,7 +314,7 @@ class TransferManager:
         return FileRecord(
             id=uuid4().hex,
             kind=kind,
-            display_name=path.name,
+            display_name=path.relative_to(self._layout.destination(kind.value)).as_posix(),
             size_bytes=stat.st_size,
             sha256=known_sha256 or self._hash_file(path),
             modified_at=datetime.fromtimestamp(stat.st_mtime, UTC),
@@ -254,7 +322,7 @@ class TransferManager:
 
     def _upsert_record(self, record: FileRecord) -> None:
         index = self._read_index()
-        path = self._layout.resolve_child(record.kind.value, record.display_name)
+        path = self._layout.resolve_relative(record.kind.value, record.display_name)
         stat = path.stat()
         index[f"{record.kind.value}/{record.display_name}"] = {
             "size_bytes": stat.st_size,
@@ -263,14 +331,25 @@ class TransferManager:
         }
         self._write_index(index)
 
-    def _find_by_sha256(self, sha256: str) -> FileRecord | None:
-        for kind in FileKind:
-            self._scan_kind(kind)
+    def _find_by_sha256(
+        self,
+        sha256: str,
+        *,
+        kind: FileKind | None = None,
+        display_name: str | None = None,
+    ) -> FileRecord | None:
+        required_kind = kind
+        for scan_kind in FileKind:
+            self._scan_kind(scan_kind)
         for value in self._read_index().values():
             record_data = value.get("record") if isinstance(value, dict) else None
             if record_data and record_data.get("sha256") == sha256:
                 record = FileRecord.model_validate(record_data)
-                path = self._layout.resolve_child(record.kind.value, record.display_name)
+                if required_kind is not None and record.kind != required_kind:
+                    continue
+                if display_name is not None and record.display_name != display_name:
+                    continue
+                path = self._layout.resolve_relative(record.kind.value, record.display_name)
                 if path.is_file() and not path.is_symlink():
                     return record
         return None

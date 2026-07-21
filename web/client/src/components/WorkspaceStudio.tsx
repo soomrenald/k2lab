@@ -4,6 +4,7 @@ import { controlPlane } from "../api";
 import { Icon, type IconName } from "./Icon";
 import { Inspector } from "./Inspector";
 import { AssetPanel } from "./AssetPanel";
+import { TransferPanel } from "./TransferPanel";
 import {
   RegionCanvas,
   type RegionBox,
@@ -40,6 +41,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, onWorkspace, on
   const [showCloud, setShowCloud] = useState(false);
   const [showDelete, setShowDelete] = useState(false);
   const [showAssets, setShowAssets] = useState(false);
+  const [showTransfers, setShowTransfers] = useState(false);
   const [deleteConfirmation, setDeleteConfirmation] = useState("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
@@ -167,7 +169,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, onWorkspace, on
         </div>
         <div className="utility-rail">
           <RailButton icon="folder" label="Assets" active={showAssets} onClick={() => setShowAssets(true)} />
-          <RailButton icon="transfer" label="Transfers" active={false} onClick={() => setMessage("Resumable transfers are the next implementation milestone.")} />
+          <RailButton icon="transfer" label="Transfers" active={showTransfers} onClick={() => setShowTransfers(true)} />
           <RailButton icon="settings" label="Setup" active={false} onClick={() => setShowCloud(true)} />
         </div>
       </aside>
@@ -236,6 +238,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, onWorkspace, on
         </div>
       )}
       {showAssets && <AssetPanel workspaceId={workspace.id} onClose={() => setShowAssets(false)} />}
+      {showTransfers && <TransferPanel workspaceId={workspace.id} onClose={() => setShowTransfers(false)} />}
     </div>
   );
 }

@@ -9,8 +9,15 @@ from k2_region_lab.agent.domain import (
     AgentCapabilities,
     AgentHealth,
     ChunkReceipt,
+    CivitaiDownloadRequest,
+    CivitaiPreview,
+    CivitaiPreviewRequest,
     FileKind,
     FilePage,
+    HuggingFaceDownloadRequest,
+    HuggingFacePreview,
+    HuggingFacePreviewRequest,
+    RemoteTransfer,
     StorageStatus,
     UploadCompleteResponse,
     UploadCreateRequest,
@@ -41,6 +48,26 @@ class WorkspaceAgentApi(Protocol):
     async def complete_upload(self, upload_id: str) -> UploadCompleteResponse: ...
 
     async def cancel_upload(self, upload_id: str) -> None: ...
+
+    async def preview_civitai(
+        self, request: CivitaiPreviewRequest, token: str | None
+    ) -> CivitaiPreview: ...
+
+    async def start_civitai(
+        self, request: CivitaiDownloadRequest, token: str | None
+    ) -> RemoteTransfer: ...
+
+    async def preview_huggingface(
+        self, request: HuggingFacePreviewRequest, token: str | None
+    ) -> HuggingFacePreview: ...
+
+    async def start_huggingface(
+        self, request: HuggingFaceDownloadRequest, token: str | None
+    ) -> RemoteTransfer: ...
+
+    async def transfer_status(self, transfer_id: str) -> RemoteTransfer: ...
+
+    async def cancel_transfer(self, transfer_id: str) -> RemoteTransfer: ...
 
 
 class WorkspaceAgentClient:
@@ -107,6 +134,68 @@ class WorkspaceAgentClient:
 
     async def cancel_upload(self, upload_id: str) -> None:
         await self._request(f"/v1/uploads/{upload_id}", method="DELETE")
+
+    async def preview_civitai(
+        self, request: CivitaiPreviewRequest, token: str | None
+    ) -> CivitaiPreview:
+        return CivitaiPreview.model_validate(
+            await self._request(
+                "/v1/downloads/civitai/preview",
+                method="POST",
+                json=request.model_dump(mode="json"),
+                extra_headers=self._provider_header(token),
+            )
+        )
+
+    async def start_civitai(
+        self, request: CivitaiDownloadRequest, token: str | None
+    ) -> RemoteTransfer:
+        return RemoteTransfer.model_validate(
+            await self._request(
+                "/v1/downloads/civitai",
+                method="POST",
+                json=request.model_dump(mode="json"),
+                extra_headers=self._provider_header(token),
+            )
+        )
+
+    async def preview_huggingface(
+        self, request: HuggingFacePreviewRequest, token: str | None
+    ) -> HuggingFacePreview:
+        return HuggingFacePreview.model_validate(
+            await self._request(
+                "/v1/downloads/huggingface/preview",
+                method="POST",
+                json=request.model_dump(mode="json"),
+                extra_headers=self._provider_header(token),
+            )
+        )
+
+    async def start_huggingface(
+        self, request: HuggingFaceDownloadRequest, token: str | None
+    ) -> RemoteTransfer:
+        return RemoteTransfer.model_validate(
+            await self._request(
+                "/v1/downloads/huggingface",
+                method="POST",
+                json=request.model_dump(mode="json"),
+                extra_headers=self._provider_header(token),
+            )
+        )
+
+    async def transfer_status(self, transfer_id: str) -> RemoteTransfer:
+        return RemoteTransfer.model_validate(
+            await self._request(f"/v1/transfers/{transfer_id}")
+        )
+
+    async def cancel_transfer(self, transfer_id: str) -> RemoteTransfer:
+        return RemoteTransfer.model_validate(
+            await self._request(f"/v1/transfers/{transfer_id}/cancel", method="POST")
+        )
+
+    @staticmethod
+    def _provider_header(token: str | None) -> dict[str, str] | None:
+        return {"X-Provider-Token": token} if token else None
 
     async def _request(
         self,

@@ -108,3 +108,101 @@ class ChunkReceipt(BaseModel):
 class UploadCompleteResponse(BaseModel):
     file: FileRecord
     duplicate: bool = False
+
+
+class RemoteProvider(StrEnum):
+    CIVITAI = "civitai"
+    HUGGINGFACE = "huggingface"
+
+
+class TransferState(StrEnum):
+    PENDING = "pending"
+    RESOLVING = "resolving"
+    DOWNLOADING = "downloading"
+    VERIFYING = "verifying"
+    PAUSED = "paused"
+    COMPLETED = "completed"
+    CANCELLED = "cancelled"
+    FAILED = "failed"
+
+
+class CivitaiPreviewRequest(BaseModel):
+    source_url: str = Field(min_length=1, max_length=2048)
+
+
+class CivitaiFilePreview(BaseModel):
+    id: str
+    filename: str
+    size_bytes: int | None = Field(default=None, ge=0)
+    format: str | None = None
+    sha256: str | None = None
+    pickle_scan: str | None = None
+    virus_scan: str | None = None
+    download_url: str
+    preferred: bool = False
+    requires_unsafe_confirmation: bool = False
+
+
+class CivitaiPreview(BaseModel):
+    model_id: str
+    version_id: str
+    model_name: str
+    version_name: str
+    model_type: str | None = None
+    base_model: str | None = None
+    training_words: list[str] = Field(default_factory=list)
+    files: list[CivitaiFilePreview]
+
+
+class CivitaiDownloadRequest(BaseModel):
+    source_url: str = Field(min_length=1, max_length=2048)
+    file_id: str = Field(min_length=1, max_length=128)
+    destination_kind: FileKind
+    allow_unsafe_format: bool = False
+    resume_transfer_id: str | None = Field(default=None, max_length=64)
+
+
+class HuggingFacePreviewRequest(BaseModel):
+    source_url: str = Field(min_length=1, max_length=2048)
+    allow_patterns: list[str] = Field(default_factory=list, max_length=20)
+
+
+class HuggingFaceFilePreview(BaseModel):
+    filename: str
+    size_bytes: int = Field(ge=0)
+    cached: bool = False
+
+
+class HuggingFacePreview(BaseModel):
+    repo_id: str
+    repo_type: str
+    revision: str
+    filename: str | None = None
+    mirror_repository: bool
+    files: list[HuggingFaceFilePreview]
+    required_bytes: int = Field(ge=0)
+
+
+class HuggingFaceDownloadRequest(BaseModel):
+    source_url: str = Field(min_length=1, max_length=2048)
+    destination_kind: FileKind
+    allow_patterns: list[str] = Field(default_factory=list, max_length=20)
+    allow_unsafe_format: bool = False
+    resume_transfer_id: str | None = Field(default=None, max_length=64)
+
+
+class RemoteTransfer(BaseModel):
+    id: str
+    provider: RemoteProvider
+    source_url: str
+    destination_kind: FileKind
+    state: TransferState
+    filename: str | None = None
+    bytes_total: int | None = Field(default=None, ge=0)
+    bytes_complete: int = Field(default=0, ge=0)
+    sha256: str | None = None
+    files: list[FileRecord] = Field(default_factory=list)
+    error_code: str | None = None
+    error_message: str | None = None
+    created_at: datetime
+    updated_at: datetime

@@ -9,8 +9,16 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from k2_region_lab.agent.domain import (
     ChunkReceipt,
+    CivitaiDownloadRequest,
+    CivitaiPreview,
+    CivitaiPreviewRequest,
     FileKind,
     FilePage,
+    HuggingFaceDownloadRequest,
+    HuggingFacePreview,
+    HuggingFacePreviewRequest,
+    RemoteProvider,
+    RemoteTransfer,
     UploadCompleteResponse,
     UploadCreateRequest,
     UploadSession,
@@ -219,6 +227,42 @@ class WorkspaceBackend(Protocol):
     ) -> UploadCompleteResponse: ...
 
     async def cancel_upload(self, workspace_id: str, upload_id: str) -> None: ...
+
+    async def download_credential_status(
+        self, provider: RemoteProvider
+    ) -> CredentialStatus: ...
+
+    async def store_download_credential(
+        self, provider: RemoteProvider, token: str
+    ) -> CredentialStatus: ...
+
+    async def clear_download_credential(
+        self, provider: RemoteProvider
+    ) -> CredentialStatus: ...
+
+    async def preview_civitai_download(
+        self, workspace_id: str, request: CivitaiPreviewRequest
+    ) -> CivitaiPreview: ...
+
+    async def start_civitai_download(
+        self, workspace_id: str, request: CivitaiDownloadRequest
+    ) -> RemoteTransfer: ...
+
+    async def preview_huggingface_download(
+        self, workspace_id: str, request: HuggingFacePreviewRequest
+    ) -> HuggingFacePreview: ...
+
+    async def start_huggingface_download(
+        self, workspace_id: str, request: HuggingFaceDownloadRequest
+    ) -> RemoteTransfer: ...
+
+    async def get_transfer(
+        self, workspace_id: str, transfer_id: str
+    ) -> RemoteTransfer: ...
+
+    async def cancel_transfer(
+        self, workspace_id: str, transfer_id: str
+    ) -> RemoteTransfer: ...
 
 
 def utc_now() -> datetime:

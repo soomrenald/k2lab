@@ -70,6 +70,31 @@ class WorkspaceLayout:
             raise ValueError("path escapes the workspace destination")
         return candidate
 
+    def resolve_relative(self, kind: str, relative_path: str, *, create: bool = False) -> Path:
+        candidate_name = Path(relative_path)
+        if (
+            not relative_path
+            or candidate_name.is_absolute()
+            or "\\" in relative_path
+            or any(part in {"", ".", ".."} for part in candidate_name.parts)
+        ):
+            raise ValueError("relative workspace path is unsafe")
+        destination = self.destination(kind).resolve(strict=True)
+        parent = destination
+        if create:
+            for part in candidate_name.parts[:-1]:
+                parent /= part
+                if parent.is_symlink():
+                    raise ValueError("symbolic links are not allowed")
+                parent.mkdir(exist_ok=True)
+        candidate = destination.joinpath(*candidate_name.parts)
+        if candidate.is_symlink():
+            raise ValueError("symbolic links are not allowed")
+        resolved_parent = candidate.parent.resolve(strict=True)
+        if resolved_parent != destination and destination not in resolved_parent.parents:
+            raise ValueError("path escapes the workspace destination")
+        return candidate
+
     def is_writable(self) -> bool:
         probe = self.state_directory / f".write-probe-{os.getpid()}"
         try:
