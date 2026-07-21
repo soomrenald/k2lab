@@ -20,7 +20,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 USER root
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get upgrade -y \
+    && apt-get install -y --no-install-recommends \
         ca-certificates \
         git \
         python3.12 \
@@ -39,9 +40,11 @@ RUN git clone "${COMFYUI_REPOSITORY}" /opt/ComfyUI \
     && git -C /opt/ComfyUI checkout "${COMFYUI_REF}" \
     && /opt/comfyui-venv/bin/python -m pip install -r /opt/ComfyUI/requirements.txt \
     && /opt/comfyui-venv/bin/python -m pip install \
+        "cryptography>=48.0.1,<49" \
         "onnxruntime-gpu>=1.20" \
+        "pillow>=12.3.0" \
         "pydantic>=2.10" \
-        "transformers==4.57.1"
+        "transformers>=5.5.0,<6"
 
 WORKDIR /opt/k2-region-lab
 COPY . /opt/k2-region-lab
