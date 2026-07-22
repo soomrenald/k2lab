@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import mimetypes
 import os
 from collections.abc import Sequence
 from contextlib import asynccontextmanager
@@ -11,7 +12,6 @@ from typing import Any, AsyncIterator
 from fastapi import FastAPI, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
-from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from k2_region_lab.agent.domain import (
@@ -574,11 +574,38 @@ def create_app(
         )
 
     if static_directory is not None:
-        application.mount(
-            "/",
-            StaticFiles(directory=static_directory, html=True, check_dir=True),
-            name="studio",
-        )
+        static_root = static_directory.expanduser().resolve(strict=True)
+        if not static_root.is_dir():
+            raise ValueError("the web static path must be a directory")
+
+        @application.get("/{static_path:path}", include_in_schema=False)
+        async def studio_static_file(static_path: str) -> Response:
+            relative = static_path or "index.html"
+            try:
+                candidate = (static_root / relative).resolve(strict=True)
+                candidate.relative_to(static_root)
+            except (FileNotFoundError, ValueError):
+                candidate = static_root / "index.html"
+                if relative.startswith("api/") or "." in Path(relative).name:
+                    return JSONResponse(
+                        status_code=404,
+                        content={"code": "not_found", "message": "The resource was not found."},
+                    )
+            if not candidate.is_file():
+                return JSONResponse(
+                    status_code=404,
+                    content={"code": "not_found", "message": "The resource was not found."},
+                )
+            media_type = mimetypes.guess_type(candidate.name)[0] or "application/octet-stream"
+            return Response(
+                content=candidate.read_bytes(),
+                media_type=media_type,
+                headers={
+                    "Cache-Control": (
+                        "no-cache" if candidate.name == "index.html" else "public, max-age=31536000, immutable"
+                    )
+                },
+            )
 
     return application
 
