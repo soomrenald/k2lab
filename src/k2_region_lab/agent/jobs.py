@@ -246,6 +246,19 @@ class JobManager:
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
 
+    async def release_worker_memory(self) -> list[str]:
+        job_ids = list(self._tasks)
+        for job_id in job_ids:
+            try:
+                await self.cancel(job_id)
+            except JobError:
+                continue
+        tasks = list(self._tasks.values())
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._readiness_callback(False)
+        return job_ids
+
     async def _run_job(
         self,
         job_id: str,

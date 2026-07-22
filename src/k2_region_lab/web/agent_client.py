@@ -30,6 +30,7 @@ from k2_region_lab.agent.domain import (
     UploadCompleteResponse,
     UploadCreateRequest,
     UploadSession,
+    WorkerReleaseResult,
     WorkspaceManifest,
 )
 from k2_region_lab.web.domain import WorkspaceError, WorkspaceOutput
@@ -106,6 +107,8 @@ class WorkspaceAgentApi(Protocol):
     async def cancel_job(self, job_id: str) -> GenerationJob: ...
 
     async def detect_faces(self, request: FaceDetectionRequest) -> FaceDetectionResult: ...
+
+    async def release_worker_memory(self) -> WorkerReleaseResult: ...
 
     async def output(self, file_id: str, *, range_header: str | None = None) -> WorkspaceOutput: ...
 
@@ -330,6 +333,11 @@ class WorkspaceAgentClient:
                 method="POST",
                 json=request.model_dump(mode="json"),
             )
+        )
+
+    async def release_worker_memory(self) -> WorkerReleaseResult:
+        return WorkerReleaseResult.model_validate(
+            await self._request("/v1/worker/release", method="POST")
         )
 
     async def output(self, file_id: str, *, range_header: str | None = None) -> WorkspaceOutput:

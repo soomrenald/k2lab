@@ -27,6 +27,7 @@ from k2_region_lab.agent.domain import (
     UploadCompleteResponse,
     UploadCreateRequest,
     UploadSession,
+    WorkerReleaseResult,
     WorkspaceManifest,
 )
 
@@ -407,6 +408,8 @@ class WorkspaceBackend(Protocol):
     async def detect_faces(
         self, workspace_id: str, request: FaceDetectionRequest
     ) -> FaceDetectionResult: ...
+
+    async def release_worker_memory(self, workspace_id: str) -> WorkerReleaseResult: ...
 
     async def get_output(
         self, workspace_id: str, file_id: str, range_header: str | None = None

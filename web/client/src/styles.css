@@ -353,6 +353,18 @@ button:disabled { cursor: not-allowed; opacity: .42; }
 .asset-list strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 9px; }
 .asset-list small { margin-top: 3px; color: var(--muted); font-size: 8px; }
 .transfer-panel { max-height: min(860px, calc(100vh - 40px)); overflow-y: auto; }
+.event-panel { display: grid; grid-template-rows: auto auto minmax(0, 1fr); overflow: hidden; }
+.event-panel header small { display: block; margin-top: 5px; color: var(--muted); font-size: 8px; }
+.event-actions { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+.event-actions p { min-width: 0; flex: 1; margin: 0; color: var(--muted); font-size: 8px; }
+.event-list { min-height: 160px; overflow-y: auto; overscroll-behavior: contain; border: 1px solid #282f3a; border-radius: 9px; background: #090c11; }
+.event-entry { display: grid; grid-template-columns: 72px 52px minmax(0, 1fr); gap: 8px; padding: 8px 10px; border-bottom: 1px solid #202630; font-size: 9px; line-height: 1.45; }
+.event-entry:last-child { border-bottom: 0; }
+.event-entry time { color: var(--muted); font-variant-numeric: tabular-nums; }
+.event-entry > span { color: var(--accent); text-transform: uppercase; font-size: 7px; font-weight: 800; }
+.event-entry.error > span { color: var(--danger); }
+.event-entry.worker > span { color: #b9adff; }
+.event-entry p { margin: 0; color: var(--muted-bright); overflow-wrap: anywhere; }
 .provider-credential { display: flex; align-items: center; gap: 9px; padding: 12px; margin-bottom: 14px; background: #0d1016; border: 1px solid var(--line-soft); border-radius: 9px; }
 .provider-credential > span { flex: 1; color: var(--muted-bright); font-size: 9px; line-height: 1.45; }
 .provider-credential .text-input { width: 220px; }

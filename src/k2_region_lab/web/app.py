@@ -34,6 +34,7 @@ from k2_region_lab.agent.domain import (
     UploadCompleteResponse,
     UploadCreateRequest,
     UploadSession,
+    WorkerReleaseResult,
 )
 from k2_region_lab.project import project_state
 from k2_region_lab.regional_lora import character_identity_triggers
@@ -507,6 +508,13 @@ def create_app(
     )
     async def detect_faces(workspace_id: str, request: FaceDetectionRequest) -> FaceDetectionResult:
         return await workspace_backend.detect_faces(workspace_id, request)
+
+    @application.post(
+        "/api/v1/workspaces/{workspace_id}/worker/release",
+        response_model=WorkerReleaseResult,
+    )
+    async def release_worker_memory(workspace_id: str) -> WorkerReleaseResult:
+        return await workspace_backend.release_worker_memory(workspace_id)
 
     @application.get(
         "/api/v1/workspaces/{workspace_id}/jobs/{job_id}",

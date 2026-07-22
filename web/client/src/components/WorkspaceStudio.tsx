@@ -30,6 +30,16 @@ interface Props {
 }
 
 const starterRegions: RegionBox[] = [];
+const EVENT_LOG_LIMIT = 1000;
+
+type StudioEventKind = "info" | "error" | "worker";
+
+interface StudioEvent {
+  id: string;
+  createdAt: string;
+  kind: StudioEventKind;
+  message: string;
+}
 
 export function WorkspaceStudio({ workspace, developmentBackend, datacenters, networkVolumes, onWorkspace, onDelete }: Props) {
   const [mode, setMode] = useState<StudioMode>("generation");
@@ -55,6 +65,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
   const [showAssets, setShowAssets] = useState(false);
   const [showTransfers, setShowTransfers] = useState(false);
   const [showMigration, setShowMigration] = useState(false);
+  const [showEvents, setShowEvents] = useState(false);
   const [migration, setMigration] = useState<WorkspaceMigrationRecord | null>(null);
   const [migrationConfirmation, setMigrationConfirmation] = useState("");
   const [migrationVolumeId, setMigrationVolumeId] = useState("");
@@ -63,6 +74,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
   const [deleteConfirmation, setDeleteConfirmation] = useState("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
+  const [eventLog, setEventLog] = useState<StudioEvent[]>([]);
   const [job, setJob] = useState<GenerationJob | null>(null);
   const [queuedJobs, setQueuedJobs] = useState<GenerationJob[]>([]);
   const [promptPreview, setPromptPreview] = useState<UnifiedPromptPreview | null>(null);
@@ -77,6 +89,21 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
   const openProjectInput = useRef<HTMLInputElement>(null);
   const importPngInput = useRef<HTMLInputElement>(null);
 
+  function appendEvent(messageText: string, kind: StudioEventKind = "info", createdAt = new Date().toISOString()) {
+    if (!messageText) return;
+    setEventLog((current) => [...current, {
+      id: crypto.randomUUID(),
+      createdAt,
+      kind,
+      message: messageText,
+    }].slice(-EVENT_LOG_LIMIT));
+  }
+
+  function report(messageText: string, kind: StudioEventKind = "info") {
+    setMessage(messageText);
+    appendEvent(messageText, kind);
+  }
+
   useEffect(() => () => { if (sourceUrl) URL.revokeObjectURL(sourceUrl); }, [sourceUrl]);
 
   useEffect(() => {
@@ -88,7 +115,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
         if (!cancelled) onWorkspace(refreshed);
       } catch (caught) {
         if (!cancelled) {
-          setMessage(caught instanceof Error ? caught.message : "Could not refresh workspace status");
+          report(caught instanceof Error ? caught.message : "Could not refresh workspace status", "error");
         }
       }
     }, 5_000);
@@ -107,14 +134,22 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
           controlPlane.jobEvents(workspace.id, job.id, eventCursor.current),
         ]);
         eventCursor.current = events.next_cursor;
-        if (events.items.length) setMessage(events.items[events.items.length - 1].message);
+        if (events.items.length) {
+          setMessage(events.items[events.items.length - 1].message);
+          setEventLog((current) => [...current, ...events.items.map((event) => ({
+            id: `${job.id}-${event.sequence}`,
+            createdAt: event.created_at,
+            kind: "worker" as const,
+            message: event.message,
+          }))].slice(-EVENT_LOG_LIMIT));
+        }
         setJob(next);
         if (next.state === "completed" && next.output_file_ids[0]) {
           setLatestOutputFileId(next.output_file_ids[0]);
           setResultUrl(controlPlane.outputUrl(workspace.id, next.output_file_ids[0]));
-          setMessage(queuedJobs.length ? `Batch image complete. ${queuedJobs.length} queued run(s) remain.` : "Remote job complete. The verified output is stored in cloud files.");
+          report(queuedJobs.length ? `Batch image complete. ${queuedJobs.length} queued run(s) remain.` : "Remote job complete. The verified output is stored in cloud files.", "worker");
         } else if (next.error_message) {
-          setMessage(next.error_message);
+          report(next.error_message, "error");
         }
         if (["completed", "failed", "cancelled"].includes(next.state) && queuedJobs.length) {
           const [following, ...remaining] = queuedJobs;
@@ -123,7 +158,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
           setJob(following);
         }
       } catch (caught) {
-        setMessage(caught instanceof Error ? caught.message : "Could not refresh remote job");
+        report(caught instanceof Error ? caught.message : "Could not refresh remote job", "error");
       }
     }, 1000);
     return () => window.clearInterval(interval);
@@ -197,7 +232,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
     setSelectedFaceIndices([]);
     setManualFacePaths([]);
     setLassoMode(false);
-    setMessage("Started a new project with default settings.");
+    report("Started a new project with default settings.");
   }
 
   async function allFiles(kind: "loras" | "upscale_models") {
@@ -254,7 +289,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
     const safeName = name.toLocaleLowerCase().endsWith(".json") ? name : `${name}.k2lab.json`;
     setProjectName(safeName);
     const missing = loaded.loras.filter((lora) => !lora.fileId).map((lora) => lora.name);
-    setMessage(missing.length
+    report(missing.length
       ? `Opened ${name}. Upload or select missing cloud LoRA asset(s): ${missing.join(", ")}.`
       : `Opened ${name}.`);
   }
@@ -264,7 +299,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
     try {
       await restoreProject(JSON.parse(await file.text()), file.name);
     } catch (caught) {
-      setMessage(caught instanceof Error ? `Project open failed: ${caught.message}` : "Project open failed");
+      report(caught instanceof Error ? `Project open failed: ${caught.message}` : "Project open failed", "error");
     } finally {
       setBusy(false);
     }
@@ -275,9 +310,9 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
     try {
       await restoreProject(await projectDocumentFromPng(file), file.name, file);
       setProjectName("untitled.k2lab.json");
-      setMessage(`Imported project metadata from ${file.name}. Upload it to Inputs before remote edit or face refinement.`);
+      report(`Imported project metadata from ${file.name}. Upload it to Inputs before remote edit or face refinement.`);
     } catch (caught) {
-      setMessage(caught instanceof Error ? `PNG import failed: ${caught.message}` : "PNG import failed");
+      report(caught instanceof Error ? `PNG import failed: ${caught.message}` : "PNG import failed", "error");
     } finally {
       setBusy(false);
     }
@@ -298,7 +333,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
     anchor.download = name;
     anchor.click();
     URL.revokeObjectURL(url);
-    setMessage(`Saved project ${name}.`);
+    report(`Saved project ${name}.`);
   }
 
   async function lifecycle(action: "start" | "stop" | "extend") {
@@ -312,7 +347,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
           : await controlPlane.extendLease(workspace.id);
       onWorkspace(next);
     } catch (caught) {
-      setMessage(caught instanceof Error ? caught.message : "Workspace action failed");
+      report(caught instanceof Error ? caught.message : "Workspace action failed", "error");
     } finally {
       setBusy(false);
     }
@@ -325,7 +360,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
       await controlPlane.terminateWorkspace(workspace.id, deleteConfirmation);
       onDelete();
     } catch (caught) {
-      setMessage(caught instanceof Error ? caught.message : "Workspace deletion failed");
+      report(caught instanceof Error ? caught.message : "Workspace deletion failed", "error");
     } finally {
       setBusy(false);
     }
@@ -339,9 +374,9 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
     }
     if (next.state === "awaiting_confirmation") {
       onWorkspace(await controlPlane.workspace(workspace.id));
-      setMessage("Manifest verification succeeded. Test the portable workspace, then explicitly delete the retained original Pod.");
+      report("Manifest verification succeeded. Test the portable workspace, then explicitly delete the retained original Pod.");
     } else if (next.error_message) {
-      setMessage(next.error_message);
+      report(next.error_message, "error");
     }
   }
 
@@ -360,7 +395,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
       setMigration(created);
       await advanceMigration(created);
     } catch (caught) {
-      setMessage(caught instanceof Error ? caught.message : "Workspace migration failed");
+      report(caught instanceof Error ? caught.message : "Workspace migration failed", "error");
     } finally {
       setBusy(false);
     }
@@ -372,7 +407,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
     try {
       await advanceMigration(migration);
     } catch (caught) {
-      setMessage(caught instanceof Error ? caught.message : "Could not resume migration");
+      report(caught instanceof Error ? caught.message : "Could not resume migration", "error");
     } finally {
       setBusy(false);
     }
@@ -389,9 +424,9 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
       setMigrationConfirmation("");
       setShowMigration(false);
       onWorkspace(await controlPlane.workspace(workspace.id));
-      setMessage("Migration complete. The original Pod and its regular volume were deleted.");
+      report("Migration complete. The original Pod and its regular volume were deleted.");
     } catch (caught) {
-      setMessage(caught instanceof Error ? caught.message : "Could not confirm migration");
+      report(caught instanceof Error ? caught.message : "Could not confirm migration", "error");
     } finally {
       setBusy(false);
     }
@@ -399,16 +434,16 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
 
   async function runRemoteJob() {
     if (mode !== "generation" && !cloudSource) {
-      setMessage("Choose an uploaded input or prior output from Cloud files first.");
+      report("Choose an uploaded input or prior output from Cloud files first.", "error");
       setShowAssets(true);
       return;
     }
     if (mode === "face" && selectedFaceIndices.length === 0) {
-      setMessage("Detect faces or draw lassos, then select at least one face to refine.");
+      report("Detect faces or draw lassos, then select at least one face to refine.", "error");
       return;
     }
     if (mode === "face" && !loras.some((lora) => lora.active && lora.strength !== 0 && !lora.generation.global && lora.generation.regionIds.length > 0)) {
-      setMessage("Assign at least one enabled LoRA to a subject region before face refinement.");
+      report("Assign at least one enabled LoRA to a subject region before face refinement.", "error");
       return;
     }
     setBusy(true);
@@ -454,9 +489,9 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
       }
       setJob(submitted[0]);
       setQueuedJobs(submitted.slice(1));
-      setMessage(runCount > 1 ? `${runCount} remote batch runs queued.` : "Remote job queued.");
+      report(runCount > 1 ? `${runCount} remote batch runs queued.` : "Remote job queued.", "worker");
     } catch (caught) {
-      setMessage(caught instanceof Error ? caught.message : "Could not submit remote job");
+      report(caught instanceof Error ? caught.message : "Could not submit remote job", "error");
     } finally {
       setBusy(false);
     }
@@ -472,9 +507,26 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
       ]);
       setJob(cancelled);
       setQueuedJobs([]);
-      setMessage("Remote job queue cancelled; worker memory was released.");
+      report("Remote job queue cancelled; worker memory was released.", "worker");
     } catch (caught) {
-      setMessage(caught instanceof Error ? caught.message : "Could not cancel remote job");
+      report(caught instanceof Error ? caught.message : "Could not cancel remote job", "error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function releaseWorkerMemory() {
+    setBusy(true);
+    try {
+      const released = await controlPlane.releaseWorkerMemory(workspace.id);
+      setJob(null);
+      setQueuedJobs([]);
+      eventCursor.current = undefined;
+      report(released.cancelled_job_ids.length
+        ? `Worker memory released; ${released.cancelled_job_ids.length} active job(s) cancelled.`
+        : "Worker memory released. No active jobs were cancelled.", "worker");
+    } catch (caught) {
+      report(caught instanceof Error ? caught.message : "Could not release worker memory", "error");
     } finally {
       setBusy(false);
     }
@@ -488,7 +540,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
         buildProjectDocument(regions, globalPrompts, studioSettings, loras),
       ));
     } catch (caught) {
-      setMessage(caught instanceof Error ? caught.message : "Could not compile the unified prompt");
+      report(caught instanceof Error ? caught.message : "Could not compile the unified prompt", "error");
     } finally {
       setBusy(false);
     }
@@ -496,13 +548,13 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
 
   async function detectFaces() {
     if (!cloudSource) {
-      setMessage("Choose an uploaded input or prior output before detecting faces.");
+      report("Choose an uploaded input or prior output before detecting faces.", "error");
       setAssetPurpose("source");
       setShowAssets(true);
       return;
     }
     setBusy(true);
-    setMessage("Detecting faces in the isolated worker…");
+    report("Detecting faces in the isolated worker…", "worker");
     try {
       const result = await controlPlane.detectFaces(workspace.id, {
         input_file_id: cloudSource.id,
@@ -514,9 +566,9 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
       setSelectedFaceIndices(result.faces.map((face) => face.index));
       setManualFacePaths([]);
       setLassoMode(false);
-      setMessage(`Detected ${result.faces.length} face(s) with ${result.execution_provider}.`);
+      report(`Detected ${result.faces.length} face(s) with ${result.execution_provider}.`, "worker");
     } catch (caught) {
-      setMessage(caught instanceof Error ? caught.message : "Face detection failed");
+      report(caught instanceof Error ? caught.message : "Face detection failed", "error");
     } finally {
       setBusy(false);
     }
@@ -546,7 +598,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
 
   function useLatestFaceSource() {
     if (!latestOutputFileId) {
-      setMessage("No completed first-pass output is available in this browser session.");
+      report("No completed first-pass output is available in this browser session.", "error");
       return;
     }
     const source: FileRecord = {
@@ -565,7 +617,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
     setSelectedFaceIndices([]);
     setManualFacePaths([]);
     setMode("face");
-    setMessage("Using the latest completed output for face refinement. Detect faces next.");
+    report("Using the latest completed output for face refinement. Detect faces next.");
   }
 
   return (
@@ -616,6 +668,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
             )}
             <button className="danger-text-button" disabled={Boolean(workspace.retained_original_provider_resource_id)} title={workspace.retained_original_provider_resource_id ? "Confirm the verified migration first" : undefined} onClick={() => setShowDelete(true)}>Delete cloud workspace</button>
           </div>
+          <button className="quiet-button full-button" disabled={busy || !running || developmentBackend} onClick={() => void releaseWorkerMemory()}><Icon name="stop" /> Release worker memory</button>
           <p className="field-help">{workspace.mode === "portable_workspace"
             ? "Stopping terminates the Pod and retains the network volume. Deleting this workspace also retains that volume for safety."
             : "Stopping retains the attached volume. Deleting permanently removes it."}</p>
@@ -631,6 +684,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
         <div className="utility-rail">
           <RailButton icon="folder" label="Assets" active={showAssets} onClick={() => { setAssetPurpose("source"); setShowAssets(true); }} />
           <RailButton icon="transfer" label="Transfers" active={showTransfers} onClick={() => setShowTransfers(true)} />
+          <RailButton icon="events" label="Events" active={showEvents} onClick={() => setShowEvents(true)} />
           <RailButton icon="settings" label="Setup" active={false} onClick={() => setShowCloud(true)} />
         </div>
       </aside>
@@ -745,6 +799,23 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
           </section>
         </div>
       )}
+      {showEvents && (
+        <div className="asset-backdrop">
+          <section className="asset-panel event-panel glass-card" aria-label="Studio event log">
+            <header><div><p className="kicker">Bounded local history</p><h2>Event log</h2><small>{eventLog.length} / {EVENT_LOG_LIMIT} events retained</small></div><button className="quiet-button" onClick={() => setShowEvents(false)}>Close</button></header>
+            <div className="event-actions">
+              <p>Oldest entries are automatically discarded when the log reaches its limit.</p>
+              <button className="quiet-button" disabled={eventLog.length === 0} onClick={() => setEventLog([])}>Clear log</button>
+              <button className="quiet-button" disabled={busy || !running || developmentBackend} onClick={() => void releaseWorkerMemory()}>Release worker memory</button>
+            </div>
+            <div className="event-list" role="log" aria-live="polite">
+              {eventLog.length === 0
+                ? <p className="field-help">No events yet.</p>
+                : eventLog.map((entry) => <article key={entry.id} className={`event-entry ${entry.kind}`}><time>{formatEventTime(entry.createdAt)}</time><span>{entry.kind}</span><p>{entry.message}</p></article>)}
+            </div>
+          </section>
+        </div>
+      )}
       {showMigration && (
         <div className="modal-backdrop" role="presentation">
           <section className="confirm-modal" role="dialog" aria-modal="true" aria-labelledby="migration-title">
@@ -809,7 +880,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
           </section>
         </div>
       )}
-      {showAssets && <AssetPanel workspaceId={workspace.id} initialKind={assetPurpose === "lora" ? "loras" : assetPurpose === "upscale" ? "upscale_models" : "inputs"} onClose={() => setShowAssets(false)} onSelect={(file) => {
+      {showAssets && <AssetPanel workspaceId={workspace.id} initialKind={assetPurpose === "lora" ? "loras" : assetPurpose === "upscale" ? "upscale_models" : "inputs"} onEvent={(text, kind) => report(text, kind)} onClose={() => setShowAssets(false)} onSelect={(file) => {
         if (assetPurpose === "lora") {
           if (file.kind === "loras" && !loras.some((lora) => lora.fileId === file.id)) setLoras([...loras, createStudioLora(file.id, file.display_name)]);
           return;
@@ -826,11 +897,16 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
         setManualFacePaths([]);
         if (file.kind === "outputs") setSourceUrl(controlPlane.outputUrl(workspace.id, file.id));
       }} />}
-      {showTransfers && <TransferPanel workspaceId={workspace.id} onClose={() => setShowTransfers(false)} />}
+      {showTransfers && <TransferPanel workspaceId={workspace.id} onEvent={(text, kind) => report(text, kind)} onClose={() => setShowTransfers(false)} />}
     </div>
   );
 }
 
 function RailButton({ icon, label, active, onClick }: { icon: IconName; label: string; active: boolean; onClick: () => void }) {
   return <button className={`rail-button ${active ? "active" : ""}`} onClick={onClick}><Icon name={icon} /><span>{label}</span></button>;
+}
+
+function formatEventTime(value: string) {
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleTimeString();
 }

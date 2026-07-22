@@ -278,6 +278,11 @@ export interface FaceDetectionResult {
   faces: DetectedFaceRecord[];
 }
 
+export interface WorkerReleaseResult {
+  released: boolean;
+  cancelled_job_ids: string[];
+}
+
 export class ApiError extends Error {
   readonly code: string;
   readonly status: number;
@@ -446,6 +451,8 @@ export const controlPlane = {
     request<FaceDetectionResult>(`/api/v1/workspaces/${workspaceId}/faces/detect`, {
       method: "POST", body: JSON.stringify(payload),
     }),
+  releaseWorkerMemory: (workspaceId: string) =>
+    request<WorkerReleaseResult>(`/api/v1/workspaces/${workspaceId}/worker/release`, { method: "POST" }),
   outputUrl: (workspaceId: string, fileId: string) =>
     `/api/v1/workspaces/${workspaceId}/outputs/${fileId}`,
 };

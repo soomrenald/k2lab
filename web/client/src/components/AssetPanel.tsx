@@ -16,9 +16,15 @@ const kinds: { value: FileKind; label: string }[] = [
   { value: "face_detection", label: "Face detection" },
 ];
 
-interface Props { workspaceId: string; onClose: () => void; onSelect?: (file: FileRecord) => void; initialKind?: FileKind }
+interface Props {
+  workspaceId: string;
+  onClose: () => void;
+  onSelect?: (file: FileRecord) => void;
+  onEvent?: (message: string, kind: "info" | "error" | "worker") => void;
+  initialKind?: FileKind;
+}
 
-export function AssetPanel({ workspaceId, onClose, onSelect, initialKind = "inputs" }: Props) {
+export function AssetPanel({ workspaceId, onClose, onSelect, onEvent, initialKind = "inputs" }: Props) {
   const [kind, setKind] = useState<FileKind>(initialKind);
   const [files, setFiles] = useState<FileRecord[]>([]);
   const [selected, setSelected] = useState<File | null>(null);
@@ -47,6 +53,7 @@ export function AssetPanel({ workspaceId, onClose, onSelect, initialKind = "inpu
       paused.current = false;
       setError("");
       setPhase("Hashing");
+      onEvent?.(`Preparing ${selected.name} for upload to ${kind}.`, "info");
       const hasher = await createSHA256();
       hasher.init();
       const hashChunk = 8 * 1024 * 1024;
@@ -97,10 +104,13 @@ export function AssetPanel({ workspaceId, onClose, onSelect, initialKind = "inpu
       setPhase(result.duplicate ? "Already present" : "Complete");
       setProgress(1);
       setUpload(null);
+      onEvent?.(`${result.duplicate ? "Verified existing" : "Uploaded"} ${file.name} in ${kind}.`, "info");
       await refresh();
     } catch (caught) {
       setPhase("Retry available");
-      setError(caught instanceof Error ? caught.message : "Upload failed");
+      const detail = caught instanceof Error ? caught.message : "Upload failed";
+      setError(detail);
+      onEvent?.(detail, "error");
     }
   }
 
@@ -116,6 +126,7 @@ export function AssetPanel({ workspaceId, onClose, onSelect, initialKind = "inpu
     setSelected(null);
     setProgress(0);
     setPhase("Cancelled");
+    onEvent?.("Upload cancelled; resumable staging data was removed.", "info");
   }
 
   return (

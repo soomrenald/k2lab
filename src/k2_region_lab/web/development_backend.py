@@ -25,6 +25,7 @@ from k2_region_lab.agent.domain import (
     UploadCompleteResponse,
     UploadCreateRequest,
     UploadSession,
+    WorkerReleaseResult,
     WorkspaceManifest,
 )
 from k2_region_lab.web.domain import (
@@ -812,6 +813,9 @@ class DevelopmentWorkspaceBackend:
         self, workspace_id: str, request: FaceDetectionRequest
     ) -> FaceDetectionResult:
         del request
+        self._transfer_unavailable(workspace_id)
+
+    async def release_worker_memory(self, workspace_id: str) -> WorkerReleaseResult:
         self._transfer_unavailable(workspace_id)
 
     async def get_output(

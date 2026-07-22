@@ -11,9 +11,13 @@ const destinations: { value: FileKind; label: string }[] = [
   { value: "face_detection", label: "Face detection" },
 ];
 
-interface Props { workspaceId: string; onClose: () => void }
+interface Props {
+  workspaceId: string;
+  onClose: () => void;
+  onEvent?: (message: string, kind: "info" | "error" | "worker") => void;
+}
 
-export function TransferPanel({ workspaceId, onClose }: Props) {
+export function TransferPanel({ workspaceId, onClose, onEvent }: Props) {
   const [provider, setProvider] = useState<RemoteProvider>("civitai");
   const [credential, setCredential] = useState<CredentialStatus | null>(null);
   const [token, setToken] = useState("");
@@ -29,6 +33,7 @@ export function TransferPanel({ workspaceId, onClose }: Props) {
   const [busy, setBusy] = useState(false);
   const [speed, setSpeed] = useState(0);
   const sample = useRef<{ bytes: number; time: number } | null>(null);
+  const lastReportedState = useRef<string | null>(null);
 
   useEffect(() => {
     void controlPlane.downloadCredential(provider).then(setCredential).catch(() => setCredential(null));
@@ -45,7 +50,14 @@ export function TransferPanel({ workspaceId, onClose }: Props) {
         if (previous && now > previous.time) setSpeed(Math.max(0, (next.bytes_complete - previous.bytes) / ((now - previous.time) / 1000)));
         sample.current = { bytes: next.bytes_complete, time: now };
         setTransfer(next);
-      } catch (caught) { setError(message(caught)); }
+        if (next.state !== lastReportedState.current && terminal(next.state)) {
+          lastReportedState.current = next.state;
+          onEvent?.(next.state === "completed"
+            ? `Provider transfer completed with ${next.files.length} verified file(s).`
+            : `Provider transfer ${next.state}${next.error_message ? `: ${next.error_message}` : "."}`,
+          next.state === "failed" ? "error" : "info");
+        }
+      } catch (caught) { const detail = message(caught); setError(detail); onEvent?.(detail, "error"); }
     }, 1000);
     return () => window.clearInterval(interval);
   }, [transfer, workspaceId]);
@@ -90,15 +102,17 @@ export function TransferPanel({ workspaceId, onClose }: Props) {
         ? await controlPlane.startCivitai(workspaceId, { source_url: sourceUrl, file_id: fileId, destination_kind: destination, allow_unsafe_format: allowUnsafe, resume_transfer_id })
         : await controlPlane.startHuggingFace(workspaceId, { source_url: sourceUrl, destination_kind: destination, allow_patterns: patternList(patterns), allow_unsafe_format: allowUnsafe, resume_transfer_id });
       setTransfer(next);
-    } catch (caught) { setError(message(caught)); }
+      lastReportedState.current = next.state;
+      onEvent?.(`${resume ? "Resumed" : "Started"} ${provider} transfer into ${destination}.`, "info");
+    } catch (caught) { const detail = message(caught); setError(detail); onEvent?.(detail, "error"); }
     finally { setBusy(false); }
   }
 
   async function cancel() {
     if (!transfer) return;
     setBusy(true);
-    try { setTransfer(await controlPlane.cancelTransfer(workspaceId, transfer.id)); }
-    catch (caught) { setError(message(caught)); }
+    try { setTransfer(await controlPlane.cancelTransfer(workspaceId, transfer.id)); onEvent?.("Provider transfer cancelled; resumable data was retained.", "info"); }
+    catch (caught) { const detail = message(caught); setError(detail); onEvent?.(detail, "error"); }
     finally { setBusy(false); }
   }
 

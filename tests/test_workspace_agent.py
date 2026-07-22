@@ -983,6 +983,51 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
             status = await client.get(f"/v1/jobs/{submitted.json()['id']}", headers=self.headers)
             self.assertEqual(status.json()["state"], "cancelled")
 
+    async def test_worker_memory_release_cancels_active_executor(self) -> None:
+        started = asyncio.Event()
+        cancelled = asyncio.Event()
+
+        class BlockingExecutor:
+            async def run(self, commands, on_event):
+                await on_event(
+                    {
+                        "command_id": commands[-1]["command_id"],
+                        "state": "running",
+                        "message": "Generation started",
+                        "payload": {},
+                    }
+                )
+                started.set()
+                await cancelled.wait()
+                return -15
+
+            async def cancel(self):
+                cancelled.set()
+
+        app = create_agent_app(self.settings, job_executor_factory=lambda: BlockingExecutor())
+        app.state.layout.initialize()
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://agent.test"
+        ) as client:
+            submitted = await client.post(
+                "/v1/jobs",
+                headers=self.headers,
+                json={
+                    "command_id": "release-command",
+                    "kind": "generate",
+                    "project_id": "release-project",
+                    "project": self._project_document("release me"),
+                },
+            )
+            await asyncio.wait_for(started.wait(), timeout=2)
+            response = await client.post("/v1/worker/release", headers=self.headers)
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertTrue(response.json()["released"])
+            self.assertEqual(response.json()["cancelled_job_ids"], [submitted.json()["id"]])
+            self.assertTrue(cancelled.is_set())
+            status = await client.get(f"/v1/jobs/{submitted.json()['id']}", headers=self.headers)
+            self.assertEqual(status.json()["state"], "cancelled")
+
     async def test_remote_job_reports_missing_worker_runtime(self) -> None:
         submitted = await self.client.post(
             "/v1/jobs",

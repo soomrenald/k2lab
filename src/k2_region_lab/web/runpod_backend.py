@@ -28,6 +28,7 @@ from k2_region_lab.agent.domain import (
     UploadCompleteResponse,
     UploadCreateRequest,
     UploadSession,
+    WorkerReleaseResult,
     WorkspaceManifest,
 )
 from k2_region_lab.web.agent_client import WorkspaceAgentApi, WorkspaceAgentClient
@@ -1327,6 +1328,9 @@ class RunPodPersistentPodBackend:
         result = await (await self._workspace_agent(workspace_id)).detect_faces(request)
         await self._touch_workspace_lease(workspace_id)
         return result
+
+    async def release_worker_memory(self, workspace_id: str) -> WorkerReleaseResult:
+        return await (await self._workspace_agent(workspace_id)).release_worker_memory()
 
     async def get_output(
         self, workspace_id: str, file_id: str, range_header: str | None = None

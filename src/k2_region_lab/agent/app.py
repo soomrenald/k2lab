@@ -39,6 +39,7 @@ from k2_region_lab.agent.domain import (
     UploadCompleteResponse,
     UploadCreateRequest,
     UploadSession,
+    WorkerReleaseResult,
     WorkspaceManifest,
 )
 from k2_region_lab.agent.downloads import RemoteDownloadManager
@@ -551,6 +552,16 @@ def create_agent_app(
     )
     async def detect_faces(request: FaceDetectionRequest) -> FaceDetectionResult:
         return await face_detection_service.detect(request)
+
+    @application.post(
+        "/v1/worker/release",
+        response_model=WorkerReleaseResult,
+        dependencies=authentication,
+    )
+    async def release_worker_memory() -> WorkerReleaseResult:
+        return WorkerReleaseResult(
+            cancelled_job_ids=await job_manager.release_worker_memory()
+        )
 
     @application.get(
         "/v1/jobs/{job_id}",

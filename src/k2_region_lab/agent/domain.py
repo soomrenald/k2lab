@@ -276,6 +276,11 @@ class FaceDetectionResult(BaseModel):
     faces: list[DetectedFaceRecord]
 
 
+class WorkerReleaseResult(BaseModel):
+    released: bool = True
+    cancelled_job_ids: list[str] = Field(default_factory=list)
+
+
 class GenerationJob(BaseModel):
     id: str
     command_id: str
