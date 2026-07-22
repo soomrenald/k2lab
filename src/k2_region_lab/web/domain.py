@@ -12,6 +12,8 @@ from k2_region_lab.agent.domain import (
     CivitaiDownloadRequest,
     CivitaiPreview,
     CivitaiPreviewRequest,
+    FaceDetectionRequest,
+    FaceDetectionResult,
     FileKind,
     FilePage,
     GenerationJob,
@@ -401,6 +403,10 @@ class WorkspaceBackend(Protocol):
     ) -> JobEventPage: ...
 
     async def cancel_job(self, workspace_id: str, job_id: str) -> GenerationJob: ...
+
+    async def detect_faces(
+        self, workspace_id: str, request: FaceDetectionRequest
+    ) -> FaceDetectionResult: ...
 
     async def get_output(
         self, workspace_id: str, file_id: str, range_header: str | None = None

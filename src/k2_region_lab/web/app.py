@@ -19,6 +19,8 @@ from k2_region_lab.agent.domain import (
     CivitaiDownloadRequest,
     CivitaiPreview,
     CivitaiPreviewRequest,
+    FaceDetectionRequest,
+    FaceDetectionResult,
     FileKind,
     FilePage,
     GenerationJob,
@@ -498,6 +500,13 @@ def create_app(
     )
     async def submit_job(workspace_id: str, request: JobSubmitRequest) -> GenerationJob:
         return await workspace_backend.submit_job(workspace_id, request)
+
+    @application.post(
+        "/api/v1/workspaces/{workspace_id}/faces/detect",
+        response_model=FaceDetectionResult,
+    )
+    async def detect_faces(workspace_id: str, request: FaceDetectionRequest) -> FaceDetectionResult:
+        return await workspace_backend.detect_faces(workspace_id, request)
 
     @application.get(
         "/api/v1/workspaces/{workspace_id}/jobs/{job_id}",

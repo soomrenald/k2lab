@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { DatacenterOption, FileRecord, GenerationJob, JobKind, NetworkVolumeOption, UnifiedPromptPreview, WorkspaceMigrationRecord, WorkspaceRecord } from "../api";
+import type { DatacenterOption, DetectedFaceRecord, FileRecord, GenerationJob, JobKind, NetworkVolumeOption, UnifiedPromptPreview, WorkspaceMigrationRecord, WorkspaceRecord } from "../api";
 import { controlPlane } from "../api";
 import { Icon, type IconName } from "./Icon";
 import { Inspector } from "./Inspector";
@@ -67,6 +67,12 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
   const [queuedJobs, setQueuedJobs] = useState<GenerationJob[]>([]);
   const [promptPreview, setPromptPreview] = useState<UnifiedPromptPreview | null>(null);
   const [projectName, setProjectName] = useState("untitled.k2lab.json");
+  const [faceDetections, setFaceDetections] = useState<DetectedFaceRecord[]>([]);
+  const [selectedFaceIndices, setSelectedFaceIndices] = useState<number[]>([]);
+  const [manualFacePaths, setManualFacePaths] = useState<number[][][]>([]);
+  const [lassoMode, setLassoMode] = useState(false);
+  const [faceDimensions, setFaceDimensions] = useState({ width: 1024, height: 1024 });
+  const [latestOutputFileId, setLatestOutputFileId] = useState<string | null>(null);
   const eventCursor = useRef<string | undefined>(undefined);
   const openProjectInput = useRef<HTMLInputElement>(null);
   const importPngInput = useRef<HTMLInputElement>(null);
@@ -104,6 +110,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
         if (events.items.length) setMessage(events.items[events.items.length - 1].message);
         setJob(next);
         if (next.state === "completed" && next.output_file_ids[0]) {
+          setLatestOutputFileId(next.output_file_ids[0]);
           setResultUrl(controlPlane.outputUrl(workspace.id, next.output_file_ids[0]));
           setMessage(queuedJobs.length ? `Batch image complete. ${queuedJobs.length} queued run(s) remain.` : "Remote job complete. The verified output is stored in cloud files.");
         } else if (next.error_message) {
@@ -150,6 +157,9 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
     setSourceUrl(URL.createObjectURL(file));
     setSourceName(file.name);
     setCloudSource(null);
+    setFaceDetections([]);
+    setSelectedFaceIndices([]);
+    setManualFacePaths([]);
     if (mode === "edit") {
       const bitmap = await createImageBitmap(file);
       setStudioSettings((current) => ({
@@ -159,6 +169,11 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
       bitmap.close();
       setRegions((items) => items.filter((item) => item.layer === "generation"));
       setActiveLayer("targets");
+    }
+    if (mode === "face") {
+      const bitmap = await createImageBitmap(file);
+      setFaceDimensions({ width: bitmap.width, height: bitmap.height });
+      bitmap.close();
     }
   }
 
@@ -178,6 +193,10 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
     setStudioSettings(createStudioSettings());
     setLoras([]);
     setProjectName("untitled.k2lab.json");
+    setFaceDetections([]);
+    setSelectedFaceIndices([]);
+    setManualFacePaths([]);
+    setLassoMode(false);
     setMessage("Started a new project with default settings.");
   }
 
@@ -219,6 +238,11 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
     setLoras(loaded.loras);
     setResultUrl(null);
     setCloudSource(null);
+    setFaceDetections([]);
+    setSelectedFaceIndices([]);
+    setManualFacePaths([]);
+    setLassoMode(false);
+    setFaceDimensions({ width: loaded.settings.generation.width, height: loaded.settings.generation.height });
     if (source) {
       if (sourceUrl) URL.revokeObjectURL(sourceUrl);
       setSourceUrl(URL.createObjectURL(source));
@@ -379,6 +403,14 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
       setShowAssets(true);
       return;
     }
+    if (mode === "face" && selectedFaceIndices.length === 0) {
+      setMessage("Detect faces or draw lassos, then select at least one face to refine.");
+      return;
+    }
+    if (mode === "face" && !loras.some((lora) => lora.active && lora.strength !== 0 && !lora.generation.global && lora.generation.regionIds.length > 0)) {
+      setMessage("Assign at least one enabled LoRA to a subject region before face refinement.");
+      return;
+    }
     setBusy(true);
     setMessage("");
     setResultUrl(null);
@@ -411,6 +443,8 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
           input_file_id: cloudSource?.id,
           lora_file_ids: loras.map((lora) => lora.fileId),
           upscale_model_file_id: studioSettings.generation.upscaleModelFileId || undefined,
+          selected_face_indices: mode === "face" ? selectedFaceIndices : undefined,
+          manual_face_paths: mode === "face" ? manualFacePaths : undefined,
         }));
       }
       if (mode === "generation") {
@@ -458,6 +492,80 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
     } finally {
       setBusy(false);
     }
+  }
+
+  async function detectFaces() {
+    if (!cloudSource) {
+      setMessage("Choose an uploaded input or prior output before detecting faces.");
+      setAssetPurpose("source");
+      setShowAssets(true);
+      return;
+    }
+    setBusy(true);
+    setMessage("Detecting faces in the isolated worker…");
+    try {
+      const result = await controlPlane.detectFaces(workspace.id, {
+        input_file_id: cloudSource.id,
+        threshold: studioSettings.face.detectorThreshold,
+        provider: studioSettings.face.detectorProvider,
+      });
+      setFaceDimensions({ width: result.width, height: result.height });
+      setFaceDetections(result.faces);
+      setSelectedFaceIndices(result.faces.map((face) => face.index));
+      setManualFacePaths([]);
+      setLassoMode(false);
+      setMessage(`Detected ${result.faces.length} face(s) with ${result.execution_provider}.`);
+    } catch (caught) {
+      setMessage(caught instanceof Error ? caught.message : "Face detection failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function toggleFace(index: number) {
+    setSelectedFaceIndices((current) => current.includes(index)
+      ? current.filter((item) => item !== index)
+      : [...current, index].sort((left, right) => left - right));
+  }
+
+  function addManualFacePath(path: number[][]) {
+    const paths = [...manualFacePaths, path];
+    const faces = paths.map((points, index) => {
+      const xs = points.map((point) => point[0]);
+      const ys = points.map((point) => point[1]);
+      return {
+        index,
+        box: [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)] as [number, number, number, number],
+        score: 1,
+      };
+    });
+    setManualFacePaths(paths);
+    setFaceDetections(faces);
+    setSelectedFaceIndices(faces.map((face) => face.index));
+  }
+
+  function useLatestFaceSource() {
+    if (!latestOutputFileId) {
+      setMessage("No completed first-pass output is available in this browser session.");
+      return;
+    }
+    const source: FileRecord = {
+      id: latestOutputFileId,
+      kind: "outputs",
+      display_name: "Latest first pass",
+      size_bytes: 0,
+      sha256: "",
+      modified_at: new Date().toISOString(),
+    };
+    setCloudSource(source);
+    setSourceName(source.display_name);
+    setSourceUrl(controlPlane.outputUrl(workspace.id, source.id));
+    setFaceDimensions({ width: studioSettings.generation.width, height: studioSettings.generation.height });
+    setFaceDetections([]);
+    setSelectedFaceIndices([]);
+    setManualFacePaths([]);
+    setMode("face");
+    setMessage("Using the latest completed output for face refinement. Detect faces next.");
   }
 
   return (
@@ -548,13 +656,19 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
             selectedId={selectedId}
             drawMode={drawMode}
             comparePosition={comparePosition}
-            canvasWidth={mode === "edit" ? studioSettings.edit.width : studioSettings.generation.width}
-            canvasHeight={mode === "edit" ? studioSettings.edit.height : studioSettings.generation.height}
+            canvasWidth={mode === "edit" ? studioSettings.edit.width : mode === "face" ? faceDimensions.width : studioSettings.generation.width}
+            canvasHeight={mode === "edit" ? studioSettings.edit.height : mode === "face" ? faceDimensions.height : studioSettings.generation.height}
+            faces={faceDetections}
+            selectedFaceIndices={selectedFaceIndices}
+            manualFacePaths={manualFacePaths}
+            lassoMode={lassoMode}
             onComparePosition={setComparePosition}
             onSelect={setSelectedId}
             onRegions={setRegions}
             onDrawMode={setDrawMode}
             onLoadImage={(file) => void loadImage(file)}
+            onToggleFace={toggleFace}
+            onAddManualFacePath={addManualFacePath}
           />
           <Inspector
             mode={mode}
@@ -570,6 +684,22 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
             onChooseLora={() => { setAssetPurpose("lora"); setShowAssets(true); }}
             onChooseUpscaleModel={() => { setAssetPurpose("upscale"); setShowAssets(true); }}
             onPreviewUnifiedPrompt={() => void previewUnifiedPrompt()}
+            faces={faceDetections}
+            selectedFaceIndices={selectedFaceIndices}
+            manualFacePaths={manualFacePaths}
+            lassoMode={lassoMode}
+            onDetectFaces={() => void detectFaces()}
+            onToggleFace={toggleFace}
+            onSelectAllFaces={(selected) => setSelectedFaceIndices(selected ? faceDetections.map((face) => face.index) : [])}
+            onLassoMode={setLassoMode}
+            onUndoLasso={() => {
+              const paths = manualFacePaths.slice(0, -1);
+              setManualFacePaths(paths);
+              setFaceDetections((current) => current.slice(0, paths.length));
+              setSelectedFaceIndices(paths.map((_path, index) => index));
+            }}
+            onClearLassos={() => { setManualFacePaths([]); setFaceDetections([]); setSelectedFaceIndices([]); }}
+            onUseLatestFaceSource={useLatestFaceSource}
             onRegions={setRegions}
             onSelect={setSelectedId}
           />
@@ -691,6 +821,9 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
         if (file.kind !== "inputs" && file.kind !== "outputs") return;
         setCloudSource(file);
         setSourceName(file.display_name);
+        setFaceDetections([]);
+        setSelectedFaceIndices([]);
+        setManualFacePaths([]);
         if (file.kind === "outputs") setSourceUrl(controlPlane.outputUrl(workspace.id, file.id));
       }} />}
       {showTransfers && <TransferPanel workspaceId={workspace.id} onClose={() => setShowTransfers(false)} />}

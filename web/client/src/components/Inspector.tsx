@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import type { DetectedFaceRecord } from "../api";
 import type { RegionBox, RegionLayer, StudioMode } from "./RegionCanvas";
 import { Icon } from "./Icon";
 import {
@@ -29,6 +30,17 @@ interface Props {
   onChooseLora: () => void;
   onChooseUpscaleModel: () => void;
   onPreviewUnifiedPrompt: () => void;
+  faces: DetectedFaceRecord[];
+  selectedFaceIndices: number[];
+  manualFacePaths: number[][][];
+  lassoMode: boolean;
+  onDetectFaces: () => void;
+  onToggleFace: (index: number) => void;
+  onSelectAllFaces: (selected: boolean) => void;
+  onLassoMode: (enabled: boolean) => void;
+  onUndoLasso: () => void;
+  onClearLassos: () => void;
+  onUseLatestFaceSource: () => void;
   onRegions: (regions: RegionBox[]) => void;
   onSelect: (id: string | null) => void;
 }
@@ -37,7 +49,9 @@ export function Inspector(props: Props) {
   const {
     mode, activeLayer, regions, selectedId, globalPrompt, settings, loras,
     onGlobalPrompt, onSettings, onLoras, onChooseLora, onChooseUpscaleModel,
-    onPreviewUnifiedPrompt, onRegions, onSelect,
+    onPreviewUnifiedPrompt, faces, selectedFaceIndices, manualFacePaths, lassoMode,
+    onDetectFaces, onToggleFace, onSelectAllFaces, onLassoMode, onUndoLasso,
+    onClearLassos, onUseLatestFaceSource, onRegions, onSelect,
   } = props;
   const [tab, setTab] = useState<InspectorTab>("prompt");
   const [emphasisStrength, setEmphasisStrength] = useState(0.5);
@@ -182,7 +196,21 @@ export function Inspector(props: Props) {
           </div>}
         </>}
 
-        {tab === "regions" && <div className="inspector-section region-panel">
+        {tab === "regions" && mode === "face" && <FaceSelectionPanel
+          faces={faces}
+          selectedFaceIndices={selectedFaceIndices}
+          manualFacePaths={manualFacePaths}
+          lassoMode={lassoMode}
+          onDetect={onDetectFaces}
+          onToggle={onToggleFace}
+          onSelectAll={onSelectAllFaces}
+          onLassoMode={onLassoMode}
+          onUndoLasso={onUndoLasso}
+          onClearLassos={onClearLassos}
+          onUseLatest={onUseLatestFaceSource}
+        />}
+
+        {tab === "regions" && mode !== "face" && <div className="inspector-section region-panel">
           <div className="section-inline-title"><span>{activeLayer === "reference" ? "Reference regions · front to back" : activeLayer === "targets" ? "Edit targets · front to back" : "Scene regions · front to back"}</span></div>
           <div className="region-list">{visibleRegions.map((region, index) => <button className={`region-list-row ${selectedId === region.id ? "selected" : ""}`} key={region.id} onClick={() => onSelect(region.id)}>
             <span className="region-swatch" style={{ opacity: region.enabled ? 1 : 0.35 }}>{index + 1}</span>
@@ -199,6 +227,44 @@ export function Inspector(props: Props) {
       </div>
     </aside>
   );
+}
+
+function FaceSelectionPanel({ faces, selectedFaceIndices, manualFacePaths, lassoMode, onDetect, onToggle, onSelectAll, onLassoMode, onUndoLasso, onClearLassos, onUseLatest }: {
+  faces: DetectedFaceRecord[];
+  selectedFaceIndices: number[];
+  manualFacePaths: number[][][];
+  lassoMode: boolean;
+  onDetect: () => void;
+  onToggle: (index: number) => void;
+  onSelectAll: (selected: boolean) => void;
+  onLassoMode: (enabled: boolean) => void;
+  onUndoLasso: () => void;
+  onClearLassos: () => void;
+  onUseLatest: () => void;
+}) {
+  return <div className="inspector-section face-selection-panel">
+    <div className="section-inline-title"><span>Detected faces</span><span className="active-pill">{selectedFaceIndices.length} selected</span></div>
+    <div className="inline-actions">
+      <button className="tiny-button" onClick={onDetect}>Detect faces</button>
+      <button className="tiny-button" onClick={onUseLatest}>Use latest first pass</button>
+      <button className="tiny-button" onClick={() => onSelectAll(true)}>Select all</button>
+      <button className="tiny-button" onClick={() => onSelectAll(false)}>Select none</button>
+    </div>
+    <div className="region-list face-list">{faces.map((face) => <button className={`region-list-row ${selectedFaceIndices.includes(face.index) ? "selected" : ""}`} key={face.index} onClick={() => onToggle(face.index)}>
+      <span className="region-swatch">{face.index + 1}</span>
+      <span className="region-list-copy"><strong>Face {face.index + 1}</strong><small>Confidence {face.score.toFixed(3)} · {Math.round(face.box[2] - face.box[0])} × {Math.round(face.box[3] - face.box[1])}</small></span>
+      <input type="checkbox" readOnly checked={selectedFaceIndices.includes(face.index)} />
+    </button>)}</div>
+    {faces.length === 0 && <div className="empty-inspector"><Icon name="face" /><span>Choose a cloud source, then detect faces.</span></div>}
+    <SectionTitle text="Manual face lassos" />
+    <p className="field-help">Enable lasso drawing, then drag a closed path around each additional face on the image.</p>
+    <div className="inline-actions">
+      <button className={`tiny-button ${lassoMode ? "active" : ""}`} onClick={() => onLassoMode(!lassoMode)}>{lassoMode ? "Drawing lasso…" : "Draw lasso"}</button>
+      <button className="tiny-button" disabled={manualFacePaths.length === 0} onClick={onUndoLasso}>Undo lasso</button>
+      <button className="tiny-button" disabled={manualFacePaths.length === 0} onClick={onClearLassos}>Clear lassos</button>
+    </div>
+    <p className="field-help">{manualFacePaths.length} manual lasso{manualFacePaths.length === 1 ? "" : "s"} prepared.</p>
+  </div>;
 }
 
 function LoraPanel({ activeLayer, regions, loras, onLoras, onChoose }: { activeLayer: RegionLayer; regions: RegionBox[]; loras: StudioLora[]; onLoras: (items: StudioLora[]) => void; onChoose: () => void }) {

@@ -265,6 +265,19 @@ export interface UnifiedPromptPreview {
   regions: { id: string; name: string; spatial_role: string; clause: string }[];
 }
 
+export interface DetectedFaceRecord {
+  index: number;
+  box: [number, number, number, number];
+  score: number;
+}
+
+export interface FaceDetectionResult {
+  width: number;
+  height: number;
+  execution_provider: string;
+  faces: DetectedFaceRecord[];
+}
+
 export class ApiError extends Error {
   readonly code: string;
   readonly status: number;
@@ -419,6 +432,7 @@ export const controlPlane = {
   submitJob: (workspaceId: string, payload: {
     command_id: string; kind: JobKind; project_id: string; project: Record<string, unknown>; input_file_id?: string;
     lora_file_ids?: string[]; upscale_model_file_id?: string; selected_face_indices?: number[];
+    manual_face_paths?: number[][][];
   }) => request<GenerationJob>(`/api/v1/workspaces/${workspaceId}/jobs`, {
     method: "POST", body: JSON.stringify(payload),
   }),
@@ -428,6 +442,10 @@ export const controlPlane = {
     request<JobEventPage>(`/api/v1/workspaces/${workspaceId}/jobs/${jobId}/events${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`),
   cancelJob: (workspaceId: string, jobId: string) =>
     request<GenerationJob>(`/api/v1/workspaces/${workspaceId}/jobs/${jobId}/cancel`, { method: "POST" }),
+  detectFaces: (workspaceId: string, payload: { input_file_id: string; threshold: number; provider: "auto" | "cpu" | "cuda" }) =>
+    request<FaceDetectionResult>(`/api/v1/workspaces/${workspaceId}/faces/detect`, {
+      method: "POST", body: JSON.stringify(payload),
+    }),
   outputUrl: (workspaceId: string, fileId: string) =>
     `/api/v1/workspaces/${workspaceId}/outputs/${fileId}`,
 };

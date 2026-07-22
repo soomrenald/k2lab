@@ -257,6 +257,25 @@ class JobSubmitRequest(BaseModel):
     manual_face_paths: list[list[list[float]]] = Field(default_factory=list, max_length=128)
 
 
+class FaceDetectionRequest(BaseModel):
+    input_file_id: str = Field(min_length=1, max_length=64)
+    threshold: float = Field(default=0.15, gt=0.0, lt=1.0)
+    provider: str = Field(default="auto", pattern=r"^(auto|cpu|cuda)$")
+
+
+class DetectedFaceRecord(BaseModel):
+    index: int = Field(ge=0)
+    box: list[float] = Field(min_length=4, max_length=4)
+    score: float = Field(ge=0.0, le=1.0)
+
+
+class FaceDetectionResult(BaseModel):
+    width: int = Field(gt=0, le=4096)
+    height: int = Field(gt=0, le=4096)
+    execution_provider: str
+    faces: list[DetectedFaceRecord]
+
+
 class GenerationJob(BaseModel):
     id: str
     command_id: str

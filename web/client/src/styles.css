@@ -217,6 +217,13 @@ button:disabled { cursor: not-allowed; opacity: .42; }
 .region-group.selected .region-fill { fill: rgba(169,255,111,.15); cursor: move; }
 .region-group.selected .region-outline { stroke: #f5f7f2; stroke-width: 2.5; filter: drop-shadow(0 0 5px rgba(169,255,111,.45)); }
 .region-group.disabled { opacity: .35; }
+.detected-face { cursor: pointer; }
+.detected-face rect { fill: #ff706f18; stroke: #ff8b89; stroke-width: 3; vector-effect: non-scaling-stroke; }
+.detected-face circle { fill: #202630; stroke: #ff8b89; stroke-width: 2; vector-effect: non-scaling-stroke; }
+.detected-face text { fill: #fff; font-size: 17px; font-weight: 800; pointer-events: none; }
+.detected-face.selected rect { fill: #a9ff6f24; stroke: var(--accent); }
+.detected-face.selected circle { fill: #335025; stroke: var(--accent); }
+.manual-face-path { fill: #9f91ff29; stroke: var(--violet); stroke-width: 3; vector-effect: non-scaling-stroke; }
 .region-label rect { fill: var(--accent); }
 .region-label text { fill: #11160e; font-family: "DM Sans"; font-size: 13px; font-weight: 700; pointer-events: none; }
 .resize-handle { fill: rgba(255,255,255,.08); stroke: #fff; stroke-width: 2; vector-effect: non-scaling-stroke; }

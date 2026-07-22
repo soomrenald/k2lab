@@ -12,6 +12,8 @@ from k2_region_lab.agent.domain import (
     CivitaiDownloadRequest,
     CivitaiPreview,
     CivitaiPreviewRequest,
+    FaceDetectionRequest,
+    FaceDetectionResult,
     FileKind,
     FilePage,
     GenerationJob,
@@ -1318,6 +1320,13 @@ class RunPodPersistentPodBackend:
             context={"job_id": job.id},
         )
         return job
+
+    async def detect_faces(
+        self, workspace_id: str, request: FaceDetectionRequest
+    ) -> FaceDetectionResult:
+        result = await (await self._workspace_agent(workspace_id)).detect_faces(request)
+        await self._touch_workspace_lease(workspace_id)
+        return result
 
     async def get_output(
         self, workspace_id: str, file_id: str, range_header: str | None = None

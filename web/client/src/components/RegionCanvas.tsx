@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import type { DetectedFaceRecord } from "../api";
 import { Icon } from "./Icon";
 
 export type StudioMode = "generation" | "edit" | "face";
@@ -22,7 +23,7 @@ export interface RegionBox {
 type ResizeEdge = "nw" | "n" | "ne" | "e" | "se" | "s" | "sw" | "w";
 
 interface DragState {
-  kind: "draw" | "move" | "resize";
+  kind: "draw" | "move" | "resize" | "lasso";
   regionId?: string;
   edge?: ResizeEdge;
   startX: number;
@@ -42,11 +43,17 @@ interface Props {
   comparePosition: number;
   canvasWidth: number;
   canvasHeight: number;
+  faces: DetectedFaceRecord[];
+  selectedFaceIndices: number[];
+  manualFacePaths: number[][][];
+  lassoMode: boolean;
   onComparePosition: (value: number) => void;
   onSelect: (id: string | null) => void;
   onRegions: (regions: RegionBox[]) => void;
   onDrawMode: (value: boolean) => void;
   onLoadImage: (file: File) => void;
+  onToggleFace: (index: number) => void;
+  onAddManualFacePath: (path: number[][]) => void;
 }
 
 const minimumSize = 16;
@@ -63,14 +70,21 @@ export function RegionCanvas({
   comparePosition,
   canvasWidth,
   canvasHeight,
+  faces,
+  selectedFaceIndices,
+  manualFacePaths,
+  lassoMode,
   onComparePosition,
   onSelect,
   onRegions,
   onDrawMode,
   onLoadImage,
+  onToggleFace,
+  onAddManualFacePath,
 }: Props) {
   const svgRef = useRef<SVGSVGElement>(null);
   const [drag, setDrag] = useState<DragState | null>(null);
+  const lassoPoints = useRef<number[][]>([]);
 
   const visibleRegions = mode === "face"
     ? []
@@ -85,7 +99,15 @@ export function RegionCanvas({
   }
 
   function beginDraw(event: React.PointerEvent<SVGSVGElement>) {
-    if (!drawMode || mode === "face" || event.target !== event.currentTarget) return;
+    if (mode === "face") {
+      if (!lassoMode || event.target !== event.currentTarget) return;
+      const start = point(event);
+      event.currentTarget.setPointerCapture(event.pointerId);
+      lassoPoints.current = [[start.x, start.y]];
+      setDrag({ kind: "lasso", startX: start.x, startY: start.y });
+      return;
+    }
+    if (!drawMode || event.target !== event.currentTarget) return;
     const start = point(event);
     const names = new Set(
       regions.filter((item) => item.layer === activeLayer).map((item) => item.name.toLocaleLowerCase()),
@@ -128,8 +150,16 @@ export function RegionCanvas({
   }
 
   function movePointer(event: React.PointerEvent<SVGSVGElement>) {
-    if (!drag || !drag.regionId) return;
+    if (!drag) return;
     const current = point(event);
+    if (drag.kind === "lasso") {
+      const previous = lassoPoints.current.at(-1);
+      if (!previous || Math.hypot(current.x - previous[0], current.y - previous[1]) >= 3) {
+        lassoPoints.current = [...lassoPoints.current, [current.x, current.y]];
+      }
+      return;
+    }
+    if (!drag.regionId) return;
     onRegions(regions.map((region) => {
       if (region.id !== drag.regionId) return region;
       if (drag.kind === "draw") {
@@ -156,6 +186,10 @@ export function RegionCanvas({
   }
 
   function endPointer() {
+    if (drag?.kind === "lasso") {
+      if (lassoPoints.current.length >= 3) onAddManualFacePath(lassoPoints.current);
+      lassoPoints.current = [];
+    }
     if (drag?.kind === "draw" && drag.regionId) {
       const region = regions.find((item) => item.id === drag.regionId);
       if (region && (region.width < minimumSize || region.height < minimumSize)) {
@@ -191,7 +225,7 @@ export function RegionCanvas({
           )}
         </div>
       </div>
-      <div className={`image-stage ${drawMode ? "drawing" : ""}`}>
+      <div className={`image-stage ${drawMode || lassoMode ? "drawing" : ""}`}>
         <div className="image-frame">
           {sourceUrl ? (
             <img className="canvas-image" src={sourceUrl} alt="Loaded source" draggable={false} />
@@ -234,6 +268,18 @@ export function RegionCanvas({
                 ))}
               </g>
             ))}
+            {mode === "face" && manualFacePaths.map((path, index) => (
+              <polygon className="manual-face-path" key={`lasso-${index}`} points={path.map((item) => item.join(",")).join(" ")} />
+            ))}
+            {mode === "face" && faces.map((face) => {
+              const [x0, y0, x1, y1] = face.box;
+              const selected = selectedFaceIndices.includes(face.index);
+              return <g className={`detected-face ${selected ? "selected" : ""}`} key={face.index} onClick={() => onToggleFace(face.index)}>
+                <rect x={x0} y={y0} width={x1 - x0} height={y1 - y0} />
+                <circle cx={x0 + 15} cy={y0 + 15} r="15" />
+                <text x={x0 + 15} y={y0 + 21} textAnchor="middle">{face.index + 1}</text>
+              </g>;
+            })}
           </svg>
           {sourceUrl && resultUrl && comparePosition > 0 && comparePosition < 1 && (
             <div className="compare-line" style={{ left: `${comparePosition * 100}%` }} />

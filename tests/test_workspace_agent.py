@@ -19,7 +19,7 @@ if FASTAPI_AVAILABLE:
     from httpx import ASGITransport, AsyncClient
 
     from k2_region_lab.agent.app import AgentSettings, create_agent_app
-    from k2_region_lab.agent.domain import JobSubmitRequest
+    from k2_region_lab.agent.domain import FaceDetectionRequest, FileKind, JobSubmitRequest
     from k2_region_lab.agent.downloads import parse_civitai_url, parse_huggingface_url
     from k2_region_lab.agent.storage import LAYOUT_VERSION, WorkspaceLayout
     from k2_region_lab.agent.transfers import TransferError, TransferManager
@@ -141,6 +141,79 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
             "job-id", request, project_state(document), document
         )
         self.assertEqual(payload["regional_late_step_scale"], 1.0)
+
+    async def test_face_detection_indexes_boxes_and_uses_opaque_input(self) -> None:
+        observed: dict[str, object] = {}
+
+        async def runner(command: list[str], environment: dict[str, str]):
+            observed["command"] = command
+            observed["environment"] = environment
+            return (
+                0,
+                json.dumps(
+                    {
+                        "width": 768,
+                        "height": 1024,
+                        "execution_provider": "CPUExecutionProvider",
+                        "faces": [
+                            {"box": [12.0, 20.0, 112.0, 150.0], "score": 0.93},
+                            {"box": [300.0, 40.0, 390.0, 160.0], "score": 0.88},
+                        ],
+                    }
+                ).encode(),
+                b"",
+            )
+
+        source = self.root / "inputs" / "portrait.png"
+        source.write_bytes(b"test image placeholder")
+        app = create_agent_app(self.settings, face_detection_runner=runner)
+        app.state.layout.initialize()
+        record = await app.state.transfer_manager.index_existing_file(FileKind.INPUTS, source)
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://agent.test"
+        ) as client:
+            response = await client.post(
+                "/v1/faces/detect",
+                headers=self.headers,
+                json={
+                    "input_file_id": record.id,
+                    "threshold": 0.2,
+                    "provider": "cpu",
+                },
+            )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual([face["index"] for face in response.json()["faces"]], [0, 1])
+        command = observed["command"]
+        self.assertIn(str(source), command)
+        self.assertNotIn(record.id, command)
+
+    async def test_agent_client_proxies_face_detection_contract(self) -> None:
+        observed: dict[str, object] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            observed["path"] = request.url.path
+            observed["body"] = json.loads(request.content)
+            return httpx.Response(
+                200,
+                json={
+                    "width": 512,
+                    "height": 512,
+                    "execution_provider": "CPUExecutionProvider",
+                    "faces": [{"index": 0, "box": [1, 2, 30, 40], "score": 0.9}],
+                },
+            )
+
+        client = WorkspaceAgentClient(
+            "pod-123",
+            self.settings.session_token,
+            transport=httpx.MockTransport(handler),
+        )
+        result = await client.detect_faces(
+            FaceDetectionRequest(input_file_id="opaque-input", threshold=0.25, provider="cpu")
+        )
+        self.assertEqual(observed["path"], "/v1/faces/detect")
+        self.assertEqual(observed["body"]["input_file_id"], "opaque-input")
+        self.assertEqual(result.faces[0].index, 0)
 
     async def test_path_resolution_rejects_traversal_absolute_and_symlink(self) -> None:
         layout = WorkspaceLayout(self.root)

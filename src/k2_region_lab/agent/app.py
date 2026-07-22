@@ -22,6 +22,8 @@ from k2_region_lab.agent.domain import (
     CivitaiDownloadRequest,
     CivitaiPreview,
     CivitaiPreviewRequest,
+    FaceDetectionRequest,
+    FaceDetectionResult,
     FileKind,
     FilePage,
     GenerationJob,
@@ -40,6 +42,7 @@ from k2_region_lab.agent.domain import (
     WorkspaceManifest,
 )
 from k2_region_lab.agent.downloads import RemoteDownloadManager
+from k2_region_lab.agent.faces import FaceDetectionRunner, FaceDetectionService
 from k2_region_lab.agent.jobs import JobError, JobManager
 from k2_region_lab.agent.migrations import WorkspaceMigrationManager
 from k2_region_lab.agent.storage import LAYOUT_VERSION, WorkspaceLayout
@@ -131,6 +134,7 @@ def create_agent_app(
     hf_snapshot_download: Any | None = None,
     hf_repo_info: Any | None = None,
     job_executor_factory: Any | None = None,
+    face_detection_runner: FaceDetectionRunner | None = None,
 ) -> FastAPI:
     configured = settings or AgentSettings.from_environment()
     layout = WorkspaceLayout(configured.workspace_root)
@@ -175,6 +179,14 @@ def create_agent_app(
         readiness_callback=lambda ready: setattr(application.state, "worker_ready", ready),
     )
     application.state.job_manager = job_manager
+    face_detection_service = FaceDetectionService(
+        layout,
+        transfer_manager,
+        worker_python=configured.worker_python,
+        comfyui_root=configured.comfyui_root,
+        runner=face_detection_runner,
+    )
+    application.state.face_detection_service = face_detection_service
     migration_manager = WorkspaceMigrationManager(layout)
     application.state.migration_manager = migration_manager
     rate_limiter = SlidingWindowRateLimiter()
@@ -531,6 +543,14 @@ def create_agent_app(
     )
     async def submit_job(request: JobSubmitRequest) -> GenerationJob:
         return await job_manager.submit(request)
+
+    @application.post(
+        "/v1/faces/detect",
+        response_model=FaceDetectionResult,
+        dependencies=authentication,
+    )
+    async def detect_faces(request: FaceDetectionRequest) -> FaceDetectionResult:
+        return await face_detection_service.detect(request)
 
     @application.get(
         "/v1/jobs/{job_id}",
