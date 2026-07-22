@@ -1261,12 +1261,12 @@ class QmlWorkspaceController(QObject):
             entry = self.backend.lora_library.get(lora_id)
         except KeyError:
             return
-        self.backend.lora_library.remove(lora_id)
-        self.backend._edit_lora_bindings.pop(lora_id, None)
-        self.backend._edit_reference_lora_bindings.pop(lora_id, None)
         item = self.backend._lora_list_item(lora_id)
         if item is not None:
             self.backend.lora_list.takeItem(self.backend.lora_list.row(item))
+        self.backend.lora_library.remove(lora_id)
+        self.backend._edit_lora_bindings.pop(lora_id, None)
+        self.backend._edit_reference_lora_bindings.pop(lora_id, None)
         self.backend._refresh_lora_scope()
         self.backend.events.addItem(f"Removed LoRA {entry.display_name}")
         for key in tuple(self._lora_last_strength):

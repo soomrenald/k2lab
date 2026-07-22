@@ -13,6 +13,7 @@ RowLayout {
     property int decimals: 2
     property string suffix: ""
     property bool liveUpdate: false
+    property bool textEditing: false
     signal valueEdited(real value)
 
     function bounded(candidate) {
@@ -27,17 +28,21 @@ RowLayout {
     }
 
     function syncText() {
-        if (!valueInput.activeFocus)
+        if (!textEditing && !valueInput.activeFocus)
             valueInput.text = Number(currentValue).toFixed(root.decimals)
     }
 
     function commitText() {
+        textEditing = true
         let parsed = Number(valueInput.text)
         if (isNaN(parsed)) {
-            valueInput.text = Number(root.currentValue).toFixed(root.decimals)
+            textEditing = valueInput.activeFocus
+            if (!textEditing)
+                valueInput.text = Number(root.currentValue).toFixed(root.decimals)
             return
         }
         root.updateFromUser(parsed, true)
+        textEditing = valueInput.activeFocus
         valueInput.text = Number(root.currentValue).toFixed(root.decimals)
     }
 
@@ -71,7 +76,7 @@ RowLayout {
         objectName: "valueSliderInput"
         Layout.preferredWidth: root.suffix.length > 0 ? 76 : 62
         implicitHeight: 30
-        text: Number(root.currentValue).toFixed(root.decimals)
+        text: ""
         color: "#e8ebf4"
         selectionColor: "#6578ff"
         selectedTextColor: "white"
@@ -83,6 +88,11 @@ RowLayout {
             decimals: root.decimals
             notation: DoubleValidator.StandardNotation
         }
+        onActiveFocusChanged: {
+            if (activeFocus)
+                root.textEditing = true
+        }
+        onTextEdited: root.textEditing = true
         onEditingFinished: root.commitText()
         background: Rectangle {
             color: "#0b0f18"
@@ -98,5 +108,13 @@ RowLayout {
             color: "#697287"
             font.pixelSize: 10
         }
+    }
+
+    Binding {
+        target: valueInput
+        property: "text"
+        value: Number(root.currentValue).toFixed(root.decimals)
+        when: !root.textEditing && !valueInput.activeFocus
+        restoreMode: Binding.RestoreNone
     }
 }

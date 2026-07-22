@@ -119,9 +119,29 @@ Rectangle {
         property real minimum: Number(controlSpec.minimum ?? -999999999)
         property real maximum: Number(controlSpec.maximum ?? 999999999)
         property int decimals: Number(controlSpec.decimals ?? 0)
+        property bool editing: false
+        property string modelText: {
+            let revision = root.controller.stateRevision
+            let value = root.controller.setting(settingName)
+            if (value === null || value === undefined)
+                return ""
+            return decimals > 0 ? Number(value).toFixed(decimals) : String(value)
+        }
         spacing: 5
         Layout.fillWidth: true
         objectName: "numericSetting-" + settingName
+
+        function beginEditing() {
+            editing = true
+        }
+
+        function commitPendingText() {
+            editing = true
+            let parsed = decimals > 0 ? Number(numericInput.text) : parseInt(numericInput.text)
+            if (!isNaN(parsed))
+                root.controller.setSetting(settingName, parsed)
+            editing = numericInput.activeFocus
+        }
 
         LabelText { text: numeric.label }
         StudioTextField {
@@ -129,24 +149,19 @@ Rectangle {
             objectName: "numericInput-" + numeric.settingName
             Layout.fillWidth: true
             enabled: Boolean(numeric.controlSpec.enabled ?? true)
-            text: {
-                let revision = root.controller.stateRevision
-                let value = root.controller.setting(numeric.settingName)
-                if (value === null || value === undefined)
-                    return ""
-                return numeric.decimals > 0 ? Number(value).toFixed(numeric.decimals) : String(value)
-            }
+            text: ""
             validator: DoubleValidator {
                 bottom: numeric.minimum
                 top: numeric.maximum
                 decimals: numeric.decimals
                 notation: DoubleValidator.StandardNotation
             }
-            onEditingFinished: {
-                let parsed = numeric.decimals > 0 ? Number(text) : parseInt(text)
-                if (!isNaN(parsed))
-                    root.controller.setSetting(numeric.settingName, parsed)
+            onActiveFocusChanged: {
+                if (activeFocus)
+                    numeric.beginEditing()
             }
+            onTextEdited: numeric.beginEditing()
+            onEditingFinished: numeric.commitPendingText()
             rightPadding: numeric.suffix.length > 0 ? 42 : 11
             Text {
                 visible: numeric.suffix.length > 0
@@ -157,6 +172,13 @@ Rectangle {
                 color: "#697287"
                 font.pixelSize: 11
             }
+        }
+        Binding {
+            target: numericInput
+            property: "text"
+            value: numeric.modelText
+            when: !numeric.editing && !numericInput.activeFocus
+            restoreMode: Binding.RestoreNone
         }
     }
 
@@ -408,20 +430,6 @@ Rectangle {
                             onEditingFinished: controller.updateSelectedRegion("facePrompt", text)
                         }
 
-                        RowLayout {
-                            visible: controller.selectedRegionId.length > 0
-                            Layout.fillWidth: true
-                            MiniButton {
-                                text: "Move forward"
-                                Layout.fillWidth: true
-                                onClicked: controller.moveRegion(controller.selectedRegionId, -1)
-                            }
-                            MiniButton {
-                                text: "Move backward"
-                                Layout.fillWidth: true
-                                onClicked: controller.moveRegion(controller.selectedRegionId, 1)
-                            }
-                        }
                     }
 
                     ColumnLayout {
@@ -646,6 +654,29 @@ Rectangle {
                                 text: "Delete"
                                 onClicked: controller.deleteRegion(regionId)
                             }
+                        }
+                    }
+
+                    RowLayout {
+                        visible: controller.mode !== "face"
+                                 && controller.selectedRegionId.length > 0
+                        Layout.fillWidth: true
+                        Layout.leftMargin: 14
+                        Layout.rightMargin: 14
+                        spacing: 8
+                        LabelText {
+                            text: "Selected depth"
+                            Layout.fillWidth: true
+                        }
+                        MiniButton {
+                            objectName: "regionForwardButton"
+                            text: "↑ Forward"
+                            onClicked: controller.moveRegion(controller.selectedRegionId, -1)
+                        }
+                        MiniButton {
+                            objectName: "regionBackwardButton"
+                            text: "↓ Backward"
+                            onClicked: controller.moveRegion(controller.selectedRegionId, 1)
                         }
                     }
 

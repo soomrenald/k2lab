@@ -26,12 +26,12 @@ ApplicationWindow {
                                       : (resultMode.currentIndex === 1 ? 1 : compareValue)
     readonly property color accent: "#7c8cff"
 
-    Shortcut { sequence: StandardKey.New; onActivated: controller.newProject() }
-    Shortcut { sequence: StandardKey.Open; onActivated: controller.openProject() }
-    Shortcut { sequence: StandardKey.Save; onActivated: controller.saveProject() }
-    Shortcut { sequence: StandardKey.SaveAs; onActivated: controller.saveProjectAs() }
-    Shortcut { sequence: "Ctrl+Shift+O"; onActivated: controller.importProjectImage() }
-    Shortcut { sequence: StandardKey.Quit; onActivated: window.close() }
+    Shortcut { sequences: [StandardKey.New]; onActivated: controller.newProject() }
+    Shortcut { sequences: [StandardKey.Open]; onActivated: controller.openProject() }
+    Shortcut { sequences: [StandardKey.Save]; onActivated: controller.saveProject() }
+    Shortcut { sequences: [StandardKey.SaveAs]; onActivated: controller.saveProjectAs() }
+    Shortcut { sequences: ["Ctrl+Shift+O"]; onActivated: controller.importProjectImage() }
+    Shortcut { sequences: [StandardKey.Quit]; onActivated: window.close() }
 
     function openSetupWindow() {
         if (setupWindowInstance === null) {

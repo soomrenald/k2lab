@@ -427,6 +427,73 @@ class QmlWorkspaceTests(unittest.TestCase):
             controller.deleteLater()
             backend.close()
 
+    def test_region_depth_controls_live_only_in_the_regions_tab(self) -> None:
+        source = (
+            Path(__file__).parents[1]
+            / "src"
+            / "k2_region_lab"
+            / "qml"
+            / "ui"
+            / "components"
+            / "InspectorPanel.qml"
+        ).read_text(encoding="utf-8")
+        prompt_section = source.split("id: promptScroll", 1)[1].split(
+            "id: regionsScroll", 1
+        )[0]
+        regions_section = source.split("id: regionsScroll", 1)[1].split(
+            "id: loraScroll", 1
+        )[0]
+
+        self.assertNotIn("controller.moveRegion", prompt_section)
+        self.assertIn('objectName: "regionForwardButton"', regions_section)
+        self.assertIn('objectName: "regionBackwardButton"', regions_section)
+        self.assertIn("controller.moveRegion(controller.selectedRegionId, -1)", regions_section)
+        self.assertIn("controller.moveRegion(controller.selectedRegionId, 1)", regions_section)
+
+    def test_advanced_numeric_edit_survives_controller_refresh_until_commit(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            backend = self.make_window(Path(directory))
+            engine = QQmlApplicationEngine()
+            controller = QmlWorkspaceController(backend, engine)
+            engine.rootContext().setContextProperty("controller", controller)
+            qml_path = (
+                Path(__file__).parents[1] / "src" / "k2_region_lab" / "qml" / "ui" / "Main.qml"
+            )
+            engine.load(QUrl.fromLocalFile(str(qml_path)))
+            self.application.processEvents()
+            root_object = engine.rootObjects()[0]
+            numeric_setting = root_object.findChild(QObject, "numericSetting-steps")
+            numeric_input = root_object.findChild(QObject, "numericInput-steps")
+            self.assertIsNotNone(numeric_setting)
+            self.assertIsNotNone(numeric_input)
+
+            self.assertTrue(QMetaObject.invokeMethod(numeric_setting, "beginEditing"))
+            numeric_input.setProperty("text", "27")
+            controller.setSetting("width", 1280)
+            self.application.processEvents()
+            self.assertEqual(numeric_input.property("text"), "27")
+
+            self.assertTrue(QMetaObject.invokeMethod(numeric_setting, "commitPendingText"))
+            self.application.processEvents()
+            self.assertEqual(backend.steps_input.value(), 27)
+            self.assertEqual(numeric_input.property("text"), "27")
+            root_object.close()
+            controller.deleteLater()
+            backend.close()
+
+    def test_standard_shortcuts_use_all_platform_key_bindings(self) -> None:
+        source = (
+            Path(__file__).parents[1]
+            / "src"
+            / "k2_region_lab"
+            / "qml"
+            / "ui"
+            / "Main.qml"
+        ).read_text(encoding="utf-8")
+        self.assertNotIn("Shortcut { sequence:", source)
+        for standard_key in ("New", "Open", "Save", "SaveAs", "Quit"):
+            self.assertIn(f"sequences: [StandardKey.{standard_key}]", source)
+
     def test_non_live_value_slider_stays_draggable_and_commits_on_release(self) -> None:
         engine = QQmlApplicationEngine()
         component = QQmlComponent(engine)
@@ -455,12 +522,49 @@ class QmlWorkspaceTests(unittest.TestCase):
         self.assertTrue(QMetaObject.invokeMethod(slider_track, "pressedChanged"))
         self.application.processEvents()
         self.assertEqual(commits, [1.5])
+        slider.setProperty("textEditing", True)
+        value_input.setProperty("text", "2")
+        slider.setProperty("value", 3.0)
+        self.application.processEvents()
+        self.assertEqual(value_input.property("text"), "2")
         value_input.setProperty("text", "2.25")
         self.assertTrue(QMetaObject.invokeMethod(slider, "commitText"))
         self.application.processEvents()
         self.assertEqual(slider_track.property("value"), 2.25)
         self.assertEqual(commits, [1.5, 2.25])
         slider.deleteLater()
+
+    def test_stale_lora_selection_is_ignored_after_library_removal(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            lora_path = root / "stale-selection.safetensors"
+            header = {
+                "blocks.0.attn.wq.lora_A.weight": {
+                    "dtype": "BF16",
+                    "shape": [4, 8],
+                    "data_offsets": [0, 64],
+                },
+                "blocks.0.attn.wq.lora_B.weight": {
+                    "dtype": "BF16",
+                    "shape": [8, 4],
+                    "data_offsets": [64, 128],
+                },
+            }
+            encoded = json.dumps(header, separators=(",", ":")).encode("utf-8")
+            lora_path.write_bytes(struct.pack("<Q", len(encoded)) + encoded)
+            backend = self.make_window(root)
+            self.assertTrue(backend._add_lora_path(lora_path))
+            item = backend.lora_list.currentItem()
+            lora_id = backend._current_lora_id()
+            self.assertIsNotNone(lora_id)
+
+            backend.lora_library.remove(lora_id)
+            backend._selected_lora_changed(item, None)
+
+            self.assertIsNone(backend._current_lora_id())
+            self.assertFalse(backend.lora_scope_list.isEnabled())
+            backend.lora_list.takeItem(backend.lora_list.row(item))
+            backend.close()
 
     def test_edit_canvas_source_remains_the_original_when_a_result_exists(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

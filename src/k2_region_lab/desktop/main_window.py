@@ -3992,10 +3992,10 @@ class MainWindow(QMainWindow):
             return
         lora_id = item.data(Qt.ItemDataRole.UserRole)
         entry = self.lora_library.get(lora_id)
+        self.lora_list.takeItem(self.lora_list.row(item))
         self.lora_library.remove(lora_id)
         self._edit_lora_bindings.pop(lora_id, None)
         self._edit_reference_lora_bindings.pop(lora_id, None)
-        self.lora_list.takeItem(self.lora_list.row(item))
         self._refresh_lora_scope()
         self.events.addItem(f"Removed LoRA {entry.display_name}")
 
@@ -4008,7 +4008,14 @@ class MainWindow(QMainWindow):
 
     def _current_lora_id(self) -> str | None:
         item = self.lora_list.currentItem()
-        return item.data(Qt.ItemDataRole.UserRole) if item is not None else None
+        if item is None:
+            return None
+        lora_id = item.data(Qt.ItemDataRole.UserRole)
+        try:
+            self.lora_library.binding_for(lora_id)
+        except KeyError:
+            return None
+        return lora_id
 
     def _selected_lora_changed(self, current, previous) -> None:
         del current, previous
