@@ -1,13 +1,12 @@
 # K2 Region Lab Current-State Handoff
 
-Snapshot date: 2026-07-20  
-Code baseline: use `git log --oneline`; the RunPod implementation is committed by milestone
+Snapshot date: 2026-07-21
+Code baseline: use `git log --oneline`; this repository contains only the desktop product
 Project schema: `k2-region-lab-project`, version 18
 
 This document is the short operational handoff for resuming work on K2 Region Lab. The
 README remains the detailed feature and installation reference, the engineering reference
-documents the regional-control design, and `docs/runpod_web_workspace_spec.md` is the
-authoritative specification for the implemented web/RunPod product.
+documents the regional-control design. The browser/RunPod product is maintained separately at
 
 ## 1. Current product state
 
@@ -16,10 +15,6 @@ generation, regional prompting, regional LoRA routing, image editing, and face r
 The default desktop is now a PySide6 Qt Quick/QML workspace. The older Qt Widgets UI is
 still available with `k2lab --legacy-widgets` and, importantly, still owns much of the
 application state and business logic behind the QML adapter.
-
-The local desktop remains available, and the repository now also contains the FastAPI/React
-RunPod workspace product: persistent Pods, portable network-volume workspaces, authenticated
-agent transfers/downloads/jobs, durable reconciliation, and verified migration.
 
 ### User-visible workspace
 
@@ -206,21 +201,9 @@ The complete suite was also run at this snapshot:
 QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest -q
 ```
 
-Observed result: **152 passed, 6 failed, 2 skipped, 6 subtests passed**. The six failures
-were not introduced or repaired as part of the final GUI work:
-
-1. Three face-detector provider tests use bare `Mock` sessions, while production session
-   loading now validates `get_inputs()` and `get_outputs()`; the mocks have no sized input
-   or output lists.
-2. Two regional-LoRA runtime tests use a `FakeModel` without the newer
-   `get_attachment()` method needed for projector bypass composition.
-3. The external-worker protocol test cannot create its debug log at
-   `~/.local/share/k2-region-lab/logs/worker-debug.log` in the restricted test sandbox.
-
-These should be triaged explicitly on resumption. The first two appear to be test-double
-contract drift, while the worker failure is environment/path related; that assessment has
-not yet been converted into fixes. The two skipped tests intentionally defer Torch work to
-the configured ComfyUI worker environment.
+Observed result after the repository split: **165 passed, 2 skipped, 6 subtests passed**.
+The two skipped tests intentionally defer Torch work to the configured ComfyUI worker
+environment.
 
 Before committing a desktop/QML change, the proven quick validation set is:
 
@@ -243,7 +226,6 @@ git diff --check
 | `165182f` | Improved selection, movement, edge resizing, region strip, and source retention. |
 | `7d52ee2` | LoRA activation/removal and editable slider controls. |
 | `093ec16` | Introduced the Qt Quick workspace interface. |
-| `9170f1f` | Added the future RunPod web workspace specification. |
 | `d60e10d` | Restored saved image-edit controls and fixed seed behavior. |
 | `1dd6490` | Excluded conflicting source-global text from edit conditioning. |
 | `13ef835` | Added the real-GPU image-edit validation harness. |
@@ -256,13 +238,11 @@ git diff --check
 Use `git show <commit>` for design context rather than reconstructing these changes from
 the final files alone.
 
-## 7. RunPod/web product
+## 7. Repository boundary
 
-`docs/runpod_web_workspace_spec.md` is implemented through both workspace modes and verified
-persistent-to-portable migration. The production backend remains opt-in and requires an
-immutable image digest, durable database, persisted encryption root, trusted TLS identity
-proxy, MFA assertion, strict allowed origin, and disposable-account live acceptance before
-deployment. `docs/runpod_workspace_operations.md` is the operator runbook.
+This repository owns the PySide6/QML desktop application, its disposable GPU worker, and the
+shared regional-generation engine. The FastAPI/React browser product, RunPod control plane,
+workspace agent, cloud image, and cloud operations documentation live only in
 
 ## 8. Recommended resumption order
 
@@ -272,11 +252,10 @@ deployment. `docs/runpod_workspace_operations.md` is the operator runbook.
    `prompts/testfive.json` are intentionally untracked and must not be modified or committed
    without explicit direction.
 4. Re-run the 46-test focused QML/desktop suite.
-5. Triage the known dependency-mock failures before treating CI as clean.
-6. For image-edit work, inspect the latest `outputs/gpu-tests/*/validation_report.json`
+5. For image-edit work, inspect the latest `outputs/gpu-tests/*/validation_report.json`
    reports and comparison images, then establish a new visual acceptance case before
    changing masks, conditioning, or feather values.
-7. Keep each logical change in its own commit. This has been the requested workflow and
+6. Keep each logical change in its own commit. This has been the requested workflow and
    makes regression comparison practical.
 
 ## 9. Known limitations and next decision points
@@ -287,15 +266,11 @@ deployment. `docs/runpod_workspace_operations.md` is the operator runbook.
   adherence and seamless identity-preserving synthesis inside/near the box are still
   experimental.
 - Whole-image edit mode is intrinsically high drift with the current img2img pipeline.
-- Hosted multi-account tenancy and a cloud-specific KMS adapter remain deployment work; the
-  checked-in hosted security model is deliberately single-account.
 - GPU correctness and image quality cannot be established by the dependency-light unit
   suite. Use the actual configured ComfyUI Python environment and retain generated evidence.
-- The signed CUDA image workflow is checked in, but publishing and live GPU acceptance require
-  the deployment owner's registry, OIDC, and disposable RunPod account.
 
 The safest next image-edit research step is a fixed-seed visual matrix over denoise,
 latent feather, composite feather, and edit prompt wording, scored separately for outside
 pixel exactness, boundary visibility, edit adherence, and identity retention. The safest
 next architecture step is extracting project/workspace state from the hidden `MainWindow`
-behind stable interfaces before sharing it with a web client.
+behind stable interfaces.

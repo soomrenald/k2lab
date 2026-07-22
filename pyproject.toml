@@ -27,16 +27,6 @@ diagnostics = [
     "pyqtgraph>=0.13.7",
     "zarr>=3.0",
 ]
-web = [
-    "aiosqlite>=0.21,<1",
-    "asyncpg>=0.30,<1",
-    "cryptography>=48.0.1,<49",
-    "fastapi>=0.115,<1",
-    "huggingface-hub>=0.36,<1",
-    "httpx>=0.28,<1",
-    "sqlalchemy[asyncio]>=2.0.51,<2.1",
-    "uvicorn[standard]>=0.34,<1",
-]
 dev = [
     "pytest>=8.3",
     "ruff>=0.9",
@@ -44,9 +34,6 @@ dev = [
 
 [project.scripts]
 k2lab = "k2_region_lab.app:main"
-k2lab-agent = "k2_region_lab.agent.app:main"
-k2lab-web = "k2_region_lab.web.app:main"
-k2lab-runpod = "k2_region_lab.web.local_runpod:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/k2_region_lab"]

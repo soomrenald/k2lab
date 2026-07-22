@@ -117,57 +117,11 @@ vendor-neutral environment discovery, or provide an exact CUDA/ROCm interpreter.
 
 ## Development
 
-### Web workspace preview
-
-The web/RunPod implementation includes a provider-neutral FastAPI control plane and a
-React/Vite interface. Its default in-memory backend is explicitly development-only: it
-simulates credential validation, GPU planning, costs, leases, and workspace lifecycle but
-cannot contact RunPod or create billable resources. The browser studio includes the
-Generate/Edit/Faces layout, local image loading, separate edit/reference layers, and live
-SVG region drawing, movement, and edge/corner resizing.
-
-```bash
-uv sync --extra dev --extra web
-uv run k2lab-web --reload
-
-# In a second terminal
-cd web/client
-npm install
-npm run dev
-```
-
-Open `http://127.0.0.1:5173`. See [`web/README.md`](web/README.md) for the exact implemented
-boundary and [`docs/runpod_web_workspace_spec.md`](docs/runpod_web_workspace_spec.md) for
-the production persistent-Pod and portable-workspace requirements. Operational lifecycle and
-migration recovery are documented in
-[`docs/runpod_workspace_operations.md`](docs/runpod_workspace_operations.md).
+### Desktop interface
 
 Local Qt Quick feature parity with the original Widgets interface is tracked in
 [`docs/local_gui_feature_parity.md`](docs/local_gui_feature_parity.md). The exact classic
 interface remains available with `uv run k2lab --legacy-widgets`.
-
-### Single-user RunPod launcher
-
-For a real RunPod account on a trusted personal computer, use the loopback-only launcher.
-The first run needs the immutable public workspace-image digest; it saves that selection,
-generates the credential-encryption key, creates the local database, starts the API and bundled
-browser interface, and opens the studio:
-
-```bash
-./scripts/k2lab-runpod \
-  --image 'ghcr.io/OWNER/k2-region-lab-workspace@sha256:64_HEX_DIGEST'
-```
-
-On later runs, the saved image selection makes the command simply:
-
-```bash
-./scripts/k2lab-runpod
-```
-
-Paste a restricted RunPod API key into the browser, review the GPU/storage estimate, and create
-the workspace. This command binds only to `127.0.0.1`; it is not a multi-user or hosted
-deployment. Provisioned resources are billable. See [`web/README.md`](web/README.md) for image
-publishing and state-location details.
 
 The model execution environment targets Python 3.12. The geometry and discovery tests intentionally use only the standard library so they can run before GPU dependencies are installed:
 
@@ -315,7 +269,4 @@ Launch with `DEBUG=1 k2lab` to write bounded rotating logs under `~/.local/share
 
 The original local stack uses PyTorch 2.9.1 with ROCm 6.4. Because scaled FP8 execution is native only on ROCm 6.5 or newer, the worker automatically uses ComfyUI's low-VRAM fallback on ROCm 6.4. CUDA workers enable the same native FP8 model option on NVIDIA compute capability 8.9 or 9.x-and-newer devices; older CUDA devices retain ComfyUI's compatible fallback. **Safe 16 GB** remains the default policy: neither its 4 GiB VRAM floor nor its 14 GiB available-system-RAM floor can be reduced by an older saved project, and it reports memory at each generation boundary and denoising step. If free VRAM crosses the critical floor between denoising steps, the worker stops before the next allocation and makes one deterministic retry with CPU VAE decode and a reserve increase proportional to the detected GPU capacity; the original 16 GiB setup still moves from 4 GiB to 5 GiB. Memory controls are locked while a model is loaded so the active worker configuration remains explicit. The worker also enables PyTorch expandable allocator segments and ROCm's experimental AOTriton attention backend when the environment does not explicitly configure them. A 1024×1024 eight-step run does not fit reliably on the tested 16 GB GPU under ROCm 6.4's BF16 dequantization fallback. The same baseline completed on PyTorch 2.10.0 with ROCm 7.1 and native scaled FP8/AOTriton, keeping about 2.8 GiB free during denoising. GPU VAE decode may exhaust its regular allocation and use ComfyUI's tiled fallback; K2 Lab keeps that fallback inside PyTorch inference mode for PyTorch 2.10 compatibility. Auto-discovery still selects that ROCm 7.1 environment on the original installation, while CUDA installations normally resolve `.venv` or `venv`; the GUI and `K2LAB_WORKER_PYTHON` can select any other compatible environment. The application-owned worker choice takes precedence over paths stored by older projects.
 
-the current product and engineering contracts. The browser client and RunPod deployment
-architecture is specified independently in
-[`docs/runpod_web_workspace_spec.md`](docs/runpod_web_workspace_spec.md), including
-persistent-Pod mode, portable network-volume workspaces, and verified storage migration.
+the current desktop product and engineering contracts. The separate browser/RunPod product
