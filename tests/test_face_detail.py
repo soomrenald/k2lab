@@ -80,6 +80,8 @@ class FaceDetailGeometryTests(unittest.TestCase):
     def test_auto_detector_provider_prefers_cuda_when_available(self) -> None:
         session = Mock()
         session.get_providers.return_value = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+        session.get_inputs.return_value = [Mock(shape=[1, 3, 272, 160])]
+        session.get_outputs.return_value = [Mock() for _index in range(6)]
         runtime = Mock()
         runtime.get_available_providers.return_value = [
             "CUDAExecutionProvider",
@@ -100,6 +102,8 @@ class FaceDetailGeometryTests(unittest.TestCase):
     def test_cpu_detector_provider_never_requests_cuda(self) -> None:
         session = Mock()
         session.get_providers.return_value = ["CPUExecutionProvider"]
+        session.get_inputs.return_value = [Mock(shape=[1, 3, 272, 160])]
+        session.get_outputs.return_value = [Mock() for _index in range(6)]
         runtime = Mock()
         runtime.get_available_providers.return_value = [
             "CUDAExecutionProvider",
@@ -120,6 +124,8 @@ class FaceDetailGeometryTests(unittest.TestCase):
     def test_auto_detector_provider_falls_back_when_cuda_session_fails(self) -> None:
         session = Mock()
         session.get_providers.return_value = ["CPUExecutionProvider"]
+        session.get_inputs.return_value = [Mock(shape=[1, 3, 272, 160])]
+        session.get_outputs.return_value = [Mock() for _index in range(6)]
         runtime = Mock()
         runtime.get_available_providers.return_value = [
             "CUDAExecutionProvider",
