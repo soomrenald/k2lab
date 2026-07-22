@@ -74,6 +74,8 @@ export interface GenerationSettings {
 }
 
 export interface EditSettings {
+  width: number;
+  height: number;
   steps: number;
   sampler: string;
   scheduler: string;
@@ -177,6 +179,8 @@ export function createStudioSettings(): StudioSettings {
       promptEmphases: [],
     },
     edit: {
+      width: 1024,
+      height: 1024,
       steps: 8,
       sampler: "euler",
       scheduler: "simple",
@@ -291,8 +295,8 @@ export function buildProjectDocument(
     image_edit: {
       source_image: null,
       associated_project: null,
-      width: generation.width,
-      height: generation.height,
+      width: edit.width,
+      height: edit.height,
       reference_global_prompt: prompts.reference,
       reference_prompt_emphases: emphasisDocuments(edit.referencePromptEmphases),
       reference_projector_enabled: edit.referenceProjector.enabled,
@@ -379,3 +383,234 @@ function loraDocument(lora: StudioLora) {
     },
   };
 }
+
+export interface LoadedStudioProject {
+  regions: RegionBox[];
+  prompts: Record<RegionLayer, string>;
+  settings: StudioSettings;
+  loras: StudioLora[];
+}
+
+type JsonObject = Record<string, unknown>;
+
+export function loadStudioProjectDocument(value: unknown): LoadedStudioProject {
+  const document = objectValue(value);
+  if (document.schema !== "k2-region-lab-project") throw new Error("Not a K2 Region Lab project");
+  if (document.version !== 18) throw new Error(`Unsupported project version: ${String(document.version)}`);
+  const canvas = objectValue(document.canvas);
+  const generation = objectValue(document.generation);
+  const edit = objectValue(document.image_edit);
+  const settings = createStudioSettings();
+  const width = integerValue(canvas.width, settings.generation.width);
+  const height = integerValue(canvas.height, settings.generation.height);
+  const projectorValues = numberList(generation.projector_values, settings.generation.projector.values);
+  const referenceProjectorValues = numberList(edit.reference_projector_values, settings.edit.referenceProjector.values);
+  settings.generation = {
+    ...settings.generation,
+    width,
+    height,
+    steps: integerValue(generation.steps, settings.generation.steps),
+    sampler: stringValue(generation.sampler, settings.generation.sampler),
+    scheduler: stringValue(generation.scheduler, settings.generation.scheduler),
+    seed: integerValue(generation.seed, settings.generation.seed),
+    seedMode: seedModeValue(generation.seed_mode, settings.generation.seedMode),
+    batchMode: booleanValue(generation.batch_mode, settings.generation.batchMode),
+    batchCount: integerValue(generation.batch_count, settings.generation.batchCount),
+    regionalPrompting: booleanValue(generation.regional_prompting, settings.generation.regionalPrompting),
+    insideBoost: numberValue(generation.regional_prompt_strength, settings.generation.insideBoost),
+    outsidePenalty: numberValue(generation.regional_outside_penalty, settings.generation.outsidePenalty),
+    spatialFalloff: numberValue(generation.regional_feather_pixels, settings.generation.spatialFalloff),
+    subjectCompetition: booleanValue(generation.regional_subject_competition, settings.generation.subjectCompetition),
+    subjectFill: booleanValue(generation.regional_subject_fill, settings.generation.subjectFill),
+    relaxation: booleanValue(generation.regional_relaxation, settings.generation.relaxation),
+    lateStepScale: numberValue(generation.regional_late_step_scale, settings.generation.lateStepScale),
+    loraAdaptation: booleanValue(generation.regional_lora_delta_adaptation, settings.generation.loraAdaptation),
+    loraResponse: numberValue(generation.regional_lora_delta_adaptation_gain, settings.generation.loraResponse),
+    promptEmphases: emphasisStates(generation.prompt_emphases),
+    postUpscale: booleanValue(generation.post_upscale, settings.generation.postUpscale),
+    upscaleScale: generation.upscale_scale === 4 ? 4 : 2,
+    upscaleMethod: generation.upscale_method === "model" ? "model" : "lanczos",
+    upscaleModelName: basename(stringValue(generation.upscale_model, "")),
+    upscaleModelFileId: "",
+    projector: {
+      enabled: booleanValue(generation.projector_enabled, false),
+      preset: stringValue(generation.projector_preset, settings.generation.projector.preset),
+      values: projectorValues,
+      multiplier: numberValue(generation.projector_multiplier, 1),
+      identityProtection: numberValue(generation.projector_identity_protection, 1),
+    },
+  };
+  settings.edit = {
+    ...settings.edit,
+    width: integerValue(edit.width, width),
+    height: integerValue(edit.height, height),
+    steps: integerValue(edit.steps, settings.edit.steps),
+    sampler: stringValue(edit.sampler, settings.edit.sampler),
+    scheduler: stringValue(edit.scheduler, settings.edit.scheduler),
+    seed: integerValue(edit.seed, settings.edit.seed),
+    denoise: numberValue(edit.denoise, settings.edit.denoise),
+    latentFeather: integerValue(edit.latent_feather_pixels, settings.edit.latentFeather),
+    compositeFeather: integerValue(edit.composite_feather_pixels, settings.edit.compositeFeather),
+    referenceRetention: numberValue(edit.reference_description_retention, settings.edit.referenceRetention),
+    insideBoost: numberValue(edit.regional_prompt_strength, settings.edit.insideBoost),
+    outsidePenalty: numberValue(edit.regional_outside_penalty, settings.edit.outsidePenalty),
+    spatialFalloff: integerValue(edit.regional_feather_pixels, settings.edit.spatialFalloff),
+    subjectCompetition: booleanValue(edit.regional_subject_competition, settings.edit.subjectCompetition),
+    subjectFill: booleanValue(edit.regional_subject_fill, settings.edit.subjectFill),
+    lateStepScale: numberValue(edit.regional_late_step_scale, settings.edit.lateStepScale),
+    loraAdaptation: booleanValue(edit.regional_lora_delta_adaptation, settings.edit.loraAdaptation),
+    loraResponse: numberValue(edit.regional_lora_delta_adaptation_gain, settings.edit.loraResponse),
+    preserveIdentity: booleanValue(edit.preserve_identity, settings.edit.preserveIdentity),
+    editEntireImage: booleanValue(edit.edit_entire_image, settings.edit.editEntireImage),
+    referencePromptEmphases: emphasisStates(edit.reference_prompt_emphases),
+    referenceProjector: {
+      enabled: booleanValue(edit.reference_projector_enabled, false),
+      preset: stringValue(edit.reference_projector_preset, settings.edit.referenceProjector.preset),
+      values: referenceProjectorValues,
+      multiplier: numberValue(edit.reference_projector_multiplier, 1),
+      identityProtection: numberValue(edit.reference_projector_identity_protection, 1),
+    },
+  };
+  settings.face = {
+    steps: integerValue(generation.face_detail_steps, settings.face.steps),
+    seed: integerValue(generation.face_detail_seed, settings.face.seed),
+    denoise: numberValue(generation.face_detail_denoise, settings.face.denoise),
+    cropSize: cropSizeValue(generation.face_detail_crop_size),
+    padding: numberValue(generation.face_detail_padding, settings.face.padding),
+    feather: numberValue(generation.face_detail_feather, settings.face.feather),
+    blend: numberValue(generation.face_detail_blend, settings.face.blend),
+    loraScale: numberValue(generation.face_detail_lora_scale, settings.face.loraScale),
+    detectorThreshold: numberValue(generation.face_detail_detector_threshold, settings.face.detectorThreshold),
+    detectorProvider: detectorProviderValue(generation.face_detail_detector_provider),
+  };
+  return {
+    settings,
+    prompts: {
+      generation: stringValue(generation.global_prompt, ""),
+      reference: stringValue(edit.reference_global_prompt, ""),
+      targets: stringValue(edit.global_prompt, ""),
+    },
+    regions: [
+      ...regionStates(document.regions, "generation"),
+      ...regionStates(edit.reference_regions, "reference"),
+      ...regionStates(edit.regions, "targets"),
+    ],
+    loras: arrayValue(document.loras).map((item) => loraState(objectValue(item))),
+  };
+}
+
+export async function projectDocumentFromPng(file: Blob): Promise<unknown> {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const signature = [137, 80, 78, 71, 13, 10, 26, 10];
+  if (signature.some((value, index) => bytes[index] !== value)) throw new Error("Project image must be a PNG file");
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  for (let offset = 8; offset + 12 <= bytes.length;) {
+    const length = view.getUint32(offset);
+    const type = new TextDecoder("ascii").decode(bytes.subarray(offset + 4, offset + 8));
+    const dataStart = offset + 8;
+    const dataEnd = dataStart + length;
+    if (dataEnd + 4 > bytes.length) throw new Error("PNG metadata is truncated");
+    if (type === "tEXt") {
+      const data = bytes.subarray(dataStart, dataEnd);
+      const separator = data.indexOf(0);
+      if (separator >= 0) {
+        const key = new TextDecoder("latin1").decode(data.subarray(0, separator));
+        if (key === "k2lab_project") {
+          return JSON.parse(new TextDecoder("latin1").decode(data.subarray(separator + 1)));
+        }
+      }
+    }
+    if (type === "iTXt") {
+      const data = bytes.subarray(dataStart, dataEnd);
+      const keywordEnd = data.indexOf(0);
+      if (keywordEnd >= 0 && new TextDecoder("latin1").decode(data.subarray(0, keywordEnd)) === "k2lab_project") {
+        const compressionFlag = data[keywordEnd + 1];
+        let cursor = keywordEnd + 3;
+        for (let field = 0; field < 2; field += 1) {
+          const end = data.indexOf(0, cursor);
+          if (end < 0) throw new Error("PNG project metadata is malformed");
+          cursor = end + 1;
+        }
+        if (compressionFlag !== 0) throw new Error("Compressed PNG project metadata is not supported");
+        return JSON.parse(new TextDecoder("utf-8").decode(data.subarray(cursor)));
+      }
+    }
+    offset = dataEnd + 4;
+  }
+  throw new Error("PNG does not contain K2 Region Lab project metadata");
+}
+
+function regionStates(value: unknown, layer: RegionLayer): RegionBox[] {
+  return arrayValue(value).map((item, index) => {
+    const region = objectValue(item);
+    const box = objectValue(region.box);
+    const x = numberValue(box.x0, 0);
+    const y = numberValue(box.y0, 0);
+    return {
+      id: stringValue(region.id, crypto.randomUUID()),
+      name: stringValue(region.name, `Region ${index + 1}`),
+      layer,
+      x,
+      y,
+      width: numberValue(box.x1, x + 16) - x,
+      height: numberValue(box.y1, y + 16) - y,
+      prompt: stringValue(region.prompt, ""),
+      faceIdentityPrompt: stringValue(region.face_identity_prompt, ""),
+      spatialRole: spatialRoleValue(region.spatial_role),
+      enabled: booleanValue(region.enabled, true),
+      priority: integerValue(region.priority, 0),
+    };
+  }).sort((left, right) => (right.priority ?? 0) - (left.priority ?? 0)).map(({ priority: _priority, ...region }) => region);
+}
+
+function loraState(item: JsonObject): StudioLora {
+  const edit = objectValue(item.image_edit);
+  const reference = objectValue(item.image_edit_reference);
+  const path = stringValue(item.path, "LoRA.safetensors");
+  const binding = (value: JsonObject, enabled: boolean): LoraLayerBinding => ({
+    enabled,
+    global: booleanValue(value.global, false),
+    regionIds: stringList(value.region_ids),
+    routingMode: routingModeValue(value.routing_mode),
+    triggerPhrase: stringValue(value.trigger_phrase, ""),
+  });
+  const strength = numberValue(item.strength, 1);
+  return {
+    id: crypto.randomUUID(),
+    fileId: "",
+    name: basename(path),
+    active: strength !== 0,
+    strength: strength === 0 ? 1 : strength,
+    generation: binding(item, true),
+    targets: binding(edit, booleanValue(edit.enabled, false)),
+    reference: binding(reference, booleanValue(reference.enabled, false)),
+  };
+}
+
+function emphasisStates(value: unknown): PromptEmphasisState[] {
+  return arrayValue(value).map((entry) => {
+    const item = objectValue(entry);
+    return {
+      id: crypto.randomUUID(),
+      scopeId: stringValue(item.scope_id, "__global__"),
+      phrase: stringValue(item.phrase, ""),
+      strength: numberValue(item.strength, 0.5),
+      occurrence: integerValue(item.occurrence, 0),
+    };
+  });
+}
+
+function objectValue(value: unknown): JsonObject { return value !== null && typeof value === "object" && !Array.isArray(value) ? value as JsonObject : {}; }
+function arrayValue(value: unknown): unknown[] { return Array.isArray(value) ? value : []; }
+function stringValue(value: unknown, fallback: string): string { return typeof value === "string" ? value : fallback; }
+function numberValue(value: unknown, fallback: number): number { return typeof value === "number" && Number.isFinite(value) ? value : fallback; }
+function integerValue(value: unknown, fallback: number): number { return Math.trunc(numberValue(value, fallback)); }
+function booleanValue(value: unknown, fallback: boolean): boolean { return typeof value === "boolean" ? value : fallback; }
+function stringList(value: unknown): string[] { return arrayValue(value).filter((item): item is string => typeof item === "string"); }
+function numberList(value: unknown, fallback: number[]): number[] { const values = arrayValue(value); return values.length === 12 && values.every((item) => typeof item === "number" && Number.isFinite(item)) ? values as number[] : [...fallback]; }
+function basename(path: string): string { return path.split(/[\\/]/).pop() ?? path; }
+function seedModeValue(value: unknown, fallback: SeedMode): SeedMode { return value === "random" || value === "increment" || value === "fixed" ? value : fallback; }
+function spatialRoleValue(value: unknown): RegionBox["spatialRole"] { return value === "subject" || value === "background" ? value : "auto"; }
+function routingModeValue(value: unknown): LoraRoutingMode { return value === "character_identity" ? value : "standard"; }
+function cropSizeValue(value: unknown): FaceSettings["cropSize"] { return value === 256 || value === 768 || value === 1024 ? value : 512; }
+function detectorProviderValue(value: unknown): FaceSettings["detectorProvider"] { return value === "cpu" || value === "cuda" ? value : "auto"; }

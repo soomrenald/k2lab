@@ -60,6 +60,7 @@ export function Inspector(props: Props) {
       const width = patch.width ?? settings.generation.width;
       const height = patch.height ?? settings.generation.height;
       onRegions(regions.map((region) => {
+        if (region.layer !== "generation") return region;
         const x = Math.min(region.x, width - 16);
         const y = Math.min(region.y, height - 16);
         return {

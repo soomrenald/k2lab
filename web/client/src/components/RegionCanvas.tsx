@@ -16,6 +16,7 @@ export interface RegionBox {
   faceIdentityPrompt: string;
   spatialRole: "auto" | "subject" | "background";
   enabled: boolean;
+  priority?: number;
 }
 
 type ResizeEdge = "nw" | "n" | "ne" | "e" | "se" | "s" | "sw" | "w";

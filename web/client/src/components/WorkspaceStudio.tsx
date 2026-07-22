@@ -9,6 +9,8 @@ import {
   buildProjectDocument,
   createStudioLora,
   createStudioSettings,
+  loadStudioProjectDocument,
+  projectDocumentFromPng,
   type StudioLora,
 } from "../studioProject";
 import {
@@ -27,16 +29,13 @@ interface Props {
   onDelete: () => void;
 }
 
-const starterRegions: RegionBox[] = [
-  { id: "region-a", name: "Primary subject", layer: "generation", x: 165, y: 180, width: 310, height: 620, prompt: "", faceIdentityPrompt: "", spatialRole: "auto", enabled: true },
-  { id: "region-b", name: "Secondary subject", layer: "generation", x: 565, y: 220, width: 270, height: 560, prompt: "", faceIdentityPrompt: "", spatialRole: "auto", enabled: true },
-];
+const starterRegions: RegionBox[] = [];
 
 export function WorkspaceStudio({ workspace, developmentBackend, datacenters, networkVolumes, onWorkspace, onDelete }: Props) {
   const [mode, setMode] = useState<StudioMode>("generation");
   const [activeLayer, setActiveLayer] = useState<RegionLayer>("generation");
   const [regions, setRegions] = useState<RegionBox[]>(starterRegions);
-  const [selectedId, setSelectedId] = useState<string | null>("region-a");
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [drawMode, setDrawMode] = useState(false);
   const [sourceUrl, setSourceUrl] = useState<string | null>(null);
   const [sourceName, setSourceName] = useState("");
@@ -67,7 +66,10 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
   const [job, setJob] = useState<GenerationJob | null>(null);
   const [queuedJobs, setQueuedJobs] = useState<GenerationJob[]>([]);
   const [promptPreview, setPromptPreview] = useState<UnifiedPromptPreview | null>(null);
+  const [projectName, setProjectName] = useState("untitled.k2lab.json");
   const eventCursor = useRef<string | undefined>(undefined);
+  const openProjectInput = useRef<HTMLInputElement>(null);
+  const importPngInput = useRef<HTMLInputElement>(null);
 
   useEffect(() => () => { if (sourceUrl) URL.revokeObjectURL(sourceUrl); }, [sourceUrl]);
 
@@ -143,15 +145,136 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
     setActiveLayer(next === "edit" ? "targets" : "generation");
   }
 
-  function loadImage(file: File) {
+  async function loadImage(file: File) {
     if (sourceUrl) URL.revokeObjectURL(sourceUrl);
     setSourceUrl(URL.createObjectURL(file));
     setSourceName(file.name);
     setCloudSource(null);
     if (mode === "edit") {
+      const bitmap = await createImageBitmap(file);
+      setStudioSettings((current) => ({
+        ...current,
+        edit: { ...current.edit, width: bitmap.width, height: bitmap.height },
+      }));
+      bitmap.close();
       setRegions((items) => items.filter((item) => item.layer === "generation"));
       setActiveLayer("targets");
     }
+  }
+
+  function resetProject() {
+    if (!window.confirm("Start a new project? Unsaved browser changes will be cleared.")) return;
+    if (sourceUrl) URL.revokeObjectURL(sourceUrl);
+    setMode("generation");
+    setActiveLayer("generation");
+    setRegions([]);
+    setSelectedId(null);
+    setDrawMode(false);
+    setSourceUrl(null);
+    setSourceName("");
+    setCloudSource(null);
+    setResultUrl(null);
+    setGlobalPrompts({ generation: "", reference: "", targets: "" });
+    setStudioSettings(createStudioSettings());
+    setLoras([]);
+    setProjectName("untitled.k2lab.json");
+    setMessage("Started a new project with default settings.");
+  }
+
+  async function allFiles(kind: "loras" | "upscale_models") {
+    const items: FileRecord[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await controlPlane.files(workspace.id, kind, cursor);
+      items.push(...page.items);
+      cursor = page.next_cursor ?? undefined;
+    } while (cursor);
+    return items;
+  }
+
+  async function restoreProject(document: unknown, name: string, source?: File) {
+    const loaded = loadStudioProjectDocument(document);
+    let loraFiles: FileRecord[] = [];
+    let upscalerFiles: FileRecord[] = [];
+    try {
+      [loraFiles, upscalerFiles] = await Promise.all([allFiles("loras"), allFiles("upscale_models")]);
+    } catch {
+      // Project restoration remains usable while a stopped workspace inventory is unavailable.
+    }
+    const byName = (files: FileRecord[], target: string) => files.find(
+      (file) => file.display_name.toLocaleLowerCase() === target.toLocaleLowerCase(),
+    );
+    loaded.loras = loaded.loras.map((lora) => ({
+      ...lora,
+      fileId: byName(loraFiles, lora.name)?.id ?? "",
+    }));
+    const upscaler = byName(upscalerFiles, loaded.settings.generation.upscaleModelName);
+    if (upscaler) loaded.settings.generation.upscaleModelFileId = upscaler.id;
+    setMode("generation");
+    setActiveLayer("generation");
+    setRegions(loaded.regions);
+    setSelectedId(loaded.regions.find((region) => region.layer === "generation")?.id ?? null);
+    setGlobalPrompts(loaded.prompts);
+    setStudioSettings(loaded.settings);
+    setLoras(loaded.loras);
+    setResultUrl(null);
+    setCloudSource(null);
+    if (source) {
+      if (sourceUrl) URL.revokeObjectURL(sourceUrl);
+      setSourceUrl(URL.createObjectURL(source));
+      setSourceName(source.name);
+    } else {
+      setSourceUrl(null);
+      setSourceName("");
+    }
+    const safeName = name.toLocaleLowerCase().endsWith(".json") ? name : `${name}.k2lab.json`;
+    setProjectName(safeName);
+    const missing = loaded.loras.filter((lora) => !lora.fileId).map((lora) => lora.name);
+    setMessage(missing.length
+      ? `Opened ${name}. Upload or select missing cloud LoRA asset(s): ${missing.join(", ")}.`
+      : `Opened ${name}.`);
+  }
+
+  async function openProject(file: File) {
+    setBusy(true);
+    try {
+      await restoreProject(JSON.parse(await file.text()), file.name);
+    } catch (caught) {
+      setMessage(caught instanceof Error ? `Project open failed: ${caught.message}` : "Project open failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function importProjectPng(file: File) {
+    setBusy(true);
+    try {
+      await restoreProject(await projectDocumentFromPng(file), file.name, file);
+      setProjectName("untitled.k2lab.json");
+      setMessage(`Imported project metadata from ${file.name}. Upload it to Inputs before remote edit or face refinement.`);
+    } catch (caught) {
+      setMessage(caught instanceof Error ? `PNG import failed: ${caught.message}` : "PNG import failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function saveProject(saveAs = false) {
+    let name = projectName;
+    if (saveAs) {
+      const chosen = window.prompt("Project filename", projectName);
+      if (!chosen) return;
+      name = chosen.toLocaleLowerCase().endsWith(".json") ? chosen : `${chosen}.k2lab.json`;
+      setProjectName(name);
+    }
+    const projectDocument = buildProjectDocument(regions, globalPrompts, studioSettings, loras);
+    const url = URL.createObjectURL(new Blob([`${JSON.stringify(projectDocument, null, 2)}\n`], { type: "application/json" }));
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = name;
+    anchor.click();
+    URL.revokeObjectURL(url);
+    setMessage(`Saved project ${name}.`);
   }
 
   async function lifecycle(action: "start" | "stop" | "extend") {
@@ -342,7 +465,13 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
       <header className="studio-topbar">
         <div className="brand-lockup"><span className="brand-mark">K2</span><span><strong>Region Lab</strong><small>Cloud studio</small></span></div>
         <div className="project-actions">
-          <button>New</button><button>Open</button><button>Import PNG</button><button>Save</button>
+          <button onClick={resetProject}>New</button>
+          <button onClick={() => openProjectInput.current?.click()}>Open</button>
+          <button onClick={() => importPngInput.current?.click()}>Import PNG</button>
+          <button onClick={() => saveProject(false)}>Save</button>
+          <button onClick={() => saveProject(true)}>Save as</button>
+          <input ref={openProjectInput} type="file" hidden accept=".json,.k2lab.json,application/json" onChange={(event) => { const file = event.target.files?.[0]; if (file) void openProject(file); event.target.value = ""; }} />
+          <input ref={importPngInput} type="file" hidden accept="image/png" onChange={(event) => { const file = event.target.files?.[0]; if (file) void importProjectPng(file); event.target.value = ""; }} />
         </div>
         <div className="workspace-status">
           {developmentBackend && <span className="preview-chip">Preview backend</span>}
@@ -419,13 +548,13 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
             selectedId={selectedId}
             drawMode={drawMode}
             comparePosition={comparePosition}
-            canvasWidth={studioSettings.generation.width}
-            canvasHeight={studioSettings.generation.height}
+            canvasWidth={mode === "edit" ? studioSettings.edit.width : studioSettings.generation.width}
+            canvasHeight={mode === "edit" ? studioSettings.edit.height : studioSettings.generation.height}
             onComparePosition={setComparePosition}
             onSelect={setSelectedId}
             onRegions={setRegions}
             onDrawMode={setDrawMode}
-            onLoadImage={loadImage}
+            onLoadImage={(file) => void loadImage(file)}
           />
           <Inspector
             mode={mode}
