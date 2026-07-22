@@ -229,6 +229,10 @@ class RegionalLoraRoutingTests(unittest.TestCase):
             def clone(self):
                 return FakeModel()
 
+            def get_attachment(self, key):
+                del key
+                return None
+
             def set_attachments(self, key, value):
                 del key, value
 
@@ -302,6 +306,10 @@ class RegionalLoraRoutingTests(unittest.TestCase):
         class FakeModel:
             def clone(self):
                 return FakeModel()
+
+            def get_attachment(self, key):
+                del key
+                return None
 
             def set_attachments(self, key, value):
                 del key, value
