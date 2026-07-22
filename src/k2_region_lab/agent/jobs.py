@@ -26,6 +26,7 @@ from k2_region_lab.agent.domain import (
 )
 from k2_region_lab.agent.storage import WorkspaceLayout
 from k2_region_lab.agent.transfers import TransferError, TransferManager
+from k2_region_lab.output import validate_filename_prefix
 from k2_region_lab.project import PROJECT_SCHEMA, PROJECT_VERSION, ProjectState, project_state
 from k2_region_lab.worker.protocol import CommandKind
 
@@ -376,7 +377,11 @@ class JobManager:
         project: dict[str, Any],
     ) -> dict[str, Any]:
         loras = await self._resolve_loras(request, state)
-        base = self._base_worker_payload()
+        base = await self._base_worker_payload(request)
+        try:
+            filename_prefix = validate_filename_prefix(request.filename_prefix)
+        except ValueError as error:
+            raise JobError("filename_prefix_invalid", str(error)) from error
         regions = [self._region_payload(region) for region in state.regions]
         emphases = [
             {
@@ -391,6 +396,7 @@ class JobManager:
             {
                 "output_directory": str(self._layout.destination(FileKind.OUTPUTS.value)),
                 "project_json": project,
+                "filename_prefix": filename_prefix,
             }
         )
         if request.kind == JobKind.GENERATE:
@@ -403,7 +409,6 @@ class JobManager:
                     "sampler": state.sampler,
                     "scheduler": state.scheduler,
                     "seed": state.seed,
-                    "filename_prefix": f"job-{job_id[:12]}",
                     "regions": regions,
                     "prompt_emphases": emphases,
                     "regional_prompting": state.regional_prompting,
@@ -509,12 +514,17 @@ class JobManager:
         )
         return base
 
-    def _base_worker_payload(self) -> dict[str, Any]:
-        face_files = sorted(
-            path
-            for path in self._layout.destination(FileKind.FACE_DETECTION.value).iterdir()
-            if path.is_file() and not path.is_symlink()
+    async def _base_worker_payload(self, request: JobSubmitRequest) -> dict[str, Any]:
+        face_detector_path = await self._optional_file_path(
+            request.face_detector_file_id, FileKind.FACE_DETECTION
         )
+        if face_detector_path is None:
+            face_files = sorted(
+                path
+                for path in self._layout.destination(FileKind.FACE_DETECTION.value).iterdir()
+                if path.is_file() and not path.is_symlink()
+            )
+            face_detector_path = str(face_files[0]) if face_files else None
         return {
             "comfyui_root": str(self._comfyui_root),
             "diffusion_models": str(self._layout.destination(FileKind.DIFFUSION_MODELS.value)),
@@ -522,7 +532,14 @@ class JobManager:
             "vae": str(self._layout.destination(FileKind.VAE.value)),
             "loras": str(self._layout.destination(FileKind.LORAS.value)),
             "upscale_models": str(self._layout.destination(FileKind.UPSCALE_MODELS.value)),
-            "face_detector_path": str(face_files[0]) if face_files else None,
+            "diffusion_model_file": await self._optional_file_path(
+                request.diffusion_model_file_id, FileKind.DIFFUSION_MODELS
+            ),
+            "text_encoder_file": await self._optional_file_path(
+                request.text_encoder_file_id, FileKind.TEXT_ENCODERS
+            ),
+            "vae_file": await self._optional_file_path(request.vae_file_id, FileKind.VAE),
+            "face_detector_path": face_detector_path,
             "manifest_directory": str(self._layout.state_directory / "manifests"),
             "memory_policy": "safe_16gb",
             "reserve_vram_gb": 4.0,

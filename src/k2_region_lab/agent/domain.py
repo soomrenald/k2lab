@@ -251,14 +251,20 @@ class JobSubmitRequest(BaseModel):
     project_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
     project: dict
     input_file_id: str | None = Field(default=None, max_length=64)
+    diffusion_model_file_id: str | None = Field(default=None, max_length=64)
+    text_encoder_file_id: str | None = Field(default=None, max_length=64)
+    vae_file_id: str | None = Field(default=None, max_length=64)
+    face_detector_file_id: str | None = Field(default=None, max_length=64)
     lora_file_ids: list[str] = Field(default_factory=list, max_length=128)
     upscale_model_file_id: str | None = Field(default=None, max_length=64)
+    filename_prefix: str = Field(default="baseline", min_length=1, max_length=128)
     selected_face_indices: list[int] | None = Field(default=None, max_length=128)
     manual_face_paths: list[list[list[float]]] = Field(default_factory=list, max_length=128)
 
 
 class FaceDetectionRequest(BaseModel):
     input_file_id: str = Field(min_length=1, max_length=64)
+    face_detector_file_id: str | None = Field(default=None, max_length=64)
     threshold: float = Field(default=0.15, gt=0.0, lt=1.0)
     provider: str = Field(default="auto", pattern=r"^(auto|cpu|cuda)$")
 

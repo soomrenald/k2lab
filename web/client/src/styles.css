@@ -365,6 +365,14 @@ button:disabled { cursor: not-allowed; opacity: .42; }
 .event-entry.error > span { color: var(--danger); }
 .event-entry.worker > span { color: #b9adff; }
 .event-entry p { margin: 0; color: var(--muted-bright); overflow-wrap: anywhere; }
+.setup-panel { max-width: 760px; }
+.setup-panel header small { display: block; margin-top: 5px; color: var(--muted); font-size: 8px; }
+.setup-model-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 18px; }
+.setup-model-grid label { padding: 12px; background: #0d1118; border: 1px solid #282f3a; border-radius: 9px; }
+.setup-model-grid small, .setup-prefix small { display: block; margin-top: 6px; font-size: 8px; }
+.setup-ready { color: #bfe8a6; }
+.setup-missing { color: #d8b58a; }
+.setup-prefix { display: block; margin-top: 16px; }
 .provider-credential { display: flex; align-items: center; gap: 9px; padding: 12px; margin-bottom: 14px; background: #0d1016; border: 1px solid var(--line-soft); border-radius: 9px; }
 .provider-credential > span { flex: 1; color: var(--muted-bright); font-size: 9px; line-height: 1.45; }
 .provider-credential .text-input { width: 220px; }

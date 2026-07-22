@@ -111,6 +111,18 @@ export interface FaceSettings {
   detectorProvider: "auto" | "cpu" | "cuda";
 }
 
+export interface RuntimeSettings {
+  filenamePrefix: string;
+  diffusionModelFileId: string;
+  diffusionModelName: string;
+  textEncoderFileId: string;
+  textEncoderName: string;
+  vaeFileId: string;
+  vaeName: string;
+  faceDetectorFileId: string;
+  faceDetectorName: string;
+}
+
 export interface LoraLayerBinding {
   enabled: boolean;
   global: boolean;
@@ -134,6 +146,7 @@ export interface StudioSettings {
   generation: GenerationSettings;
   edit: EditSettings;
   face: FaceSettings;
+  runtime: RuntimeSettings;
 }
 
 const defaultProjectorValues = [0, 0, 0, 0, 0, 0, 0, 0, -0.5117, -0.8906, 0, 0];
@@ -214,6 +227,17 @@ export function createStudioSettings(): StudioSettings {
       detectorThreshold: 0.15,
       detectorProvider: "auto",
     },
+    runtime: {
+      filenamePrefix: "baseline",
+      diffusionModelFileId: "",
+      diffusionModelName: "",
+      textEncoderFileId: "",
+      textEncoderName: "",
+      vaeFileId: "",
+      vaeName: "",
+      faceDetectorFileId: "",
+      faceDetectorName: "",
+    },
   };
 }
 
@@ -246,6 +270,7 @@ export function buildProjectDocument(
   const generation = settings.generation;
   const edit = settings.edit;
   const face = settings.face;
+  const runtime = settings.runtime;
   return {
     schema: "k2-region-lab-project",
     version: 18,
@@ -326,7 +351,13 @@ export function buildProjectDocument(
       regions: layerRegions(regions, "targets"),
       reference_regions: layerRegions(regions, "reference"),
     },
-    runtime: {},
+    runtime: {
+      filename_prefix: runtime.filenamePrefix,
+      diffusion_model_file: runtime.diffusionModelName || null,
+      text_encoder_file: runtime.textEncoderName || null,
+      vae_file: runtime.vaeName || null,
+      face_detector_path: runtime.faceDetectorName || null,
+    },
     background_image: null,
   };
 }
@@ -400,6 +431,7 @@ export function loadStudioProjectDocument(value: unknown): LoadedStudioProject {
   const canvas = objectValue(document.canvas);
   const generation = objectValue(document.generation);
   const edit = objectValue(document.image_edit);
+  const runtime = objectValue(document.runtime);
   const settings = createStudioSettings();
   const width = integerValue(canvas.width, settings.generation.width);
   const height = integerValue(canvas.height, settings.generation.height);
@@ -482,6 +514,17 @@ export function loadStudioProjectDocument(value: unknown): LoadedStudioProject {
     loraScale: numberValue(generation.face_detail_lora_scale, settings.face.loraScale),
     detectorThreshold: numberValue(generation.face_detail_detector_threshold, settings.face.detectorThreshold),
     detectorProvider: detectorProviderValue(generation.face_detail_detector_provider),
+  };
+  settings.runtime = {
+    filenamePrefix: stringValue(runtime.filename_prefix, settings.runtime.filenamePrefix),
+    diffusionModelFileId: "",
+    diffusionModelName: basename(stringValue(runtime.diffusion_model_file, "")),
+    textEncoderFileId: "",
+    textEncoderName: basename(stringValue(runtime.text_encoder_file, "")),
+    vaeFileId: "",
+    vaeName: basename(stringValue(runtime.vae_file, "")),
+    faceDetectorFileId: "",
+    faceDetectorName: basename(stringValue(runtime.face_detector_path, "")),
   };
   return {
     settings,

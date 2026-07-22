@@ -436,6 +436,8 @@ export const controlPlane = {
     request<RemoteTransfer>(`/api/v1/workspaces/${workspaceId}/transfers/${transferId}/cancel`, { method: "POST" }),
   submitJob: (workspaceId: string, payload: {
     command_id: string; kind: JobKind; project_id: string; project: Record<string, unknown>; input_file_id?: string;
+    diffusion_model_file_id?: string; text_encoder_file_id?: string; vae_file_id?: string;
+    face_detector_file_id?: string; filename_prefix: string;
     lora_file_ids?: string[]; upscale_model_file_id?: string; selected_face_indices?: number[];
     manual_face_paths?: number[][][];
   }) => request<GenerationJob>(`/api/v1/workspaces/${workspaceId}/jobs`, {
@@ -447,7 +449,7 @@ export const controlPlane = {
     request<JobEventPage>(`/api/v1/workspaces/${workspaceId}/jobs/${jobId}/events${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`),
   cancelJob: (workspaceId: string, jobId: string) =>
     request<GenerationJob>(`/api/v1/workspaces/${workspaceId}/jobs/${jobId}/cancel`, { method: "POST" }),
-  detectFaces: (workspaceId: string, payload: { input_file_id: string; threshold: number; provider: "auto" | "cpu" | "cuda" }) =>
+  detectFaces: (workspaceId: string, payload: { input_file_id: string; face_detector_file_id?: string; threshold: number; provider: "auto" | "cpu" | "cuda" }) =>
     request<FaceDetectionResult>(`/api/v1/workspaces/${workspaceId}/faces/detect`, {
       method: "POST", body: JSON.stringify(payload),
     }),

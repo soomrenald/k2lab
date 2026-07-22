@@ -20,6 +20,11 @@ settings.edit.referencePromptEmphases = [{
   id: "not-persisted", scopeId: "__global__", phrase: "portrait", strength: 0.7, occurrence: 1,
 }];
 settings.face.cropSize = 768;
+settings.runtime.filenamePrefix = "portrait study";
+settings.runtime.diffusionModelName = "chosen-transformer.safetensors";
+settings.runtime.textEncoderName = "chosen-text.safetensors";
+settings.runtime.vaeName = "chosen-vae.safetensors";
+settings.runtime.faceDetectorName = "chosen-detector.onnx";
 const regions = [
   { id: "person", name: "Person", layer: "generation", x: 80, y: 40, width: 400, height: 900, prompt: "red coat", faceIdentityPrompt: "green eyes", spatialRole: "subject", enabled: true },
   { id: "wall", name: "Wall", layer: "generation", x: 0, y: 0, width: 1024, height: 1024, prompt: "brick wall", faceIdentityPrompt: "", spatialRole: "background", enabled: true },

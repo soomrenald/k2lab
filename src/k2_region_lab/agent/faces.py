@@ -62,13 +62,20 @@ class FaceDetectionService:
             "--provider",
             request.provider,
         ]
-        detector_files = sorted(
-            path
-            for path in self._layout.destination(FileKind.FACE_DETECTION.value).iterdir()
-            if path.is_file() and not path.is_symlink()
-        )
-        if detector_files:
-            command.extend(("--detector-path", str(detector_files[0])))
+        detector_path: Path | None = None
+        if request.face_detector_file_id:
+            _record, detector_path = await self._transfers.resolve_file(
+                request.face_detector_file_id, required_kind=FileKind.FACE_DETECTION
+            )
+        else:
+            detector_files = sorted(
+                path
+                for path in self._layout.destination(FileKind.FACE_DETECTION.value).iterdir()
+                if path.is_file() and not path.is_symlink()
+            )
+            detector_path = detector_files[0] if detector_files else None
+        if detector_path is not None:
+            command.extend(("--detector-path", str(detector_path)))
         code, stdout, _stderr = await self._runner(command, self._worker_environment())
         if code != 0:
             raise JobError(

@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { DatacenterOption, DetectedFaceRecord, FileRecord, GenerationJob, JobKind, NetworkVolumeOption, UnifiedPromptPreview, WorkspaceMigrationRecord, WorkspaceRecord } from "../api";
+import type { DatacenterOption, DetectedFaceRecord, FileKind, FileRecord, GenerationJob, JobKind, NetworkVolumeOption, UnifiedPromptPreview, WorkspaceMigrationRecord, WorkspaceRecord } from "../api";
 import { controlPlane } from "../api";
 import { Icon, type IconName } from "./Icon";
 import { Inspector } from "./Inspector";
 import { AssetPanel } from "./AssetPanel";
 import { TransferPanel } from "./TransferPanel";
+import { SetupPanel } from "./SetupPanel";
 import {
   buildProjectDocument,
   createStudioLora,
@@ -66,6 +67,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
   const [showTransfers, setShowTransfers] = useState(false);
   const [showMigration, setShowMigration] = useState(false);
   const [showEvents, setShowEvents] = useState(false);
+  const [showSetup, setShowSetup] = useState(false);
   const [migration, setMigration] = useState<WorkspaceMigrationRecord | null>(null);
   const [migrationConfirmation, setMigrationConfirmation] = useState("");
   const [migrationVolumeId, setMigrationVolumeId] = useState("");
@@ -235,7 +237,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
     report("Started a new project with default settings.");
   }
 
-  async function allFiles(kind: "loras" | "upscale_models") {
+  async function allFiles(kind: FileKind) {
     const items: FileRecord[] = [];
     let cursor: string | undefined;
     do {
@@ -250,8 +252,15 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
     const loaded = loadStudioProjectDocument(document);
     let loraFiles: FileRecord[] = [];
     let upscalerFiles: FileRecord[] = [];
+    let diffusionFiles: FileRecord[] = [];
+    let textEncoderFiles: FileRecord[] = [];
+    let vaeFiles: FileRecord[] = [];
+    let faceDetectorFiles: FileRecord[] = [];
     try {
-      [loraFiles, upscalerFiles] = await Promise.all([allFiles("loras"), allFiles("upscale_models")]);
+      [loraFiles, upscalerFiles, diffusionFiles, textEncoderFiles, vaeFiles, faceDetectorFiles] = await Promise.all([
+        allFiles("loras"), allFiles("upscale_models"), allFiles("diffusion_models"),
+        allFiles("text_encoders"), allFiles("vae"), allFiles("face_detection"),
+      ]);
     } catch {
       // Project restoration remains usable while a stopped workspace inventory is unavailable.
     }
@@ -264,6 +273,15 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
     }));
     const upscaler = byName(upscalerFiles, loaded.settings.generation.upscaleModelName);
     if (upscaler) loaded.settings.generation.upscaleModelFileId = upscaler.id;
+    const runtime = loaded.settings.runtime;
+    const diffusion = byName(diffusionFiles, runtime.diffusionModelName);
+    const textEncoder = byName(textEncoderFiles, runtime.textEncoderName);
+    const vae = byName(vaeFiles, runtime.vaeName);
+    const faceDetector = byName(faceDetectorFiles, runtime.faceDetectorName);
+    if (diffusion) runtime.diffusionModelFileId = diffusion.id;
+    if (textEncoder) runtime.textEncoderFileId = textEncoder.id;
+    if (vae) runtime.vaeFileId = vae.id;
+    if (faceDetector) runtime.faceDetectorFileId = faceDetector.id;
     setMode("generation");
     setActiveLayer("generation");
     setRegions(loaded.regions);
@@ -476,8 +494,13 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
           project_id: `studio-${workspace.id}`,
           project: buildProjectDocument(regions, globalPrompts, jobSettings, loras),
           input_file_id: cloudSource?.id,
+          diffusion_model_file_id: studioSettings.runtime.diffusionModelFileId || undefined,
+          text_encoder_file_id: studioSettings.runtime.textEncoderFileId || undefined,
+          vae_file_id: studioSettings.runtime.vaeFileId || undefined,
+          face_detector_file_id: studioSettings.runtime.faceDetectorFileId || undefined,
           lora_file_ids: loras.map((lora) => lora.fileId),
           upscale_model_file_id: studioSettings.generation.upscaleModelFileId || undefined,
+          filename_prefix: studioSettings.runtime.filenamePrefix,
           selected_face_indices: mode === "face" ? selectedFaceIndices : undefined,
           manual_face_paths: mode === "face" ? manualFacePaths : undefined,
         }));
@@ -558,6 +581,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
     try {
       const result = await controlPlane.detectFaces(workspace.id, {
         input_file_id: cloudSource.id,
+        face_detector_file_id: studioSettings.runtime.faceDetectorFileId || undefined,
         threshold: studioSettings.face.detectorThreshold,
         provider: studioSettings.face.detectorProvider,
       });
@@ -685,7 +709,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
           <RailButton icon="folder" label="Assets" active={showAssets} onClick={() => { setAssetPurpose("source"); setShowAssets(true); }} />
           <RailButton icon="transfer" label="Transfers" active={showTransfers} onClick={() => setShowTransfers(true)} />
           <RailButton icon="events" label="Events" active={showEvents} onClick={() => setShowEvents(true)} />
-          <RailButton icon="settings" label="Setup" active={false} onClick={() => setShowCloud(true)} />
+          <RailButton icon="settings" label="Setup" active={showSetup} onClick={() => setShowSetup(true)} />
         </div>
       </aside>
 
@@ -898,6 +922,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
         if (file.kind === "outputs") setSourceUrl(controlPlane.outputUrl(workspace.id, file.id));
       }} />}
       {showTransfers && <TransferPanel workspaceId={workspace.id} onEvent={(text, kind) => report(text, kind)} onClose={() => setShowTransfers(false)} />}
+      {showSetup && <SetupPanel workspaceId={workspace.id} settings={studioSettings} onSettings={setStudioSettings} onEvent={(text, kind) => report(text, kind)} onClose={() => setShowSetup(false)} onManageFiles={() => { setShowSetup(false); setAssetPurpose("source"); setShowAssets(true); }} onTransfers={() => { setShowSetup(false); setShowTransfers(true); }} />}
     </div>
   );
 }

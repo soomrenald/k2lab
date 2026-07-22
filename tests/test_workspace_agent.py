@@ -142,6 +142,48 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(payload["regional_late_step_scale"], 1.0)
 
+    async def test_generation_payload_resolves_selected_models_and_output_prefix(self) -> None:
+        selections: dict[FileKind, str] = {}
+        filenames = {
+            FileKind.DIFFUSION_MODELS: "chosen-transformer.safetensors",
+            FileKind.TEXT_ENCODERS: "chosen-text.safetensors",
+            FileKind.VAE: "chosen-vae.safetensors",
+            FileKind.FACE_DETECTION: "chosen-detector.onnx",
+        }
+        for kind, filename in filenames.items():
+            path = self.app.state.layout.destination(kind.value) / filename
+            path.write_bytes(b"selected model")
+            record = await self.app.state.transfer_manager.index_existing_file(kind, path)
+            selections[kind] = record.id
+        document = self._project_document("portrait")
+        request = JobSubmitRequest.model_validate(
+            {
+                "command_id": "model-selection-contract",
+                "kind": "generate",
+                "project_id": "model-selection-project",
+                "project": document,
+                "diffusion_model_file_id": selections[FileKind.DIFFUSION_MODELS],
+                "text_encoder_file_id": selections[FileKind.TEXT_ENCODERS],
+                "vae_file_id": selections[FileKind.VAE],
+                "face_detector_file_id": selections[FileKind.FACE_DETECTION],
+                "filename_prefix": "portrait study",
+            }
+        )
+        payload = await self.app.state.job_manager._job_payload(
+            "job-id", request, project_state(document), document
+        )
+        self.assertEqual(payload["filename_prefix"], "portrait study")
+        self.assertEqual(Path(payload["diffusion_model_file"]).name, filenames[FileKind.DIFFUSION_MODELS])
+        self.assertEqual(Path(payload["text_encoder_file"]).name, filenames[FileKind.TEXT_ENCODERS])
+        self.assertEqual(Path(payload["vae_file"]).name, filenames[FileKind.VAE])
+        self.assertEqual(Path(payload["face_detector_path"]).name, filenames[FileKind.FACE_DETECTION])
+
+        invalid = request.model_copy(update={"filename_prefix": "../escape"})
+        with self.assertRaisesRegex(Exception, "filename"):
+            await self.app.state.job_manager._job_payload(
+                "job-id", invalid, project_state(document), document
+            )
+
     async def test_face_detection_indexes_boxes_and_uses_opaque_input(self) -> None:
         observed: dict[str, object] = {}
 
