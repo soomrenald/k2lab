@@ -1011,7 +1011,7 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(executions, 1)
         self.assertEqual(
             [command["kind"] for command in observed_commands],
-            ["probe", "validate_models", "load_model", "generate_baseline"],
+            ["probe", "load_model", "generate_baseline"],
         )
         saved_project = json.loads(
             (self.root / "projects" / "portrait-project.json").read_text(encoding="utf-8")

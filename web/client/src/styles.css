@@ -352,6 +352,7 @@ button:disabled { cursor: not-allowed; opacity: .42; }
 .asset-list span { min-width: 0; display: grid; }
 .asset-list strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 9px; }
 .asset-list small { margin-top: 3px; color: var(--muted); font-size: 8px; }
+.asset-download { text-decoration: none; }
 .transfer-panel { max-height: min(860px, calc(100vh - 40px)); overflow-y: auto; }
 .event-panel { display: grid; grid-template-rows: auto auto minmax(0, 1fr); overflow: hidden; }
 .event-panel header small { display: block; margin-top: 5px; color: var(--muted); font-size: 8px; }

@@ -214,7 +214,7 @@ export function RegionCanvas({
         <div className="canvas-actions">
           <label className="quiet-button file-button">
             <Icon name="upload" /> {sourceUrl ? "Replace image" : "Load image"}
-            <input type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => {
+            <input type="file" accept={mode === "face" ? "image/png" : "image/png,image/jpeg,image/webp"} onChange={(event) => {
               const file = event.target.files?.[0];
               if (file) onLoadImage(file);
               event.target.value = "";

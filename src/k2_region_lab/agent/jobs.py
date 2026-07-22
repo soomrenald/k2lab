@@ -630,11 +630,6 @@ class JobManager:
         return [
             {"command_id": f"{job_id}:probe", "kind": CommandKind.PROBE.value, "payload": payload},
             {
-                "command_id": f"{job_id}:validate",
-                "kind": CommandKind.VALIDATE_MODELS.value,
-                "payload": payload,
-            },
-            {
                 "command_id": f"{job_id}:load",
                 "kind": CommandKind.LOAD_MODEL.value,
                 "payload": payload,

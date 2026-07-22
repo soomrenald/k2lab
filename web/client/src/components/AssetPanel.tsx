@@ -144,7 +144,7 @@ export function AssetPanel({ workspaceId, onClose, onSelect, onEvent, initialKin
         </div>
         {selected && <div className="transfer-progress"><div><i style={{ width: `${progress * 100}%` }} /></div><span>{phase} · {(progress * 100).toFixed(0)}%{speed > 0 ? ` · ${formatBytes(speed)}/s · ${Math.ceil(eta)}s remaining` : ""}</span></div>}
         {error && <div className="error-banner">{error}</div>}
-        <div className="asset-list">{files.length === 0 ? <p className="field-help">No files in this category.</p> : files.map((file) => <div key={file.id}><Icon name="folder" /><span><strong>{file.display_name}</strong><small>{formatBytes(file.size_bytes)} · {file.sha256.slice(0, 12)}…</small></span>{onSelect && <button className="quiet-button" onClick={() => { onSelect(file); onClose(); }}>Use in studio</button>}</div>)}</div>
+        <div className="asset-list">{files.length === 0 ? <p className="field-help">No files in this category.</p> : files.map((file) => <div key={file.id}><Icon name="folder" /><span><strong>{file.display_name}</strong><small>{formatBytes(file.size_bytes)} · {file.sha256.slice(0, 12)}…</small></span>{["inputs", "outputs", "projects"].includes(file.kind) && <a className="quiet-button asset-download" href={controlPlane.fileUrl(workspaceId, file.id)} download={file.display_name}>Download</a>}{onSelect && <button className="quiet-button" onClick={() => { onSelect(file); onClose(); }}>{file.kind === "projects" ? "Open project" : "Use in studio"}</button>}</div>)}</div>
       </section>
     </div>
   );

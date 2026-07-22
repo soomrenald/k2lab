@@ -7,6 +7,7 @@ import { AssetPanel } from "./AssetPanel";
 import { TransferPanel } from "./TransferPanel";
 import { SetupPanel } from "./SetupPanel";
 import { uploadWorkspaceFile } from "../uploads";
+import { appendBoundedEvents, EVENT_LOG_LIMIT } from "../eventLog";
 import {
   buildProjectDocument,
   createStudioLora,
@@ -32,8 +33,6 @@ interface Props {
 }
 
 const starterRegions: RegionBox[] = [];
-const EVENT_LOG_LIMIT = 1000;
-
 type StudioEventKind = "info" | "error" | "worker";
 
 interface StudioEvent {
@@ -94,12 +93,12 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
 
   function appendEvent(messageText: string, kind: StudioEventKind = "info", createdAt = new Date().toISOString()) {
     if (!messageText) return;
-    setEventLog((current) => [...current, {
+    setEventLog((current) => appendBoundedEvents(current, [{
       id: crypto.randomUUID(),
       createdAt,
       kind,
       message: messageText,
-    }].slice(-EVENT_LOG_LIMIT));
+    }]));
   }
 
   function report(messageText: string, kind: StudioEventKind = "info") {
@@ -139,12 +138,12 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
         eventCursor.current = events.next_cursor;
         if (events.items.length) {
           setMessage(events.items[events.items.length - 1].message);
-          setEventLog((current) => [...current, ...events.items.map((event) => ({
+          setEventLog((current) => appendBoundedEvents(current, events.items.map((event) => ({
             id: `${job.id}-${event.sequence}`,
             createdAt: event.created_at,
             kind: "worker" as const,
             message: event.message,
-          }))].slice(-EVENT_LOG_LIMIT));
+          }))));
         }
         setJob(next);
         if (next.state === "completed" && next.output_file_ids[0]) {
@@ -511,9 +510,37 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
   }
 
   async function runRemoteJob() {
+    const prefix = studioSettings.runtime.filenamePrefix.trim();
+    if (!prefix || prefix.includes("/") || prefix.includes("\\") || prefix === "." || prefix === "..") {
+      report("Choose a safe output filename prefix in Setup before running.", "error");
+      setShowSetup(true);
+      return;
+    }
+    const missingLoras = loras.filter((lora) => !lora.fileId).map((lora) => lora.name);
+    if (missingLoras.length) {
+      report(`Bind missing cloud LoRA asset(s) before running: ${missingLoras.join(", ")}.`, "error");
+      setAssetPurpose("lora");
+      setShowAssets(true);
+      return;
+    }
+    const unresolvedModels = [
+      [studioSettings.runtime.diffusionModelName, studioSettings.runtime.diffusionModelFileId],
+      [studioSettings.runtime.textEncoderName, studioSettings.runtime.textEncoderFileId],
+      [studioSettings.runtime.vaeName, studioSettings.runtime.vaeFileId],
+      [studioSettings.runtime.faceDetectorName, studioSettings.runtime.faceDetectorFileId],
+    ].filter(([name, id]) => name && !id).map(([name]) => name);
+    if (unresolvedModels.length) {
+      report(`Resolve missing model selection(s) in Setup: ${unresolvedModels.join(", ")}.`, "error");
+      setShowSetup(true);
+      return;
+    }
     if (mode !== "generation" && !cloudSource) {
       report("Choose an uploaded input or prior output from Cloud files first.", "error");
       setShowAssets(true);
+      return;
+    }
+    if (mode === "face" && !cloudSource?.display_name.toLocaleLowerCase().endsWith(".png")) {
+      report("Face refinement requires a PNG source image.", "error");
       return;
     }
     if (mode === "face" && selectedFaceIndices.length === 0) {
@@ -703,6 +730,28 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
     setMode("face");
     report("Using the latest completed output for face refinement. Detect faces next.");
   }
+
+  useEffect(() => {
+    function projectShortcut(event: KeyboardEvent) {
+      if (!(event.ctrlKey || event.metaKey)) return;
+      const key = event.key.toLocaleLowerCase();
+      if (key === "n" && !event.shiftKey) {
+        event.preventDefault();
+        resetProject();
+      } else if (key === "o" && event.shiftKey) {
+        event.preventDefault();
+        importPngInput.current?.click();
+      } else if (key === "o") {
+        event.preventDefault();
+        openProjectInput.current?.click();
+      } else if (key === "s") {
+        event.preventDefault();
+        void saveProject(event.shiftKey);
+      }
+    }
+    window.addEventListener("keydown", projectShortcut);
+    return () => window.removeEventListener("keydown", projectShortcut);
+  });
 
   return (
     <div className="studio-shell">

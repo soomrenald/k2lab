@@ -5,6 +5,7 @@ import {
   loadStudioProjectDocument,
   projectDocumentFromPng,
 } from "../src/studioProject.ts";
+import { appendBoundedEvents, EVENT_LOG_LIMIT } from "../src/eventLog.ts";
 
 const settings = createStudioSettings();
 settings.generation.seed = 8123;
@@ -58,5 +59,10 @@ chunk.set(new TextEncoder().encode("tEXt"), 4);
 chunk.set(encoded, 8);
 const png = new Blob([new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]), chunk]);
 assert.deepEqual(await projectDocumentFromPng(png), first);
+
+const events = appendBoundedEvents([], Array.from({ length: EVENT_LOG_LIMIT + 25 }, (_value, index) => index));
+assert.equal(events.length, EVENT_LOG_LIMIT);
+assert.equal(events[0], 25);
+assert.equal(events.at(-1), EVENT_LOG_LIMIT + 24);
 
 console.log("studio project JSON and PNG round-trip contracts passed");

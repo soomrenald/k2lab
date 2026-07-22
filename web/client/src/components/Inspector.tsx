@@ -57,7 +57,7 @@ export function Inspector(props: Props) {
   const [emphasisStrength, setEmphasisStrength] = useState(0.5);
   const globalPromptRef = useRef<HTMLTextAreaElement>(null);
   const regionPromptRef = useRef<HTMLTextAreaElement>(null);
-  const visibleRegions = mode === "face" ? [] : regions.filter((region) => region.layer === activeLayer);
+  const visibleRegions = regions.filter((region) => region.layer === activeLayer);
   const selected = regions.find((region) => region.id === selectedId && region.layer === activeLayer) ?? null;
   const emphasisAvailable = mode === "generation" || (mode === "edit" && activeLayer === "reference");
   const emphases = mode === "generation"
@@ -140,6 +140,31 @@ export function Inspector(props: Props) {
     onRegions(next);
   }
 
+  function removeSelectedRegion() {
+    if (!selected) return;
+    const regionId = selected.id;
+    onRegions(regions.filter((region) => region.id !== regionId));
+    onLoras(loras.map((lora) => {
+      const generationIds = lora.generation.regionIds.filter((id) => id !== regionId);
+      const referenceIds = lora.reference.regionIds.filter((id) => id !== regionId);
+      const targetIds = lora.targets.regionIds.filter((id) => id !== regionId);
+      return {
+        ...lora,
+        generation: generationIds.length || lora.generation.global
+          ? { ...lora.generation, regionIds: generationIds }
+          : { ...lora.generation, global: true, regionIds: [], routingMode: "standard", triggerPhrase: "" },
+        reference: { ...lora.reference, enabled: lora.reference.global || referenceIds.length > 0, regionIds: referenceIds },
+        targets: { ...lora.targets, enabled: lora.targets.global || targetIds.length > 0, regionIds: targetIds },
+      };
+    }));
+    onSettings({
+      ...settings,
+      generation: { ...settings.generation, promptEmphases: settings.generation.promptEmphases.filter((item) => item.scopeId !== regionId) },
+      edit: { ...settings.edit, referencePromptEmphases: settings.edit.referencePromptEmphases.filter((item) => item.scopeId !== regionId) },
+    });
+    onSelect(null);
+  }
+
   return (
     <aside className="inspector">
       <div className="inspector-head">
@@ -218,7 +243,7 @@ export function Inspector(props: Props) {
             <input type="checkbox" aria-label={`Enable ${region.name}`} checked={region.enabled} onClick={(event) => event.stopPropagation()} onChange={(event) => onRegions(regions.map((item) => item.id === region.id ? { ...item, enabled: event.target.checked } : item))} />
           </button>)}</div>
           {visibleRegions.length === 0 && <div className="empty-inspector"><Icon name="plus" /><span>Draw a box on the canvas to add a region.</span></div>}
-          {selected && <button className="danger-text-button" onClick={() => { onRegions(regions.filter((region) => region.id !== selected.id)); onSelect(null); }}><Icon name="trash" /> Remove selected region</button>}
+          {selected && <button className="danger-text-button" onClick={removeSelectedRegion}><Icon name="trash" /> Remove selected region</button>}
         </div>}
 
         {tab === "loras" && <LoraPanel activeLayer={activeLayer} regions={visibleRegions} loras={loras} onLoras={onLoras} onChoose={onChooseLora} />}

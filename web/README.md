@@ -25,7 +25,16 @@ Implemented:
 - exact front-to-back region priority and subject/background-role serialization plus a unified
   prompt preview compiled by the same Python implementation as the legacy desktop;
 - prompt editors with overflow scrollbars and live state synchronization;
-- responsive desktop/mobile styling with locally bundled fonts.
+- responsive desktop/mobile styling with locally bundled fonts;
+- New/Open/Import PNG/Save/Save As project workflows, keyboard shortcuts, exact version-18
+  browser round trips, persistent cloud project copies, and cloud source restoration;
+- deterministic diffusion-model, text-encoder, VAE, face-detector, LoRA, and upscaler
+  selection from persistent workspace inventory, plus a safe configurable output prefix;
+- automatic local-image upload, authenticated input/output/project previews and downloads,
+  source replacement/clearing, and latest-output reuse;
+- remote face detection with numbered selectable proposals, select all/none, multiple manual
+  lassos, undo/clear, and exact refinement payloads;
+- a chronological 1,000-entry rolling event log and explicit worker-memory release control.
 - a production RunPod REST/GraphQL adapter with redacted provider errors;
 - encrypted process-local credential storage and explicit production backend selection;
 - live GPU inventory/pricing plans and persistent-Pod create/start/stop/delete requests.
@@ -40,7 +49,9 @@ Implemented:
   Hugging Face cache reuse, unsafe-format confirmation, and safetensors validation.
 - generation, image-edit, and face-refinement jobs using the canonical project document,
   durable summaries/events, cursor-based reconnect, cancellation, progress display, and
-  authenticated output retrieval through opaque file IDs.
+  authenticated output retrieval through opaque file IDs; explicit tensor-manifest validation,
+  accelerator diagnostics, LoRA compatibility inspection, memory-policy controls, and live
+  hardware telemetry are intentionally omitted from the browser parity boundary.
 - persistent-Pod and portable-workspace onboarding, RunPod datacenter/network-volume
   inventory, compatible GPU filtering, independent storage pricing, and ephemeral Pod
   termination/recreation around a retained network volume.
