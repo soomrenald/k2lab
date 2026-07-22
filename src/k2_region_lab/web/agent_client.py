@@ -18,6 +18,7 @@ from k2_region_lab.agent.domain import (
     FaceDetectionResult,
     FileKind,
     FilePage,
+    FileRecord,
     GenerationJob,
     HuggingFaceDownloadRequest,
     HuggingFacePreview,
@@ -25,6 +26,7 @@ from k2_region_lab.agent.domain import (
     JobEventPage,
     JobSubmitRequest,
     MigrationChunkReceipt,
+    ProjectSaveRequest,
     RemoteTransfer,
     StorageStatus,
     UploadCompleteResponse,
@@ -65,6 +67,8 @@ class WorkspaceAgentApi(Protocol):
     ) -> MigrationChunkReceipt: ...
 
     async def inventory(self, kind: FileKind, *, cursor: str | None = None) -> FilePage: ...
+
+    async def save_project(self, filename: str, request: ProjectSaveRequest) -> FileRecord: ...
 
     async def create_upload(self, request: UploadCreateRequest) -> UploadSession: ...
 
@@ -111,6 +115,10 @@ class WorkspaceAgentApi(Protocol):
     async def release_worker_memory(self) -> WorkerReleaseResult: ...
 
     async def output(self, file_id: str, *, range_header: str | None = None) -> WorkspaceOutput: ...
+
+    async def file_content(
+        self, file_id: str, *, range_header: str | None = None
+    ) -> WorkspaceOutput: ...
 
 
 class WorkspaceAgentClient:
@@ -218,6 +226,15 @@ class WorkspaceAgentClient:
         if cursor:
             params["cursor"] = cursor
         return FilePage.model_validate(await self._request("/v1/files", params=params))
+
+    async def save_project(self, filename: str, request: ProjectSaveRequest) -> FileRecord:
+        return FileRecord.model_validate(
+            await self._request(
+                f"/v1/projects/{quote(filename, safe='')}",
+                method="PUT",
+                json=request.model_dump(mode="json"),
+            )
+        )
 
     async def create_upload(self, request: UploadCreateRequest) -> UploadSession:
         return UploadSession.model_validate(
@@ -341,6 +358,20 @@ class WorkspaceAgentClient:
         )
 
     async def output(self, file_id: str, *, range_header: str | None = None) -> WorkspaceOutput:
+        return await self._file_response(
+            f"/v1/outputs/{file_id}", range_header=range_header
+        )
+
+    async def file_content(
+        self, file_id: str, *, range_header: str | None = None
+    ) -> WorkspaceOutput:
+        return await self._file_response(
+            f"/v1/files/{file_id}/content", range_header=range_header
+        )
+
+    async def _file_response(
+        self, path: str, *, range_header: str | None = None
+    ) -> WorkspaceOutput:
         headers = {"Authorization": f"Bearer {self._session_token}"}
         if range_header:
             headers["Range"] = range_header
@@ -350,7 +381,7 @@ class WorkspaceAgentClient:
                 timeout=self._timeout_seconds,
                 transport=self._transport,
             ) as client:
-                response = await client.get(f"/v1/outputs/{file_id}", headers=headers)
+                response = await client.get(path, headers=headers)
         except httpx.HTTPError as error:
             raise WorkspaceError(
                 "agent_unavailable",

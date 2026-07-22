@@ -241,6 +241,21 @@ class TransferManager:
             "worker_output_invalid", "The worker output could not be indexed.", 409
         )
 
+    async def save_project(self, filename: str, project: dict[str, Any]) -> FileRecord:
+        safe_name = self._safe_filename(filename)
+        if not safe_name.casefold().endswith(".json"):
+            raise TransferError("project_name_invalid", "Project filenames must end in .json.")
+        encoded = (json.dumps(project, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+        if len(encoded) > 2 * 1024 * 1024:
+            raise TransferError("project_too_large", "The project document exceeds 2 MiB.", 413)
+        destination = self._layout.resolve_child(FileKind.PROJECTS.value, safe_name)
+        temporary = destination.with_suffix(destination.suffix + ".tmp")
+        async with self._lock:
+            temporary.write_bytes(encoded)
+            temporary.replace(destination)
+            records = self._scan_kind(FileKind.PROJECTS)
+        return next(record for record in records if record.display_name == safe_name)
+
     async def install_download(
         self,
         staged_path: Path,

@@ -387,6 +387,10 @@ export const controlPlane = {
     }),
   files: (workspaceId: string, kind: FileKind, cursor?: string) =>
     request<FilePage>(`/api/v1/workspaces/${workspaceId}/files?kind=${kind}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`),
+  saveProject: (workspaceId: string, filename: string, project: Record<string, unknown>) =>
+    request<FileRecord>(`/api/v1/workspaces/${workspaceId}/projects/${encodeURIComponent(filename)}`, {
+      method: "PUT", body: JSON.stringify({ project }),
+    }),
   createUpload: (workspaceId: string, payload: {
     filename: string; destination_kind: FileKind; size_bytes: number; sha256: string; chunk_size_bytes: number;
   }) => request<UploadSession>(`/api/v1/workspaces/${workspaceId}/uploads`, {
@@ -457,4 +461,6 @@ export const controlPlane = {
     request<WorkerReleaseResult>(`/api/v1/workspaces/${workspaceId}/worker/release`, { method: "POST" }),
   outputUrl: (workspaceId: string, fileId: string) =>
     `/api/v1/workspaces/${workspaceId}/outputs/${fileId}`,
+  fileUrl: (workspaceId: string, fileId: string) =>
+    `/api/v1/workspaces/${workspaceId}/files/${fileId}/content`,
 };

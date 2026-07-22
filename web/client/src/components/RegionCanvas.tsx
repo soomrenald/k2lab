@@ -52,6 +52,7 @@ interface Props {
   onRegions: (regions: RegionBox[]) => void;
   onDrawMode: (value: boolean) => void;
   onLoadImage: (file: File) => void;
+  onClearImage: () => void;
   onToggleFace: (index: number) => void;
   onAddManualFacePath: (path: number[][]) => void;
 }
@@ -79,6 +80,7 @@ export function RegionCanvas({
   onRegions,
   onDrawMode,
   onLoadImage,
+  onClearImage,
   onToggleFace,
   onAddManualFacePath,
 }: Props) {
@@ -218,6 +220,7 @@ export function RegionCanvas({
               event.target.value = "";
             }} />
           </label>
+          {sourceUrl && <button className="quiet-button" onClick={onClearImage}><Icon name="trash" /> Clear image</button>}
           {mode !== "face" && (
             <button className={`quiet-button ${drawMode ? "active" : ""}`} onClick={() => onDrawMode(!drawMode)}>
               <Icon name="plus" /> {drawMode ? "Drawing…" : "Draw region"}

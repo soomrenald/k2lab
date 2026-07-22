@@ -6,6 +6,7 @@ import { Inspector } from "./Inspector";
 import { AssetPanel } from "./AssetPanel";
 import { TransferPanel } from "./TransferPanel";
 import { SetupPanel } from "./SetupPanel";
+import { uploadWorkspaceFile } from "../uploads";
 import {
   buildProjectDocument,
   createStudioLora,
@@ -212,6 +213,30 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
       setFaceDimensions({ width: bitmap.width, height: bitmap.height });
       bitmap.close();
     }
+    if (!developmentBackend && workspace.state === "ready") {
+      report(`Uploading ${file.name} to persistent Inputs…`);
+      try {
+        const uploaded = await uploadWorkspaceFile(workspace.id, file, "inputs");
+        setCloudSource(uploaded);
+        report(`Loaded ${file.name}; remote input is ready.`);
+      } catch (caught) {
+        report(caught instanceof Error ? `Image loaded locally, but cloud upload failed: ${caught.message}` : "Image loaded locally, but cloud upload failed.", "error");
+      }
+    } else if (!developmentBackend) {
+      report("Image loaded locally. Start the GPU workspace to upload it before a remote edit or face run.");
+    }
+  }
+
+  function clearImage() {
+    if (sourceUrl?.startsWith("blob:")) URL.revokeObjectURL(sourceUrl);
+    setSourceUrl(null);
+    setSourceName("");
+    setCloudSource(null);
+    setResultUrl(null);
+    setFaceDetections([]);
+    setSelectedFaceIndices([]);
+    setManualFacePaths([]);
+    report("Canvas image cleared.");
   }
 
   function resetProject() {
@@ -256,10 +281,12 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
     let textEncoderFiles: FileRecord[] = [];
     let vaeFiles: FileRecord[] = [];
     let faceDetectorFiles: FileRecord[] = [];
+    let inputFiles: FileRecord[] = [];
+    let outputFiles: FileRecord[] = [];
     try {
-      [loraFiles, upscalerFiles, diffusionFiles, textEncoderFiles, vaeFiles, faceDetectorFiles] = await Promise.all([
+      [loraFiles, upscalerFiles, diffusionFiles, textEncoderFiles, vaeFiles, faceDetectorFiles, inputFiles, outputFiles] = await Promise.all([
         allFiles("loras"), allFiles("upscale_models"), allFiles("diffusion_models"),
-        allFiles("text_encoders"), allFiles("vae"), allFiles("face_detection"),
+        allFiles("text_encoders"), allFiles("vae"), allFiles("face_detection"), allFiles("inputs"), allFiles("outputs"),
       ]);
     } catch {
       // Project restoration remains usable while a stopped workspace inventory is unavailable.
@@ -290,7 +317,8 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
     setStudioSettings(loaded.settings);
     setLoras(loaded.loras);
     setResultUrl(null);
-    setCloudSource(null);
+    const restoredSource = byName([...inputFiles, ...outputFiles], loaded.sourceName);
+    setCloudSource(restoredSource ?? null);
     setFaceDetections([]);
     setSelectedFaceIndices([]);
     setManualFacePaths([]);
@@ -301,8 +329,8 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
       setSourceUrl(URL.createObjectURL(source));
       setSourceName(source.name);
     } else {
-      setSourceUrl(null);
-      setSourceName("");
+      setSourceUrl(restoredSource ? controlPlane.fileUrl(workspace.id, restoredSource.id) : null);
+      setSourceName(restoredSource?.display_name ?? loaded.sourceName);
     }
     const safeName = name.toLocaleLowerCase().endsWith(".json") ? name : `${name}.k2lab.json`;
     setProjectName(safeName);
@@ -328,7 +356,13 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
     try {
       await restoreProject(await projectDocumentFromPng(file), file.name, file);
       setProjectName("untitled.k2lab.json");
-      report(`Imported project metadata from ${file.name}. Upload it to Inputs before remote edit or face refinement.`);
+      if (!developmentBackend && workspace.state === "ready") {
+        const uploaded = await uploadWorkspaceFile(workspace.id, file, "inputs");
+        setCloudSource(uploaded);
+        report(`Imported project metadata and uploaded ${file.name} for remote use.`);
+      } else {
+        report(`Imported project metadata from ${file.name}. Start the workspace to upload it for remote use.`);
+      }
     } catch (caught) {
       report(caught instanceof Error ? `PNG import failed: ${caught.message}` : "PNG import failed", "error");
     } finally {
@@ -336,7 +370,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
     }
   }
 
-  function saveProject(saveAs = false) {
+  async function saveProject(saveAs = false) {
     let name = projectName;
     if (saveAs) {
       const chosen = window.prompt("Project filename", projectName);
@@ -344,14 +378,40 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
       name = chosen.toLocaleLowerCase().endsWith(".json") ? chosen : `${chosen}.k2lab.json`;
       setProjectName(name);
     }
-    const projectDocument = buildProjectDocument(regions, globalPrompts, studioSettings, loras);
+    if (!name || name.includes("/") || name.includes("\\") || name === "." || name === "..") {
+      report("Project filename must be a filename, not a path.", "error");
+      return;
+    }
+    const projectDocument = buildProjectDocument(regions, globalPrompts, studioSettings, loras, cloudSource?.display_name ?? null);
     const url = URL.createObjectURL(new Blob([`${JSON.stringify(projectDocument, null, 2)}\n`], { type: "application/json" }));
     const anchor = document.createElement("a");
     anchor.href = url;
     anchor.download = name;
     anchor.click();
     URL.revokeObjectURL(url);
-    report(`Saved project ${name}.`);
+    if (!developmentBackend && workspace.state === "ready") {
+      try {
+        await controlPlane.saveProject(workspace.id, name, projectDocument);
+        report(`Saved project ${name} locally and to persistent workspace storage.`);
+      } catch (caught) {
+        report(caught instanceof Error ? `Local copy saved, but cloud project save failed: ${caught.message}` : "Local copy saved, but cloud project save failed.", "error");
+      }
+    } else {
+      report(`Saved local project ${name}. Start the workspace to persist a cloud copy.`);
+    }
+  }
+
+  async function openCloudProject(file: FileRecord) {
+    setBusy(true);
+    try {
+      const response = await fetch(controlPlane.fileUrl(workspace.id, file.id));
+      if (!response.ok) throw new Error(`Cloud project read failed (${response.status})`);
+      await restoreProject(await response.json(), file.display_name);
+    } catch (caught) {
+      report(caught instanceof Error ? caught.message : "Could not open cloud project", "error");
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function lifecycle(action: "start" | "stop" | "extend") {
@@ -470,7 +530,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
     eventCursor.current = undefined;
     try {
       await controlPlane.previewUnifiedPrompt(
-        buildProjectDocument(regions, globalPrompts, studioSettings, loras),
+        buildProjectDocument(regions, globalPrompts, studioSettings, loras, cloudSource?.display_name ?? null),
       );
       const kind: JobKind = mode === "generation" ? "generate" : mode === "edit" ? "edit_image" : "refine_faces";
       const runCount = mode === "generation" && studioSettings.generation.batchMode
@@ -492,7 +552,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
           command_id: crypto.randomUUID(),
           kind,
           project_id: `studio-${workspace.id}`,
-          project: buildProjectDocument(regions, globalPrompts, jobSettings, loras),
+          project: buildProjectDocument(regions, globalPrompts, jobSettings, loras, cloudSource?.display_name ?? null),
           input_file_id: cloudSource?.id,
           diffusion_model_file_id: studioSettings.runtime.diffusionModelFileId || undefined,
           text_encoder_file_id: studioSettings.runtime.textEncoderFileId || undefined,
@@ -560,7 +620,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
     setMessage("");
     try {
       setPromptPreview(await controlPlane.previewUnifiedPrompt(
-        buildProjectDocument(regions, globalPrompts, studioSettings, loras),
+        buildProjectDocument(regions, globalPrompts, studioSettings, loras, cloudSource?.display_name ?? null),
       ));
     } catch (caught) {
       report(caught instanceof Error ? caught.message : "Could not compile the unified prompt", "error");
@@ -652,8 +712,8 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
           <button onClick={resetProject}>New</button>
           <button onClick={() => openProjectInput.current?.click()}>Open</button>
           <button onClick={() => importPngInput.current?.click()}>Import PNG</button>
-          <button onClick={() => saveProject(false)}>Save</button>
-          <button onClick={() => saveProject(true)}>Save as</button>
+          <button onClick={() => void saveProject(false)}>Save</button>
+          <button onClick={() => void saveProject(true)}>Save as</button>
           <input ref={openProjectInput} type="file" hidden accept=".json,.k2lab.json,application/json" onChange={(event) => { const file = event.target.files?.[0]; if (file) void openProject(file); event.target.value = ""; }} />
           <input ref={importPngInput} type="file" hidden accept="image/png" onChange={(event) => { const file = event.target.files?.[0]; if (file) void importProjectPng(file); event.target.value = ""; }} />
         </div>
@@ -745,6 +805,7 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
             onRegions={setRegions}
             onDrawMode={setDrawMode}
             onLoadImage={(file) => void loadImage(file)}
+            onClearImage={clearImage}
             onToggleFace={toggleFace}
             onAddManualFacePath={addManualFacePath}
           />
@@ -906,20 +967,26 @@ export function WorkspaceStudio({ workspace, developmentBackend, datacenters, ne
       )}
       {showAssets && <AssetPanel workspaceId={workspace.id} initialKind={assetPurpose === "lora" ? "loras" : assetPurpose === "upscale" ? "upscale_models" : "inputs"} onEvent={(text, kind) => report(text, kind)} onClose={() => setShowAssets(false)} onSelect={(file) => {
         if (assetPurpose === "lora") {
-          if (file.kind === "loras" && !loras.some((lora) => lora.fileId === file.id)) setLoras([...loras, createStudioLora(file.id, file.display_name)]);
+          if (file.kind === "loras" && !loras.some((lora) => lora.fileId === file.id)) {
+            const missingIndex = loras.findIndex((lora) => !lora.fileId && lora.name.toLocaleLowerCase() === file.display_name.toLocaleLowerCase());
+            setLoras(missingIndex >= 0
+              ? loras.map((lora, index) => index === missingIndex ? { ...lora, fileId: file.id, name: file.display_name } : lora)
+              : [...loras, createStudioLora(file.id, file.display_name)]);
+          }
           return;
         }
         if (assetPurpose === "upscale") {
           if (file.kind === "upscale_models") setStudioSettings({ ...studioSettings, generation: { ...studioSettings.generation, upscaleModelFileId: file.id, upscaleModelName: file.display_name } });
           return;
         }
+        if (file.kind === "projects") { void openCloudProject(file); return; }
         if (file.kind !== "inputs" && file.kind !== "outputs") return;
         setCloudSource(file);
         setSourceName(file.display_name);
         setFaceDetections([]);
         setSelectedFaceIndices([]);
         setManualFacePaths([]);
-        if (file.kind === "outputs") setSourceUrl(controlPlane.outputUrl(workspace.id, file.id));
+        setSourceUrl(controlPlane.fileUrl(workspace.id, file.id));
       }} />}
       {showTransfers && <TransferPanel workspaceId={workspace.id} onEvent={(text, kind) => report(text, kind)} onClose={() => setShowTransfers(false)} />}
       {showSetup && <SetupPanel workspaceId={workspace.id} settings={studioSettings} onSettings={setStudioSettings} onEvent={(text, kind) => report(text, kind)} onClose={() => setShowSetup(false)} onManageFiles={() => { setShowSetup(false); setAssetPurpose("source"); setShowAssets(true); }} onTransfers={() => { setShowSetup(false); setShowTransfers(true); }} />}

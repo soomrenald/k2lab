@@ -266,6 +266,7 @@ export function buildProjectDocument(
   prompts: Record<RegionLayer, string>,
   settings: StudioSettings,
   loras: StudioLora[],
+  sourceName: string | null = null,
 ): Record<string, unknown> {
   const generation = settings.generation;
   const edit = settings.edit;
@@ -318,7 +319,7 @@ export function buildProjectDocument(
     regions: layerRegions(regions, "generation"),
     loras: loras.map(loraDocument),
     image_edit: {
-      source_image: null,
+      source_image: sourceName,
       associated_project: null,
       width: edit.width,
       height: edit.height,
@@ -358,7 +359,7 @@ export function buildProjectDocument(
       vae_file: runtime.vaeName || null,
       face_detector_path: runtime.faceDetectorName || null,
     },
-    background_image: null,
+    background_image: sourceName,
   };
 }
 
@@ -420,6 +421,7 @@ export interface LoadedStudioProject {
   prompts: Record<RegionLayer, string>;
   settings: StudioSettings;
   loras: StudioLora[];
+  sourceName: string;
 }
 
 type JsonObject = Record<string, unknown>;
@@ -528,6 +530,7 @@ export function loadStudioProjectDocument(value: unknown): LoadedStudioProject {
   };
   return {
     settings,
+    sourceName: basename(stringValue(edit.source_image, stringValue(document.background_image, ""))),
     prompts: {
       generation: stringValue(generation.global_prompt, ""),
       reference: stringValue(edit.reference_global_prompt, ""),

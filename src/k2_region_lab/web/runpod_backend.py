@@ -16,6 +16,7 @@ from k2_region_lab.agent.domain import (
     FaceDetectionResult,
     FileKind,
     FilePage,
+    FileRecord,
     GenerationJob,
     HuggingFaceDownloadRequest,
     HuggingFacePreview,
@@ -23,6 +24,7 @@ from k2_region_lab.agent.domain import (
     JobEventPage,
     JobState,
     JobSubmitRequest,
+    ProjectSaveRequest,
     RemoteProvider,
     RemoteTransfer,
     UploadCompleteResponse,
@@ -1142,6 +1144,11 @@ class RunPodPersistentPodBackend:
     ) -> FilePage:
         return await (await self._workspace_agent(workspace_id)).inventory(kind, cursor=cursor)
 
+    async def save_project(
+        self, workspace_id: str, filename: str, request: ProjectSaveRequest
+    ) -> FileRecord:
+        return await (await self._workspace_agent(workspace_id)).save_project(filename, request)
+
     async def create_upload(self, workspace_id: str, request: UploadCreateRequest) -> UploadSession:
         return await (await self._workspace_agent(workspace_id)).create_upload(request)
 
@@ -1336,6 +1343,13 @@ class RunPodPersistentPodBackend:
         self, workspace_id: str, file_id: str, range_header: str | None = None
     ) -> WorkspaceOutput:
         return await (await self._workspace_agent(workspace_id)).output(
+            file_id, range_header=range_header
+        )
+
+    async def get_file_content(
+        self, workspace_id: str, file_id: str, range_header: str | None = None
+    ) -> WorkspaceOutput:
+        return await (await self._workspace_agent(workspace_id)).file_content(
             file_id, range_header=range_header
         )
 

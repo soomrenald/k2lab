@@ -23,12 +23,14 @@ from k2_region_lab.agent.domain import (
     FaceDetectionResult,
     FileKind,
     FilePage,
+    FileRecord,
     GenerationJob,
     HuggingFaceDownloadRequest,
     HuggingFacePreview,
     HuggingFacePreviewRequest,
     JobEventPage,
     JobSubmitRequest,
+    ProjectSaveRequest,
     RemoteProvider,
     RemoteTransfer,
     UploadCompleteResponse,
@@ -383,6 +385,14 @@ def create_app(
     ) -> FilePage:
         return await workspace_backend.get_file_inventory(workspace_id, kind, cursor)
 
+    @application.put(
+        "/api/v1/workspaces/{workspace_id}/projects/{filename}", response_model=FileRecord
+    )
+    async def save_project(
+        workspace_id: str, filename: str, request: ProjectSaveRequest
+    ) -> FileRecord:
+        return await workspace_backend.save_project(workspace_id, filename, request)
+
     @application.post(
         "/api/v1/workspaces/{workspace_id}/uploads",
         response_model=UploadSession,
@@ -544,6 +554,19 @@ def create_app(
         range_header: str | None = Header(default=None, alias="Range"),
     ) -> Response:
         output = await workspace_backend.get_output(workspace_id, file_id, range_header)
+        return Response(
+            content=output.content,
+            status_code=output.status_code,
+            headers=output.headers,
+        )
+
+    @application.get("/api/v1/workspaces/{workspace_id}/files/{file_id}/content")
+    async def file_content(
+        workspace_id: str,
+        file_id: str,
+        range_header: str | None = Header(default=None, alias="Range"),
+    ) -> Response:
+        output = await workspace_backend.get_file_content(workspace_id, file_id, range_header)
         return Response(
             content=output.content,
             status_code=output.status_code,

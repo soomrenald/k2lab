@@ -184,6 +184,45 @@ class WorkspaceAgentTests(unittest.IsolatedAsyncioTestCase):
                 "job-id", invalid, project_state(document), document
             )
 
+    async def test_cloud_project_save_overwrites_and_content_is_safely_readable(self) -> None:
+        document = self._project_document("first prompt")
+        saved = await asyncio.wait_for(
+            self.client.put(
+                "/v1/projects/portrait.k2lab.json",
+                headers=self.headers,
+                json={"project": document},
+            ),
+            timeout=2,
+        )
+        self.assertEqual(saved.status_code, 200, saved.text)
+        file_id = saved.json()["id"]
+        content = await self.client.get(
+            f"/v1/files/{file_id}/content", headers=self.headers
+        )
+        self.assertEqual(content.status_code, 200, content.text)
+        self.assertEqual(content.json()["generation"]["global_prompt"], "first prompt")
+
+        document["generation"]["global_prompt"] = "updated prompt"
+        overwritten = await self.client.put(
+            "/v1/projects/portrait.k2lab.json",
+            headers=self.headers,
+            json={"project": document},
+        )
+        latest = await self.client.get(
+            f"/v1/files/{overwritten.json()['id']}/content", headers=self.headers
+        )
+        self.assertEqual(latest.json()["generation"]["global_prompt"], "updated prompt")
+
+        model = self.root / "models" / "loras" / "private.safetensors"
+        model.write_bytes(b"private model")
+        model_record = await self.app.state.transfer_manager.index_existing_file(
+            FileKind.LORAS, model
+        )
+        blocked = await self.client.get(
+            f"/v1/files/{model_record.id}/content", headers=self.headers
+        )
+        self.assertEqual(blocked.status_code, 404)
+
     async def test_face_detection_indexes_boxes_and_uses_opaque_input(self) -> None:
         observed: dict[str, object] = {}
 

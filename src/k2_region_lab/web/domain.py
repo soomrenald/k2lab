@@ -16,12 +16,14 @@ from k2_region_lab.agent.domain import (
     FaceDetectionResult,
     FileKind,
     FilePage,
+    FileRecord,
     GenerationJob,
     HuggingFaceDownloadRequest,
     HuggingFacePreview,
     HuggingFacePreviewRequest,
     JobEventPage,
     JobSubmitRequest,
+    ProjectSaveRequest,
     RemoteProvider,
     RemoteTransfer,
     UploadCompleteResponse,
@@ -346,6 +348,10 @@ class WorkspaceBackend(Protocol):
         self, workspace_id: str, kind: FileKind, cursor: str | None = None
     ) -> FilePage: ...
 
+    async def save_project(
+        self, workspace_id: str, filename: str, request: ProjectSaveRequest
+    ) -> FileRecord: ...
+
     async def create_upload(
         self, workspace_id: str, request: UploadCreateRequest
     ) -> UploadSession: ...
@@ -412,6 +418,10 @@ class WorkspaceBackend(Protocol):
     async def release_worker_memory(self, workspace_id: str) -> WorkerReleaseResult: ...
 
     async def get_output(
+        self, workspace_id: str, file_id: str, range_header: str | None = None
+    ) -> WorkspaceOutput: ...
+
+    async def get_file_content(
         self, workspace_id: str, file_id: str, range_header: str | None = None
     ) -> WorkspaceOutput: ...
 

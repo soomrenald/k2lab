@@ -132,6 +132,10 @@ class UploadCompleteResponse(BaseModel):
     duplicate: bool = False
 
 
+class ProjectSaveRequest(BaseModel):
+    project: dict
+
+
 class RemoteProvider(StrEnum):
     CIVITAI = "civitai"
     HUGGINGFACE = "huggingface"

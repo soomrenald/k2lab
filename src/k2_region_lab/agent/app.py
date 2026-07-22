@@ -9,11 +9,11 @@ from collections.abc import Sequence
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, AsyncIterator, Iterator
+from typing import Any, AsyncIterator
 from urllib.parse import quote
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from k2_region_lab.agent.domain import (
     AgentCapabilities,
@@ -26,6 +26,7 @@ from k2_region_lab.agent.domain import (
     FaceDetectionResult,
     FileKind,
     FilePage,
+    FileRecord,
     GenerationJob,
     HuggingFaceDownloadRequest,
     HuggingFacePreview,
@@ -33,6 +34,7 @@ from k2_region_lab.agent.domain import (
     JobEventPage,
     JobSubmitRequest,
     MigrationChunkReceipt,
+    ProjectSaveRequest,
     ReadinessStages,
     RemoteTransfer,
     StorageStatus,
@@ -49,6 +51,7 @@ from k2_region_lab.agent.migrations import WorkspaceMigrationManager
 from k2_region_lab.agent.storage import LAYOUT_VERSION, WorkspaceLayout
 from k2_region_lab.agent.transfers import TransferError, TransferManager
 from k2_region_lab.http_security import SlidingWindowRateLimiter
+from k2_region_lab.project import PROJECT_SCHEMA, PROJECT_VERSION, project_state
 
 
 class AgentSettings:
@@ -424,6 +427,21 @@ def create_agent_app(
     ) -> FilePage:
         return await transfer_manager.inventory(kind, cursor=cursor, limit=limit)
 
+    @application.put(
+        "/v1/projects/{filename}", response_model=FileRecord, dependencies=authentication
+    )
+    async def save_project(filename: str, request: ProjectSaveRequest) -> FileRecord:
+        try:
+            project_state(request.project)
+        except (KeyError, TypeError, ValueError) as error:
+            raise JobError("project_invalid", "The project document is invalid.") from error
+        if (
+            request.project.get("schema") != PROJECT_SCHEMA
+            or request.project.get("version") != PROJECT_VERSION
+        ):
+            raise JobError("project_version_mismatch", "The project version is unsupported.", 409)
+        return await transfer_manager.save_project(filename, request.project)
+
     @application.post(
         "/v1/uploads",
         response_model=UploadSession,
@@ -595,41 +613,66 @@ def create_agent_app(
     async def output_file(
         file_id: str, range_header: str | None = Header(default=None, alias="Range")
     ):
-        record, path = await transfer_manager.resolve_file(file_id, required_kind=FileKind.OUTPUTS)
-        if not range_header:
-            return FileResponse(
-                path,
-                filename=record.display_name,
-                headers={"Accept-Ranges": "bytes"},
-            )
-        start, end = _parse_byte_range(range_header, record.size_bytes)
-
-        def content() -> Iterator[bytes]:
-            remaining = end - start + 1
-            with path.open("rb") as source:
-                source.seek(start)
-                while remaining:
-                    block = source.read(min(1024 * 1024, remaining))
-                    if not block:
-                        break
-                    remaining -= len(block)
-                    yield block
-
-        return StreamingResponse(
-            content(),
-            status_code=206,
-            media_type="application/octet-stream",
-            headers={
-                "Accept-Ranges": "bytes",
-                "Content-Range": f"bytes {start}-{end}/{record.size_bytes}",
-                "Content-Length": str(end - start + 1),
-                "Content-Disposition": (
-                    "attachment; filename*=UTF-8''" + quote(record.display_name)
-                ),
-            },
+        return await _workspace_file_response(
+            transfer_manager, file_id, range_header, required_kind=FileKind.OUTPUTS
         )
 
+    @application.get("/v1/files/{file_id}/content", dependencies=authentication)
+    async def file_content(
+        file_id: str, range_header: str | None = Header(default=None, alias="Range")
+    ):
+        return await _workspace_file_response(transfer_manager, file_id, range_header)
+
     return application
+
+
+async def _workspace_file_response(
+    transfer_manager: TransferManager,
+    file_id: str,
+    range_header: str | None,
+    *,
+    required_kind: FileKind | None = None,
+):
+    record, path = await transfer_manager.resolve_file(file_id, required_kind=required_kind)
+    if record.kind not in {FileKind.INPUTS, FileKind.OUTPUTS, FileKind.PROJECTS}:
+        raise JobError(
+            "file_content_unavailable",
+            "Only input, output, and project content is readable.",
+            404,
+        )
+    if not range_header:
+        media_type = {
+            ".json": "application/json",
+            ".png": "image/png",
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".webp": "image/webp",
+        }.get(path.suffix.casefold(), "application/octet-stream")
+        return Response(
+            content=path.read_bytes(),
+            media_type=media_type,
+            headers={
+                "Accept-Ranges": "bytes",
+                "Content-Disposition": "inline; filename*=UTF-8''" + quote(record.display_name),
+            },
+        )
+    start, end = _parse_byte_range(range_header, record.size_bytes)
+
+    with path.open("rb") as source:
+        source.seek(start)
+        content = source.read(end - start + 1)
+
+    return Response(
+        content=content,
+        status_code=206,
+        media_type="application/octet-stream",
+        headers={
+            "Accept-Ranges": "bytes",
+            "Content-Range": f"bytes {start}-{end}/{record.size_bytes}",
+            "Content-Length": str(end - start + 1),
+            "Content-Disposition": "attachment; filename*=UTF-8''" + quote(record.display_name),
+        },
+    )
 
 
 def main(argv: Sequence[str] | None = None) -> int:

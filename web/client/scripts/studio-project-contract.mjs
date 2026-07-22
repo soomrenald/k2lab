@@ -42,9 +42,9 @@ const loras = [{
   targets: { enabled: false, global: false, regionIds: [], routingMode: "standard", triggerPhrase: "" },
 }];
 const prompts = { generation: "studio portrait", reference: "portrait reference", targets: "change clothing" };
-const first = buildProjectDocument(regions, prompts, settings, loras);
+const first = buildProjectDocument(regions, prompts, settings, loras, "source.png");
 const loaded = loadStudioProjectDocument(first);
-const second = buildProjectDocument(loaded.regions, loaded.prompts, loaded.settings, loaded.loras);
+const second = buildProjectDocument(loaded.regions, loaded.prompts, loaded.settings, loaded.loras, loaded.sourceName);
 assert.deepEqual(second, first);
 assert.equal(second.image_edit.width, 768);
 assert.deepEqual(second.regions.map((region) => [region.id, region.priority, region.spatial_role]), [
