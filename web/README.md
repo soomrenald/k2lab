@@ -6,6 +6,10 @@ This directory contains the browser interface for the provider-neutral control p
 
 ## Current milestone
 
+The exact equivalence boundary with the local application is tracked in
+[`../docs/web_desktop_parity.md`](../docs/web_desktop_parity.md). RunPod image publication is
+blocked until every non-excluded acceptance row is complete and confirmed.
+
 Implemented:
 
 - FastAPI workspace contracts and lifecycle endpoints;
