@@ -10,14 +10,14 @@ from typing import Any
 
 from k2_region_lab.config import ModelDirectories
 from k2_region_lab.debug import configure_debug_logging
-from k2_region_lab.model import discover_model_artifacts
-from k2_region_lab.projector import DEFAULT_PROJECTOR_PRESET
-from k2_region_lab.regional_prompting import (
+from k2core.model import discover_model_artifacts
+from k2core.projector import DEFAULT_PROJECTOR_PRESET
+from k2core.regional_prompting import (
     prompt_emphases_from_payload,
     region_definitions_from_payload,
 )
-from k2_region_lab.worker.protocol import CommandKind, WorkerState
-from k2_region_lab.worker.runtime import (
+from k2core.worker.protocol import CommandKind, WorkerState
+from k2core.worker.runtime import (
     ComfyBaselineRuntime,
     diagnose_accelerator,
     probe_runtime,

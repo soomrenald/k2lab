@@ -1,19 +1,3 @@
-"""Generic pixel-space region geometry and layouts."""
+"""Compatibility re-export; implementation lives in k2core.regions."""
 
-from k2_region_lab.regions.geometry import CanvasGeometry, PixelBox, align_up
-from k2_region_lab.regions.layout import (
-    REGION_ROLES,
-    RegionDefinition,
-    SpatialLayout,
-    compile_spatial_layout,
-)
-
-__all__ = [
-    "CanvasGeometry",
-    "PixelBox",
-    "REGION_ROLES",
-    "RegionDefinition",
-    "SpatialLayout",
-    "align_up",
-    "compile_spatial_layout",
-]
+from k2core.regions import *  # noqa: F403

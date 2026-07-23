@@ -19,15 +19,15 @@ from PySide6.QtCore import (
 from PySide6.QtWidgets import QFileDialog
 
 from k2_region_lab.config import ModelDirectories, discover_worker_python
-from k2_region_lab.lora import (
+from k2core.lora import (
     CHARACTER_IDENTITY_LORA_ROUTING,
     STANDARD_LORA_ROUTING,
     LoraBinding,
 )
-from k2_region_lab.memory import MEMORY_POLICIES, memory_policy
+from k2core.memory import MEMORY_POLICIES, memory_policy
 from k2_region_lab.output import validate_filename_prefix
-from k2_region_lab.regional_prompting import GLOBAL_EMPHASIS_SCOPE, PromptEmphasis
-from k2_region_lab.regions import PixelBox, RegionDefinition
+from k2core.regional_prompting import GLOBAL_EMPHASIS_SCOPE, PromptEmphasis
+from k2core.regions import PixelBox, RegionDefinition
 
 
 class RegionListModel(QAbstractListModel):

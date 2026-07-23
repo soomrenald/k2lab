@@ -53,26 +53,26 @@ from k2_region_lab.config import AppSettings, ModelDirectories, discover_worker_
 from k2_region_lab.desktop.region_canvas import RegionCanvas
 from k2_region_lab.desktop.resource_monitor import ResourceMonitorWidget
 from k2_region_lab.desktop.worker_client import ExternalWorkerClient
-from k2_region_lab.face_detail import (
+from k2core.face_detail import (
     DetectedFace,
     assign_faces_to_regional_loras,
     discover_face_detector,
     expanded_square_crop,
 )
-from k2_region_lab.image_edit import ImageEditState, load_source_image
-from k2_region_lab.lora import (
+from k2core.image_edit import ImageEditState, load_source_image
+from k2core.lora import (
     CHARACTER_IDENTITY_LORA_ROUTING,
     STANDARD_LORA_ROUTING,
     LoraBinding,
     LoraLibrary,
 )
-from k2_region_lab.memory import (
+from k2core.memory import (
     MEMORY_POLICIES,
     effective_minimum_system_ram_gb,
     effective_reserve_vram_gb,
     memory_policy,
 )
-from k2_region_lab.model import (
+from k2core.model import (
     ArtifactSet,
     discover_krea_transformers,
     discover_model_artifacts,
@@ -83,7 +83,7 @@ from k2_region_lab.output import (
     validate_filename_prefix,
 )
 from k2_region_lab.processes import find_owned_k2_workers, terminate_workers
-from k2_region_lab.project import (
+from k2core.project import (
     ProjectState,
     SavedLora,
     load_project,
@@ -92,21 +92,21 @@ from k2_region_lab.project import (
     project_document,
     save_project,
 )
-from k2_region_lab.projector import (
+from k2core.projector import (
     CUSTOM_PROJECTOR_PRESET,
     DEFAULT_PROJECTOR_PRESET,
     PROJECTOR_PRESETS,
     PROJECTOR_PRESET_LABELS,
 )
-from k2_region_lab.regional_prompting import (
+from k2core.regional_prompting import (
     GLOBAL_EMPHASIS_SCOPE,
     PromptEmphasis,
     compile_regional_prompt_plan,
 )
-from k2_region_lab.regional_lora import character_identity_triggers
-from k2_region_lab.regions import CanvasGeometry, PixelBox, RegionDefinition
-from k2_region_lab.sampling import COMFYUI_SAMPLERS, COMFYUI_SCHEDULERS
-from k2_region_lab.worker.protocol import CommandKind
+from k2core.regional_lora import character_identity_triggers
+from k2core.regions import CanvasGeometry, PixelBox, RegionDefinition
+from k2core.sampling import COMFYUI_SAMPLERS, COMFYUI_SCHEDULERS
+from k2core.worker.protocol import CommandKind
 
 
 GLOBAL_SCOPE_ID = "__global__"

@@ -9,6 +9,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import k2core
+
 from k2_region_lab.worker.protocol import CommandKind
 
 
@@ -94,7 +96,10 @@ class WorkerProtocolTests(unittest.TestCase):
             ]
             environment = os.environ.copy()
             project_root = Path(__file__).resolve().parents[1]
-            environment["PYTHONPATH"] = str(project_root / "src")
+            core_source_root = Path(k2core.__file__).resolve().parents[1]
+            environment["PYTHONPATH"] = os.pathsep.join(
+                (str(project_root / "src"), str(core_source_root))
+            )
             process = subprocess.run(
                 [sys.executable, "-m", "k2_region_lab.worker.entrypoint"],
                 input="".join(json.dumps(command) + "\n" for command in commands),

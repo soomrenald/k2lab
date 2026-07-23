@@ -6,7 +6,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from k2_region_lab.face_detail import OnnxNanoFaceDetector, discover_face_detector
+from k2core.face_detail import OnnxNanoFaceDetector, discover_face_detector
 
 
 def main() -> int:

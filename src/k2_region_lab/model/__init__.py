@@ -1,23 +1,3 @@
-"""Model discovery and loading boundaries."""
+"""Compatibility re-export; implementation lives in k2core.model."""
 
-from k2_region_lab.model.artifacts import (
-    ArtifactKind,
-    ArtifactSet,
-    ModelArtifact,
-    SafetensorsSummary,
-    discover_krea_transformers,
-    discover_model_artifacts,
-    read_safetensors_header,
-    read_safetensors_summary,
-)
-
-__all__ = [
-    "ArtifactKind",
-    "ArtifactSet",
-    "ModelArtifact",
-    "SafetensorsSummary",
-    "discover_krea_transformers",
-    "discover_model_artifacts",
-    "read_safetensors_header",
-    "read_safetensors_summary",
-]
+from k2core.model import *  # noqa: F403

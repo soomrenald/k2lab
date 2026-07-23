@@ -8,7 +8,7 @@ from pathlib import Path
 
 from k2_region_lab.config import AppSettings
 from k2_region_lab.debug import configure_debug_logging
-from k2_region_lab.model import discover_model_artifacts
+from k2core.model import discover_model_artifacts
 
 
 def _format_size(size_bytes: int) -> str:

@@ -188,7 +188,7 @@ class FaceDetailRuntimeTests(unittest.TestCase):
                 DetectedFace(PixelBox(40, 40, 80, 80), 0.92),
             )
             with patch(
-                "k2_region_lab.worker.runtime.OnnxNanoFaceDetector",
+                "k2core.worker.runtime.OnnxNanoFaceDetector",
                 return_value=fake_detector,
             ):
                 result, summary = runtime._run_face_detail_pass(
@@ -293,7 +293,7 @@ class FaceDetailRuntimeTests(unittest.TestCase):
                 DetectedFace(PixelBox(180, 40, 220, 80), 0.9),
             )
             with patch(
-                "k2_region_lab.worker.runtime.OnnxNanoFaceDetector",
+                "k2core.worker.runtime.OnnxNanoFaceDetector",
                 return_value=fake_detector,
             ):
                 _result, summary = runtime._run_face_detail_pass(

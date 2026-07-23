@@ -9,7 +9,7 @@ from uuid import uuid4
 from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, Signal
 
 from k2_region_lab.config import AppSettings
-from k2_region_lab.worker.protocol import CommandKind
+from k2core.worker.protocol import CommandKind
 
 
 class ExternalWorkerClient(QObject):
