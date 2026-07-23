@@ -323,6 +323,7 @@ name = "k2-region-lab"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "k2core" },
     { name = "numpy" },
     { name = "onnxruntime" },
     { name = "pillow" },
@@ -349,6 +350,7 @@ model = [
 [package.metadata]
 requires-dist = [
     { name = "diffusers", marker = "extra == 'model'", specifier = ">=0.32" },
+    { name = "k2core", git = "https://github.com/soomrenald/k2core.git?rev=a82b0b32a891e19eac5c5f6e35f8a9bfb715f9dc" },
     { name = "numpy", specifier = ">=2.1" },
     { name = "onnxruntime", specifier = ">=1.20" },
     { name = "pillow", specifier = ">=12.3.0" },
@@ -363,6 +365,15 @@ requires-dist = [
     { name = "zarr", marker = "extra == 'diagnostics'", specifier = ">=3.0" },
 ]
 provides-extras = ["model", "diagnostics", "dev"]
+
+[[package]]
+name = "k2core"
+version = "0.1.0"
+source = { git = "https://github.com/soomrenald/k2core.git?rev=a82b0b32a891e19eac5c5f6e35f8a9bfb715f9dc#a82b0b32a891e19eac5c5f6e35f8a9bfb715f9dc" }
+dependencies = [
+    { name = "numpy" },
+    { name = "pillow" },
+]
 
 [[package]]
 name = "markupsafe"

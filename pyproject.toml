@@ -9,7 +9,7 @@ description = "Local pixel-space regional prompting, LoRA, and attention researc
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
-    "k2core @ git+https://github.com/soomrenald/k2core.git@0dcdb7b1ccd18be61aafe761b56a77a2dcf11030",
+    "k2core @ git+https://github.com/soomrenald/k2core.git@a82b0b32a891e19eac5c5f6e35f8a9bfb715f9dc",
     "numpy>=2.1",
     "onnxruntime>=1.20",
     "pillow>=12.3.0",
@@ -38,6 +38,9 @@ k2lab = "k2_region_lab.app:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/k2_region_lab"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
