@@ -632,6 +632,15 @@ class QmlWorkspaceController(QObject):
             self.backend.events.item(index).text() for index in range(self.backend.events.count())
         ]
 
+    @Property(int, constant=True)
+    def eventLimit(self) -> int:
+        return self.backend.events.maximum_items
+
+    @Slot()
+    def clearEvents(self) -> None:
+        self.backend.events.clear()
+        self.refresh()
+
     @Property(str, notify=stateChanged)
     def globalPrompt(self) -> str:
         if self._mode == self.IMAGE_EDIT:

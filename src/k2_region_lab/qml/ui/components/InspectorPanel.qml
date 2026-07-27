@@ -118,7 +118,9 @@ Rectangle {
         property string suffix: String(controlSpec.suffix ?? "")
         property real minimum: Number(controlSpec.minimum ?? -999999999)
         property real maximum: Number(controlSpec.maximum ?? 999999999)
+        property real stepSize: Number(controlSpec.step ?? 1)
         property int decimals: Number(controlSpec.decimals ?? 0)
+        property bool sliderEnabled: settingName !== "seed"
         property bool editing: false
         property string modelText: {
             let revision = root.controller.stateRevision
@@ -179,6 +181,19 @@ Rectangle {
             value: numeric.modelText
             when: !numeric.editing && !numericInput.activeFocus
             restoreMode: Binding.RestoreNone
+        }
+        Slider {
+            id: numericSlider
+            objectName: "numericSlider-" + numeric.settingName
+            visible: numeric.sliderEnabled
+            Layout.fillWidth: true
+            enabled: Boolean(numeric.controlSpec.enabled ?? true)
+            from: numeric.minimum
+            to: numeric.maximum
+            stepSize: numeric.stepSize
+            snapMode: Slider.SnapAlways
+            value: Number(root.controller.setting(numeric.settingName) ?? numeric.minimum)
+            onMoved: root.controller.setSetting(numeric.settingName, value)
         }
     }
 

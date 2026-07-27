@@ -1,10 +1,10 @@
-# K2 Region Lab
+# K2Lab
 
-K2 Region Lab is a local PySide6 research application for generic pixel-space control of Krea 2. A region is one shared spatial domain for prompt routing, unfused LoRA delta gating, influence measurement, and attention tuning.
+K2Lab is a local PySide6 research application for generic pixel-space control of Krea 2. A region is one shared spatial domain for prompt routing, unfused LoRA delta gating, influence measurement, and attention tuning.
 
 ## Installation
 
-K2 Region Lab targets Linux, Python 3.12, and either NVIDIA CUDA or AMD ROCm. It uses a separate lightweight desktop environment while launching model work through an existing GPU-enabled ComfyUI Python environment. Model weights are not included. Runtime and model selection are accelerator-neutral; the selected ComfyUI environment determines whether Torch uses CUDA or ROCm.
+K2Lab targets Linux, Python 3.12, and either NVIDIA CUDA or AMD ROCm. It uses a separate lightweight desktop environment while launching model work through an existing GPU-enabled ComfyUI Python environment. Model weights are not included. Runtime and model selection are accelerator-neutral; the selected ComfyUI environment determines whether Torch uses CUDA or ROCm.
 
 Prerequisites:
 
@@ -12,14 +12,25 @@ Prerequisites:
 - a Python 3.12 ComfyUI environment with a working CUDA or ROCm PyTorch build (`torch.cuda.is_available()` must return `True`); automatic selection checks common `.venv`, `venv`, and ROCm environment names, and the GUI can select any other interpreter;
 - the Krea 2 Turbo transformer, Qwen text encoder, and VAE listed below.
 
-Clone the repository and install the desktop application in its own environment:
+Clone the repository and run the installer:
 
 ```bash
-python3.12 -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install -e .
+git clone https://github.com/soomrenald/k2lab.git
+cd k2lab
+./scripts/install.sh
+.venv/bin/k2lab
 ```
+
+This is a single-repository installation. The installer creates K2Lab's lightweight
+`.venv` and automatically fetches the pinned
+[`k2core`](https://github.com/soomrenald/k2core) dependency; do not clone or install
+`k2core` separately. The application exposes that exact installed core package to
+the isolated ComfyUI worker while retaining the worker environment's own Torch,
+NumPy, Pillow, and ONNX Runtime packages.
+
+The installer uses `uv` when available and otherwise falls back to Python 3.12's
+standard `venv` and `pip`. To select a non-default interpreter for the fallback,
+set `K2LAB_PYTHON=/path/to/python3.12`.
 
 If ComfyUI or its GPU environment is somewhere else, configure both paths before launching:
 
@@ -71,6 +82,9 @@ The implementation is at the foundation milestone. It currently provides:
 - JSON project save/load for prompts, generation settings, boxes, names, LoRAs, and runtime paths;
 - a typed worker protocol with isolated baseline GPU execution;
 - a configurable external CUDA or ROCm worker using the existing ComfyUI interpreter;
+- an isolated `k2core` bootstrap that does not shadow the GPU environment's numerical packages;
+- a resizable 1,000-entry event dock with clear/follow controls and live resource telemetry;
+- linked sliders and exact numeric entry for tunable advanced generation parameters;
 - full transformer, Qwen, and VAE tensor manifests with Krea-specific shape validation;
 - Krea 2 Turbo baseline generation with the current standard ComfyUI sampler and scheduler choices, progress events, and PNG metadata;
 - optional automatic face-crop refinement with per-region character LoRAs;
@@ -91,7 +105,7 @@ paths and generation settings. Its default model locations are:
 
 ## Configuration
 
-K2 Region Lab loads the first available TOML configuration from the following
+K2Lab loads the first available TOML configuration from the following
 locations:
 
 1. the file named by `K2LAB_CONFIG_FILE`;
@@ -123,10 +137,11 @@ Local Qt Quick feature parity with the original Widgets interface is tracked in
 [`docs/local_gui_feature_parity.md`](docs/local_gui_feature_parity.md). The exact classic
 interface remains available with `uv run k2lab --legacy-widgets`.
 
-The model execution environment targets Python 3.12. The geometry and discovery tests intentionally use only the standard library so they can run before GPU dependencies are installed:
+After installation, run the complete local test suite with:
 
 ```bash
-PYTHONPATH=src python -m unittest discover -s tests -v
+./scripts/install.sh --dev
+.venv/bin/python -m pytest -q
 ```
 
 Inspect configured model artifacts without launching Qt:

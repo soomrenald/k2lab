@@ -1563,6 +1563,20 @@ class DesktopSmokeTests(unittest.TestCase):
             self.assertEqual(scrollbar.value(), previous_position)
             window.close()
 
+    def test_event_view_discards_oldest_entries_at_its_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            window = self.make_window(Path(directory))
+            for index in range(window.events.maximum_items + 5):
+                window.events.addItem(f"Bounded event {index}")
+
+            self.assertEqual(window.events.count(), window.events.maximum_items)
+            self.assertEqual(window.events.item(0).text(), "Bounded event 5")
+            self.assertEqual(
+                window.events.item(window.events.count() - 1).text(),
+                f"Bounded event {window.events.maximum_items + 4}",
+            )
+            window.close()
+
 
 if __name__ == "__main__":
     unittest.main()

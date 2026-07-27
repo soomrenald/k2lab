@@ -17,6 +17,8 @@ ApplicationWindow {
 
     property bool inspectorVisible: true
     property bool activityVisible: false
+    property bool eventFollowLatest: true
+    property real activityHeight: 164
     property real compareValue: 0.5
     property string lastWorkspaceMode: ""
     property string lastEditSource: ""
@@ -411,65 +413,6 @@ ApplicationWindow {
             }
 
             Rectangle {
-                objectName: "activityPanel"
-                visible: window.activityVisible
-                Layout.preferredWidth: visible ? 350 : 0
-                Layout.fillHeight: true
-                color: "#0d121b"
-                border.color: "#262d3c"
-
-                ColumnLayout {
-                    anchors.fill: parent
-                    anchors.margins: 12
-                    spacing: 8
-                    RowLayout {
-                        Layout.fillWidth: true
-                        Text {
-                            text: "Events & resources"
-                            color: "#f0f2f8"
-                            font.pixelSize: 14
-                            font.weight: Font.DemiBold
-                            Layout.fillWidth: true
-                        }
-                        ToolButton { text: "×"; onClicked: window.activityVisible = false }
-                    }
-                    Rectangle {
-                        Layout.fillWidth: true
-                        implicitHeight: telemetryColumn.implicitHeight + 18
-                        radius: 8
-                        color: "#151b27"
-                        border.color: "#2a3243"
-                        ColumnLayout {
-                            id: telemetryColumn
-                            anchors.fill: parent
-                            anchors.margins: 9
-                            Text { text: controller.resourceGpuText; color: "#42c7f5"; font.pixelSize: 11 }
-                            Text { text: controller.resourceRamText; color: "#f0a34a"; font.pixelSize: 11 }
-                            Text { text: controller.resourceActivityText; color: "#c7cddd"; font.pixelSize: 11 }
-                        }
-                    }
-                    ListView {
-                        objectName: "eventList"
-                        Layout.fillWidth: true
-                        Layout.fillHeight: true
-                        clip: true
-                        model: controller.eventMessages
-                        spacing: 5
-                        onCountChanged: positionViewAtEnd()
-                        delegate: Text {
-                            required property string modelData
-                            width: ListView.view.width
-                            text: modelData
-                            color: "#aeb6c8"
-                            wrapMode: Text.Wrap
-                            font.pixelSize: 11
-                        }
-                        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-                    }
-                }
-            }
-
-            Rectangle {
                             id: toast
                             visible: false
                             anchors.horizontalCenter: parent.horizontalCenter
@@ -507,6 +450,132 @@ ApplicationWindow {
                         controller: window.studio
                         onOpenSetupRequested: window.openSetupWindow()
                     }
+                }
+            }
+        }
+
+        Rectangle {
+            id: activityPanel
+            objectName: "activityPanel"
+            visible: window.activityVisible
+            Layout.fillWidth: true
+            Layout.preferredHeight: visible ? window.activityHeight : 0
+            Layout.minimumHeight: visible ? 96 : 0
+            color: "#0d121b"
+            border.color: "#262d3c"
+
+            MouseArea {
+                id: eventDockResize
+                anchors.top: parent.top
+                anchors.left: parent.left
+                anchors.right: parent.right
+                height: 10
+                cursorShape: Qt.SizeVerCursor
+                property real pressWindowY: 0
+                property real pressHeight: 0
+                onPressed: mouse => {
+                    pressWindowY = mapToItem(window.contentItem, mouse.x, mouse.y).y
+                    pressHeight = window.activityHeight
+                }
+                onPositionChanged: mouse => {
+                    if (!pressed)
+                        return
+                    let currentY = mapToItem(window.contentItem, mouse.x, mouse.y).y
+                    window.activityHeight = Math.max(
+                                96,
+                                Math.min(window.height * 0.55,
+                                         pressHeight + pressWindowY - currentY))
+                }
+                Rectangle {
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    anchors.top: parent.top
+                    anchors.topMargin: 3
+                    width: 64
+                    height: 3
+                    radius: 2
+                    color: eventDockResize.containsMouse ? window.accent : "#41495a"
+                }
+            }
+
+            ColumnLayout {
+                anchors.fill: parent
+                anchors.topMargin: 10
+                anchors.leftMargin: 12
+                anchors.rightMargin: 12
+                anchors.bottomMargin: 8
+                spacing: 5
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 10
+                    Text {
+                        text: "Event history"
+                        color: "#f0f2f8"
+                        font.pixelSize: 12
+                        font.weight: Font.DemiBold
+                    }
+                    Text {
+                        text: controller.eventMessages.length + " / " + controller.eventLimit
+                        color: "#737c90"
+                        font.pixelSize: 10
+                    }
+                    Rectangle { width: 1; height: 18; color: "#2b3242" }
+                    Text {
+                        Layout.fillWidth: true
+                        text: controller.resourceGpuText + "  ·  "
+                              + controller.resourceRamText + "  ·  "
+                              + controller.resourceActivityText
+                        color: "#929bad"
+                        elide: Text.ElideRight
+                        font.pixelSize: 10
+                    }
+                    StudioButton {
+                        text: window.eventFollowLatest ? "Following latest" : "Follow latest"
+                        onClicked: {
+                            window.eventFollowLatest = true
+                            eventList.positionViewAtEnd()
+                        }
+                    }
+                    StudioButton {
+                        text: "Clear"
+                        enabled: controller.eventMessages.length > 0
+                        onClicked: controller.clearEvents()
+                    }
+                    ToolButton { text: "×"; onClicked: window.activityVisible = false }
+                }
+
+                ListView {
+                    id: eventList
+                    objectName: "eventList"
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    clip: true
+                    model: controller.eventMessages
+                    spacing: 3
+                    onCountChanged: {
+                        if (window.eventFollowLatest)
+                            Qt.callLater(positionViewAtEnd)
+                    }
+                    onMovementEnded: window.eventFollowLatest = atYEnd
+                    delegate: Rectangle {
+                        required property string modelData
+                        width: ListView.view.width
+                        implicitHeight: eventText.implicitHeight + 8
+                        color: "#111722"
+                        radius: 4
+                        Text {
+                            id: eventText
+                            anchors.fill: parent
+                            anchors.margins: 4
+                            text: modelData
+                            color: modelData.indexOf("error") >= 0
+                                   || modelData.indexOf("failed") >= 0
+                                   ? "#ff9c9c" : "#aeb6c8"
+                            wrapMode: Text.Wrap
+                            font.pixelSize: 10
+                        }
+                    }
+                    ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
                 }
             }
         }

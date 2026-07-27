@@ -96,6 +96,8 @@ class QmlWorkspaceTests(unittest.TestCase):
             self.assertIsNotNone(root_object.findChild(QObject, "activityButton"))
             self.assertIsNotNone(root_object.findChild(QObject, "activityPanel"))
             self.assertIsNotNone(root_object.findChild(QObject, "eventList"))
+            self.assertEqual(controller.eventLimit, 1000)
+            self.assertIsNotNone(root_object.findChild(QObject, "numericSlider-steps"))
             comparison_mode.setProperty("currentIndex", 2)
             root_object.setProperty("compareValue", 0.25)
             self.application.processEvents()

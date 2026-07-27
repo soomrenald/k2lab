@@ -116,11 +116,15 @@ DISABLED_SCOPE_ID = "__disabled__"
 class EventListWidget(QListWidget):
     """Follow new events only while the user is already viewing the end."""
 
+    maximum_items = 1000
+
     def addItem(self, item) -> None:
         message = item.text() if isinstance(item, QListWidgetItem) else str(item)
         logging.getLogger("k2_region_lab.events").info(message)
         scrollbar = self.verticalScrollBar()
         follow_latest = scrollbar.value() >= scrollbar.maximum()
+        while self.count() >= self.maximum_items:
+            self.takeItem(0)
         super().addItem(item)
         if follow_latest:
             self.scrollToBottom()

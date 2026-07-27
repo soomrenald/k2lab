@@ -6,9 +6,11 @@ import os
 from pathlib import Path
 from uuid import uuid4
 
+import k2core
 from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, Signal
 
 from k2_region_lab.config import AppSettings
+from k2_region_lab.worker.bootstrap import K2CORE_PACKAGE_ENV
 from k2core.worker.protocol import CommandKind
 
 
@@ -50,6 +52,10 @@ class ExternalWorkerClient(QObject):
         environment.remove("PYTHONHOME")
         environment.insert("VIRTUAL_ENV", str(worker_environment))
         environment.insert("K2LAB_DATA_DIR", str(self.settings.data_directory))
+        environment.insert(
+            K2CORE_PACKAGE_ENV,
+            str(Path(k2core.__file__).resolve().parent),
+        )
         if not environment.contains("PYTORCH_ALLOC_CONF") and not environment.contains(
             "PYTORCH_CUDA_ALLOC_CONF"
         ):
@@ -76,7 +82,7 @@ class ExternalWorkerClient(QObject):
         self.process.setProcessEnvironment(environment)
         self.process.setWorkingDirectory(str(project_root))
         self.process.setProgram(str(self.settings.worker_python))
-        self.process.setArguments(["-m", "k2_region_lab.worker.entrypoint"])
+        self.process.setArguments(["-m", "k2_region_lab.worker.bootstrap"])
         logging.getLogger(__name__).debug(
             "starting worker program=%s cwd=%s virtual_env=%s pythonpath=%s",
             self.settings.worker_python,

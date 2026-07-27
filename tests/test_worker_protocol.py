@@ -11,6 +11,7 @@ from pathlib import Path
 
 import k2core
 
+from k2_region_lab.worker.bootstrap import K2CORE_PACKAGE_ENV, bootstrap_k2core
 from k2_region_lab.worker.protocol import CommandKind
 
 
@@ -72,6 +73,11 @@ class WorkerProtocolTests(unittest.TestCase):
     def test_image_edit_has_a_dedicated_worker_command(self) -> None:
         self.assertEqual(CommandKind.EDIT_IMAGE.value, "edit_image")
 
+    def test_worker_bootstrap_loads_the_exact_installed_core_package(self) -> None:
+        package = Path(k2core.__file__).resolve().parent
+
+        self.assertEqual(bootstrap_k2core(package), package)
+
     def test_external_worker_probes_validates_and_stops(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -96,12 +102,11 @@ class WorkerProtocolTests(unittest.TestCase):
             ]
             environment = os.environ.copy()
             project_root = Path(__file__).resolve().parents[1]
-            core_source_root = Path(k2core.__file__).resolve().parents[1]
-            environment["PYTHONPATH"] = os.pathsep.join(
-                (str(project_root / "src"), str(core_source_root))
-            )
+            environment["PYTHONPATH"] = str(project_root / "src")
+            environment[K2CORE_PACKAGE_ENV] = str(Path(k2core.__file__).resolve().parent)
+            environment["K2LAB_DATA_DIR"] = str(root / "data")
             process = subprocess.run(
-                [sys.executable, "-m", "k2_region_lab.worker.entrypoint"],
+                [sys.executable, "-m", "k2_region_lab.worker.bootstrap"],
                 input="".join(json.dumps(command) + "\n" for command in commands),
                 text=True,
                 capture_output=True,

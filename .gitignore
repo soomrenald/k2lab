@@ -3,6 +3,7 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 .venv/
+.uv-cache/
 dist/
 build/
 node_modules/
@@ -12,5 +13,7 @@ experiments/
 artifacts/
 *.log
 *.k2lab.json
+/legacy_checkout_metadata/
+/k2lab/
 /outputs/*
 !/outputs/.gitkeep

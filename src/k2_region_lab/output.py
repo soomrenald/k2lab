@@ -9,6 +9,7 @@ def project_workspace_directory() -> Path:
     source_checkout = Path(__file__).resolve().parents[2]
     if (source_checkout / "pyproject.toml").is_file():
         return source_checkout
+    configured = Path("~/k2lab").expanduser()
     if configured.is_dir():
         return configured.resolve()
     return Path.cwd().resolve()
