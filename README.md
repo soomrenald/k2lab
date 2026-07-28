@@ -2,6 +2,9 @@
 
 K2Lab is a local PySide6 research application for generic pixel-space control of Krea 2. A region is one shared spatial domain for prompt routing, unfused LoRA delta gating, influence measurement, and attention tuning.
 
+New to K2Lab? Start with the [user guide](docs/user_guide.md) for setup, generation,
+regional prompting, image editing, face refinement, projects, and troubleshooting.
+
 ## Installation
 
 K2Lab targets Linux, Python 3.12, and either NVIDIA CUDA or AMD ROCm. It uses a separate lightweight desktop environment while launching model work through an existing GPU-enabled ComfyUI Python environment. Model weights are not included. Runtime and model selection are accelerator-neutral; the selected ComfyUI environment determines whether Torch uses CUDA or ROCm.
