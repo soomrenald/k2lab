@@ -51,6 +51,7 @@ Rectangle {
         property alias placeholderText: textEditor.placeholderText
         property alias selectedText: textEditor.selectedText
         property alias selectionStart: textEditor.selectionStart
+        property alias readOnly: textEditor.readOnly
         signal editingFinished()
         clip: true
         ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
@@ -328,11 +329,19 @@ Rectangle {
                         Layout.rightMargin: 14
                         implicitHeight: 118
                         text: controller.globalPrompt
+                        readOnly: controller.mode === "edit"
+                                  && controller.editLayer === "reference"
                         placeholderText: controller.mode === "edit"
                                          ? "Describe the overall edit. Leave blank to preserve everything outside edit boxes."
                                          : "Describe the complete image..."
-                        onTextChanged: controller.setGlobalPrompt(text)
-                        onEditingFinished: controller.setGlobalPrompt(text)
+                        onTextChanged: {
+                            if (!readOnly)
+                                controller.setGlobalPrompt(text)
+                        }
+                        onEditingFinished: {
+                            if (!readOnly)
+                                controller.setGlobalPrompt(text)
+                        }
                     }
 
                     Rectangle {
@@ -380,6 +389,8 @@ Rectangle {
                             visible: controller.selectedRegionId.length > 0
                             Layout.fillWidth: true
                             text: controller.selectedRegion.name || ""
+                            readOnly: controller.mode === "edit"
+                                      && controller.editLayer === "reference"
                             placeholderText: "Region name"
                             onEditingFinished: controller.updateSelectedRegion("name", text)
                         }
@@ -392,6 +403,8 @@ Rectangle {
                                 id: spatialRole
                                 objectName: "spatialRoleCombo"
                                 Layout.fillWidth: true
+                                enabled: !(controller.mode === "edit"
+                                           && controller.editLayer === "reference")
                                 model: controller.spatialRoleOptions
                                 textRole: "label"
                                 valueRole: "value"
@@ -407,6 +420,8 @@ Rectangle {
                             }
                             CheckBox {
                                 text: "Enabled"
+                                enabled: !(controller.mode === "edit"
+                                           && controller.editLayer === "reference")
                                 checked: controller.selectedRegion.enabled === undefined
                                          ? true : controller.selectedRegion.enabled
                                 onToggled: controller.updateSelectedRegion("enabled", checked)
@@ -420,14 +435,19 @@ Rectangle {
                             Layout.fillWidth: true
                             implicitHeight: 112
                             text: controller.selectedRegion.prompt || ""
+                            readOnly: controller.mode === "edit"
+                                      && controller.editLayer === "reference"
                             placeholderText: controller.mode === "edit" && controller.editLayer === "targets"
                                              ? "Describe the edit inside this box..."
                                              : "Describe the content inside this box..."
                             onTextChanged: {
-                                if (visible)
+                                if (visible && !readOnly)
                                     controller.updateSelectedRegion("prompt", text)
                             }
-                            onEditingFinished: controller.updateSelectedRegion("prompt", text)
+                            onEditingFinished: {
+                                if (!readOnly)
+                                    controller.updateSelectedRegion("prompt", text)
+                            }
                         }
 
                         StudioTextArea {
@@ -437,12 +457,17 @@ Rectangle {
                             Layout.fillWidth: true
                             implicitHeight: 78
                             text: controller.selectedRegion.facePrompt || ""
+                            readOnly: controller.mode === "edit"
+                                      && controller.editLayer === "reference"
                             placeholderText: "Optional face / identity anchor..."
                             onTextChanged: {
-                                if (visible)
+                                if (visible && !readOnly)
                                     controller.updateSelectedRegion("facePrompt", text)
                             }
-                            onEditingFinished: controller.updateSelectedRegion("facePrompt", text)
+                            onEditingFinished: {
+                                if (!readOnly)
+                                    controller.updateSelectedRegion("facePrompt", text)
+                            }
                         }
 
                     }
@@ -453,6 +478,8 @@ Rectangle {
                         Layout.rightMargin: 14
                         spacing: 8
                         visible: controller.promptEmphasisAvailable
+                                 && !(controller.mode === "edit"
+                                      && controller.editLayer === "reference")
 
                         Rectangle { Layout.fillWidth: true; height: 1; color: "#262d3c" }
                         LabelText { text: "Phrase emphasis" }
@@ -720,7 +747,12 @@ Rectangle {
                         Layout.fillWidth: true
                         Layout.margins: 14
                         LabelText { text: "LoRA routing"; Layout.fillWidth: true }
-                        MiniButton { text: "+ Add LoRA"; onClicked: controller.addLora() }
+                        MiniButton {
+                            text: "+ Add LoRA"
+                            enabled: !(controller.mode === "edit"
+                                       && controller.editLayer === "reference")
+                            onClicked: controller.addLora()
+                        }
                     }
 
                     Text {
@@ -728,7 +760,9 @@ Rectangle {
                         Layout.leftMargin: 14
                         Layout.rightMargin: 14
                         text: controller.mode === "edit"
-                              ? "Assignments apply only to the active edit layer."
+                              ? (controller.editLayer === "reference"
+                                 ? "Source-generation LoRAs are inactive during image editing. Switch to Edit targets to configure active LoRAs."
+                                 : "Only these Edit-target assignments are sent to the image-edit worker.")
                               : "Assign each LoRA globally or to the selected region."
                         color: "#778095"
                         wrapMode: Text.Wrap
@@ -738,6 +772,8 @@ Rectangle {
                     Repeater {
                         id: loraRepeater
                         objectName: "loraRepeater"
+                        visible: !(controller.mode === "edit"
+                                   && controller.editLayer === "reference")
                         model: controller.loraModel
                         delegate: Rectangle {
                             id: loraCard
@@ -939,11 +975,6 @@ Rectangle {
                         }
                         NumericSetting {
                             visible: controller.mode === "edit"
-                            label: "Retention"
-                            settingName: "referenceRetention"
-                        }
-                        NumericSetting {
-                            visible: controller.mode === "edit"
                             label: "Latent feather"
                             settingName: "latentFeather"
                         }
@@ -1081,7 +1112,7 @@ Rectangle {
                     }
                     CheckBox {
                         objectName: "relaxationCheckBox"
-                        visible: controller.mode === "generation"
+                        visible: controller.mode !== "face"
                         Layout.leftMargin: 14
                         text: "Relax spatial guidance during late steps"
                         checked: Boolean(controller.setting("relaxation"))
@@ -1104,14 +1135,6 @@ Rectangle {
                         settingName: "loraResponse"
                     }
 
-                    CheckBox {
-                        objectName: "preserveIdentityCheckBox"
-                        visible: controller.mode === "edit"
-                        Layout.leftMargin: 14
-                        text: "Preserve identity"
-                        checked: Boolean(controller.setting("preserveIdentity"))
-                        onToggled: controller.setSetting("preserveIdentity", checked)
-                    }
                     CheckBox {
                         objectName: "editEntireImageCheckBox"
                         visible: controller.mode === "edit"

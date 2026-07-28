@@ -737,7 +737,9 @@ class QmlWorkspaceController(QObject):
 
     @Property(bool, notify=stateChanged)
     def canDrawRegions(self) -> bool:
-        return self._mode != self.FACE_REFINEMENT
+        return self._mode == self.GENERATION or (
+            self._mode == self.IMAGE_EDIT and self._edit_layer == "targets"
+        )
 
     @Property(int, notify=stateChanged)
     def faceCount(self) -> int:
@@ -827,6 +829,8 @@ class QmlWorkspaceController(QObject):
 
     @Slot(str)
     def setGlobalPrompt(self, prompt: str) -> None:
+        if self._mode == self.IMAGE_EDIT and self._edit_layer == "reference":
+            return
         target = self.backend.global_prompt
         if self._mode == self.IMAGE_EDIT:
             target = (
@@ -906,6 +910,8 @@ class QmlWorkspaceController(QObject):
 
     @Slot(str, "QVariant")
     def updateSelectedRegion(self, field: str, value) -> None:
+        if self._mode == self.IMAGE_EDIT and self._edit_layer == "reference":
+            return
         collection = self._active_regions()
         try:
             index = next(
@@ -1488,14 +1494,13 @@ class QmlWorkspaceController(QObject):
                 "denoise",
                 "latentFeather",
                 "compositeFeather",
-                "referenceRetention",
                 "insideBoost",
                 "outsidePenalty",
                 "spatialFalloff",
                 "lateStepScale",
                 "subjectCompetition",
                 "subjectFill",
-                "preserveIdentity",
+                "relaxation",
                 "editEntireImage",
                 "loraAdaptation",
                 "loraResponse",
@@ -1664,6 +1669,7 @@ class QmlWorkspaceController(QObject):
             "lateStepScale": self.backend.edit_late_step_scale_input,
             "subjectCompetition": self.backend.edit_subject_competition_input,
             "subjectFill": self.backend.edit_subject_fill_input,
+            "relaxation": self.backend.edit_regional_relaxation_input,
             "preserveIdentity": self.backend.edit_preserve_identity_input,
             "editEntireImage": self.backend.edit_entire_image_input,
             "loraAdaptation": self.backend.edit_lora_adaptation_input,

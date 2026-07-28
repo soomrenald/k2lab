@@ -99,15 +99,17 @@ metadata and then for an exact `<image-stem>.k2lab.json` sidecar. If found, it r
 
 - original global and regional prompts and region boxes;
 - prompt emphases and projector settings;
-- LoRA files, strengths, activation/routing, and regional scopes;
+- LoRA files and strengths, without carrying generation activation into image editing;
 - sampler, scheduler, step count, denoise controls, and seed;
 - the fixed-seed behavior used for the source generation.
 
-The restored data appears on the **Reference layer**. Newly drawn edit boxes live on the
-separate **Edit targets** layer. Both can be modified. Loading a same-sized replacement can
+The restored generation data appears on the inspection-only **Source layout**. Newly drawn
+edit boxes live on the active **Edit targets** layer. Loading a same-sized replacement can
 retain the layout; accepting a different size clears geometry and edit-region assignments.
 The canvas source always remains the originally loaded image, even after an edit result is
-produced.
+produced. Generation LoRA files remain available in the library but start unassigned in
+image editing. Only prompts, regions, and LoRA routes selected under **Edit targets** are
+sent to an edit worker.
 
 ### Prompt semantics
 
@@ -116,9 +118,9 @@ produced.
   global conditioning prompt.
 - **Describe the edit inside this box** is local to one edit target and supplies the
   object/content instruction for that box.
-- The original reference regions preserve the source subject/layout ownership during
-  denoising. The original global scene prompt remains stored and visible, but it is omitted
-  from active edit conditioning because it can conflict with removal or replacement.
+- Original generation prompts and regions remain stored and visible for inspection, but
+  are omitted from active edit conditioning because they can conflict with replacement
+  instructions. The source latent itself provides visual continuity.
 
 ### Denoising and preservation
 
@@ -137,33 +139,6 @@ Current conservative defaults are fixed source seed, low denoise, reference rete
 latent feather 64 px, composite feather 48 px, preserve identity enabled, and whole-image
 editing disabled.
 
-### GPU validation evidence and unresolved quality risk
-
-fixtures using the real ComfyUI worker and writes comparisons, amplified difference maps,
-boundary crops, and metrics beneath `outputs/gpu-tests/`.
-
-The recorded localized tests at denoise 0.35 and 0.70 report zero changed pixels outside
-final mask support (`outside_mask_exact: true`). Approximately 7.5% of the 768×768 image
-changed because the edit plus feather occupied that part of the canvas. This verifies exact
-outside-mask pixel preservation, not semantic prompt quality.
-
-The recorded whole-image tests changed approximately 99.5–99.9% of pixels. Their average
-delta is smaller at denoise 0.35 than 0.70, but they confirm that global editing is not an
-identity-preserving operation. Prompt adherence, identity retention inside an edit box, and
-the subjective visibility of transition artifacts still require visual GPU evaluation.
-Do not describe the image-edit quality problem as fully solved merely because the outside
-pixel metric passes.
-
-Machine-specific GPU validation command:
-
-```bash
-/opt/ComfyUI/venv_rocm7/bin/python \
-```
-
-Useful flags include `--cases localized`, `--cases global`, `--denoise`,
-`--reference-retention`, `--latent-feather`, `--composite-feather`, and
-`--omit-reference-global`.
-
 ## 4. Regional generation behavior worth preserving
 
 - Generation uses one unified Qwen scene prompt and records token spans for each region.
@@ -178,7 +153,7 @@ Useful flags include `--cases localized`, `--cases global`, `--denoise`,
 - Every generation uses a disposable worker so model and LoRA allocations are returned to
   the OS after completion or cancellation.
 
-`README.md` before changing these contracts.
+See the regional sections of `README.md` before changing these contracts.
 
 ## 5. Tests and current baseline
 
@@ -235,26 +210,23 @@ git diff --check
 | `c350308` | Restored image-associated project state. |
 | `6b0e4d9` | Initial regional image-edit workspace. |
 
-Use `git show <commit>` for design context rather than reconstructing these changes from
-the final files alone.
+The current files and tests are the authoritative design record.
 
 ## 7. Repository boundary
 
 This repository owns the PySide6/QML desktop application, its disposable GPU worker, and the
-shared regional-generation engine. The FastAPI/React browser product, RunPod control plane,
-workspace agent, cloud image, and cloud operations documentation live only in
+shared regional-generation engine.
 
 ## 8. Recommended resumption order
 
-1. Read this file, `README.md`, and the relevant regional engineering-reference section.
-2. Confirm the current branch and inspect the milestone commits after `631978e`.
+1. Read this file, `README.md`, and the focused guides under `docs/`.
+2. Confirm the current branch and inspect the current tests before changing behavior.
 3. Preserve untracked/user-owned files. At this snapshot, `prompts/test4.json` and
    `prompts/testfive.json` are intentionally untracked and must not be modified or committed
    without explicit direction.
 4. Re-run the 46-test focused QML/desktop suite.
-5. For image-edit work, inspect the latest `outputs/gpu-tests/*/validation_report.json`
-   reports and comparison images, then establish a new visual acceptance case before
-   changing masks, conditioning, or feather values.
+5. For image-edit work, establish a visual acceptance case before changing masks,
+   conditioning, or feather values.
 6. Keep each logical change in its own commit. This has been the requested workflow and
    makes regression comparison practical.
 

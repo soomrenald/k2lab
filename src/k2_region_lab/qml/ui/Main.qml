@@ -291,7 +291,7 @@ ApplicationWindow {
                                 Text {
                                     id: refLayerText
                                     anchors.centerIn: parent
-                                    text: "Reference layer"
+                                    text: "Source layout"
                                     color: controller.editLayer === "reference" ? "#c8fff0" : "#8b94a7"
                                     font.pixelSize: 11
                                     font.weight: Font.DemiBold
@@ -400,12 +400,14 @@ ApplicationWindow {
                                     implicitWidth: 92
                                 }
                                 ValueSlider {
+                                    objectName: "comparisonSlider"
                                     visible: resultMode.currentIndex === 2
                                     from: 0
                                     to: 1
                                     value: window.compareValue
                                     stepSize: 0.01
                                     decimals: 2
+                                    liveUpdate: true
                                     Layout.preferredWidth: 205
                                     onValueEdited: value => window.compareValue = value
                                 }

@@ -45,7 +45,7 @@ class QmlWorkspaceTests(unittest.TestCase):
             )
         )
 
-    def test_controller_keeps_reference_and_edit_regions_on_distinct_layers(self) -> None:
+    def test_controller_keeps_source_layout_inspection_only_during_editing(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             backend = self.make_window(Path(directory))
             controller = QmlWorkspaceController(backend)
@@ -64,9 +64,9 @@ class QmlWorkspaceTests(unittest.TestCase):
 
             self.assertEqual(backend.edit_regions[0].region_id, edit_id)
             self.assertEqual(backend.edit_regions[0].prompt, "remove this object")
-            self.assertEqual(backend.edit_reference_regions[0].region_id, reference_id)
-            self.assertEqual(backend.edit_reference_regions[0].prompt, "original subject")
-            self.assertNotEqual(edit_id, reference_id)
+            self.assertEqual(reference_id, "")
+            self.assertEqual(backend.edit_reference_regions, [])
+            self.assertFalse(controller.canDrawRegions)
             controller.deleteLater()
             backend.close()
 
@@ -88,9 +88,11 @@ class QmlWorkspaceTests(unittest.TestCase):
             self.assertEqual(root_object.property("title"), "K2 Region Lab")
 
             comparison_mode = root_object.findChild(QObject, "comparisonMode")
+            comparison_slider = root_object.findChild(QObject, "comparisonSlider")
             canvas_stage = root_object.findChild(QObject, "canvasStage")
             result_clip = root_object.findChild(QObject, "comparisonResultClip")
             self.assertIsNotNone(comparison_mode)
+            self.assertIsNotNone(comparison_slider)
             self.assertIsNotNone(canvas_stage)
             self.assertIsNotNone(result_clip)
             self.assertIsNotNone(root_object.findChild(QObject, "activityButton"))
@@ -98,9 +100,20 @@ class QmlWorkspaceTests(unittest.TestCase):
             self.assertIsNotNone(root_object.findChild(QObject, "eventList"))
             self.assertEqual(controller.eventLimit, 1000)
             self.assertIsNotNone(root_object.findChild(QObject, "numericSlider-steps"))
-            comparison_mode.setProperty("currentIndex", 2)
-            root_object.setProperty("compareValue", 0.25)
+            relaxation_checkbox = root_object.findChild(QObject, "relaxationCheckBox")
+            self.assertIsNotNone(relaxation_checkbox)
+            controller.setMode("edit")
+            root_object.findChild(QObject, "inspectorTabs").setProperty(
+                "currentIndex", 3
+            )
             self.application.processEvents()
+            self.assertTrue(relaxation_checkbox.property("visible"))
+            comparison_mode.setProperty("currentIndex", 2)
+            comparison_track = comparison_slider.findChild(QObject, "valueSliderTrack")
+            comparison_track.setProperty("value", 0.25)
+            self.assertTrue(QMetaObject.invokeMethod(comparison_track, "moved"))
+            self.application.processEvents()
+            self.assertAlmostEqual(root_object.property("compareValue"), 0.25)
             self.assertAlmostEqual(
                 result_clip.property("width"),
                 canvas_stage.property("width") * 0.25,
@@ -642,7 +655,6 @@ class QmlWorkspaceTests(unittest.TestCase):
                 "denoise": (0.05, 1.0),
                 "latentFeather": (0, 256),
                 "compositeFeather": (0, 256),
-                "referenceRetention": (0.0, 1.0),
                 "insideBoost": (0.1, 10.0),
                 "outsidePenalty": (0.0, 10.0),
                 "spatialFalloff": (0, 2048),
@@ -761,16 +773,15 @@ class QmlWorkspaceTests(unittest.TestCase):
                 "denoise",
                 "latentFeather",
                 "compositeFeather",
-                "referenceRetention",
                 "insideBoost",
                 "outsidePenalty",
                 "spatialFalloff",
                 "lateStepScale",
                 "subjectCompetition",
                 "subjectFill",
+                "relaxation",
                 "loraAdaptation",
                 "loraResponse",
-                "preserveIdentity",
                 "editEntireImage",
                 "emphasisStrength",
             }

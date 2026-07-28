@@ -169,6 +169,8 @@ class DesktopSmokeTests(unittest.TestCase):
             self.assertTrue(window._add_lora_path(lora_path))
             lora_id = window._current_lora_id()
             self.assertTrue(window.lora_library.binding_for(lora_id).global_scope)
+            window.lora_strength_input.setValue(0.0)
+            self.assertEqual(window.lora_library.binding_for(lora_id).strength, 0.0)
 
             self.assertTrue(window._set_edit_source(source, confirm_reset=False))
             window.edit_canvas.region_created.emit("edit-region", 40, 40, 240, 240)
@@ -191,13 +193,48 @@ class DesktopSmokeTests(unittest.TestCase):
             self.assertEqual(
                 window._edit_lora_bindings[lora_id].region_ids, ("edit-region",)
             )
+            window.lora_strength_input.setValue(1.25)
+            self.assertEqual(window._edit_lora_bindings[lora_id].strength, 1.25)
+            self.assertEqual(window.lora_library.binding_for(lora_id).strength, 0.0)
             self.assertTrue(window.lora_library.binding_for(lora_id).global_scope)
+            self.assertTrue(window.edit_regional_relaxation_input.isChecked())
+            window.edit_regional_relaxation_input.setChecked(False)
+            self.assertFalse(window.edit_late_step_scale_input.isEnabled())
             saved = window._project_state().loras[0]
             self.assertTrue(saved.edit_enabled)
             self.assertEqual(saved.edit_region_ids, ("edit-region",))
+
+            window.worker_client.send = Mock()
+            window._accelerator_available = True
+            window._models_compatible = True
+            window._model_loaded = True
+            with patch.object(
+                type(window.worker_client),
+                "running",
+                new_callable=PropertyMock,
+                return_value=True,
+            ):
+                window._run_image_edit()
+
+            command, payload = window.worker_client.send.call_args.args
+            self.assertEqual(command, CommandKind.EDIT_IMAGE)
+            self.assertEqual(len(payload["loras"]), 1)
+            self.assertTrue(payload["loras"][0]["id"].startswith("edit:"))
+            self.assertEqual(payload["loras"][0]["strength"], 1.25)
+            self.assertFalse(payload["loras"][0]["global"])
+            self.assertEqual(payload["loras"][0]["region_ids"], ["edit-region"])
+            self.assertEqual(payload["reference_prompt"], "")
+            self.assertEqual(payload["reference_regions"], [])
+            self.assertEqual(payload["prompt_emphases"], [])
+            self.assertFalse(payload["projector_enabled"])
+            self.assertFalse(payload["preserve_identity"])
+            self.assertEqual(payload["reference_description_retention"], 0.0)
+            self.assertEqual(payload["regional_late_step_scale"], 1.0)
             window.close()
 
-    def test_image_edit_loads_embedded_reference_layer_and_fixed_parameters(self) -> None:
+    def test_image_edit_loads_reference_layout_without_activating_generation_loras(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source = root / "generated.png"
@@ -249,10 +286,10 @@ class DesktopSmokeTests(unittest.TestCase):
             with self.assertRaises(KeyError):
                 window.edit_canvas.region_item("person")
             lora_id = window._current_lora_id()
-            self.assertEqual(
-                window._edit_reference_lora_bindings[lora_id].region_ids,
-                ("person",),
+            self.assertFalse(
+                window._edit_reference_lora_bindings[lora_id].global_scope
             )
+            self.assertEqual(window._edit_reference_lora_bindings[lora_id].region_ids, ())
             self.assertEqual(window.lora_library.binding_for(lora_id).strength, 0.7)
 
             window.edit_reference_region_list.setCurrentRow(0)
@@ -309,10 +346,10 @@ class DesktopSmokeTests(unittest.TestCase):
                 window._edit_reference_lora_bindings[lora_id].strength,
                 0.7,
             )
-            self.assertEqual(
-                window._edit_reference_lora_bindings[lora_id].region_ids,
-                ("person",),
+            self.assertFalse(
+                window._edit_reference_lora_bindings[lora_id].global_scope
             )
+            self.assertEqual(window._edit_reference_lora_bindings[lora_id].region_ids, ())
 
             self.assertTrue(window._set_edit_source(plain_source, confirm_reset=False))
             self.assertEqual(window.lora_list.count(), 1)

@@ -739,6 +739,10 @@ class MainWindow(QMainWindow):
         self.edit_subject_competition_input.setChecked(True)
         self.edit_subject_fill_input = QCheckBox("Make subjects fill boxes")
         self.edit_subject_fill_input.setChecked(True)
+        self.edit_regional_relaxation_input = QCheckBox(
+            "Relax spatial guidance during late steps"
+        )
+        self.edit_regional_relaxation_input.setChecked(True)
         self.edit_late_step_scale_input = QDoubleSpinBox()
         self.edit_late_step_scale_input.setRange(0.0, 1.0)
         self.edit_late_step_scale_input.setDecimals(2)
@@ -752,6 +756,12 @@ class MainWindow(QMainWindow):
         self.edit_lora_adaptation_gain_input.setRange(0.0, 1.0)
         self.edit_lora_adaptation_gain_input.setDecimals(2)
         self.edit_lora_adaptation_gain_input.setValue(0.35)
+        self.edit_regional_relaxation_input.toggled.connect(
+            self._set_edit_late_step_scale_enabled
+        )
+        self._set_edit_late_step_scale_enabled(
+            self.edit_regional_relaxation_input.isChecked()
+        )
         edit_controls = (
             ("Seed (fixed)", self.edit_seed_input),
             ("Steps", self.edit_steps_input),
@@ -760,7 +770,6 @@ class MainWindow(QMainWindow):
             ("Denoise", self.edit_denoise_input),
             ("Latent transition", self.edit_latent_feather_input),
             ("Composite feather", self.edit_composite_feather_input),
-            ("Reference retention", self.edit_reference_retention_input),
             ("Inside boost", self.edit_regional_strength_input),
             ("Outside penalty", self.edit_outside_penalty_input),
             ("Spatial falloff", self.edit_spatial_falloff_input),
@@ -776,7 +785,9 @@ class MainWindow(QMainWindow):
         controls.addWidget(self.edit_subject_competition_input, option_row, 0, 1, 2)
         controls.addWidget(self.edit_subject_fill_input, option_row, 2, 1, 2)
         controls.addWidget(self.edit_lora_adaptation_input, option_row, 4, 1, 2)
-        controls.addWidget(self.edit_preserve_identity_input, option_row, 6, 1, 2)
+        controls.addWidget(
+            self.edit_regional_relaxation_input, option_row, 6, 1, 2
+        )
         controls.addWidget(self.edit_entire_image_input, option_row + 1, 0, 1, 2)
         controls_scroll = QScrollArea()
         controls_scroll.setWidgetResizable(True)
@@ -1804,6 +1815,9 @@ class MainWindow(QMainWindow):
     def _set_late_step_scale_enabled(self, enabled: bool) -> None:
         self.regional_late_step_scale_input.setEnabled(enabled)
 
+    def _set_edit_late_step_scale_enabled(self, enabled: bool) -> None:
+        self.edit_late_step_scale_input.setEnabled(enabled)
+
     def _set_lora_delta_adaptation_controls_enabled(self, enabled: bool) -> None:
         self.regional_lora_delta_adaptation_gain_input.setEnabled(enabled)
 
@@ -2695,6 +2709,13 @@ class MainWindow(QMainWindow):
         self.edit_late_step_scale_input.setValue(
             sampling_state.regional_late_step_scale
         )
+        self.edit_regional_relaxation_input.setChecked(
+            (
+                edit_state.regional_late_step_scale < 1.0
+                if use_saved_edit_reference
+                else sampling_state.regional_relaxation
+            )
+        )
         self.edit_lora_adaptation_input.setChecked(
             sampling_state.regional_lora_delta_adaptation
         )
@@ -2703,13 +2724,10 @@ class MainWindow(QMainWindow):
         )
 
         missing_loras = 0
-        reference_loras = (
-            tuple(lora for lora in state.loras if lora.reference_enabled)
-            if use_saved_edit_reference
-            else state.loras
-        )
+        available_loras = state.loras
+        active_reference_loras = 0
         used_lora_ids: set[str] = set()
-        for saved_lora in reference_loras:
+        for saved_lora in available_loras:
             saved_path = saved_lora.path.expanduser().resolve()
             existing_entry = next(
                 (
@@ -2736,28 +2754,36 @@ class MainWindow(QMainWindow):
                 if item is not None:
                     self.lora_list.setCurrentItem(item)
             used_lora_ids.add(lora_id)
+            # A generation PNG contributes reference geometry and makes its LoRA
+            # files selectable, but its generation routes must not become active
+            # edit routes. Only an edited PNG can restore routes explicitly saved
+            # from the image-edit workflow.
+            restore_reference_binding = (
+                use_saved_edit_reference and saved_lora.reference_enabled
+            )
+            active_reference_loras += int(restore_reference_binding)
             self._edit_reference_lora_bindings[lora_id] = LoraBinding(
                 lora_id=lora_id,
                 global_scope=(
                     saved_lora.reference_global_scope
-                    if use_saved_edit_reference
-                    else saved_lora.global_scope
+                    if restore_reference_binding
+                    else False
                 ),
                 region_ids=(
                     saved_lora.reference_region_ids
-                    if use_saved_edit_reference
-                    else saved_lora.region_ids
+                    if restore_reference_binding
+                    else ()
                 ),
                 strength=saved_lora.strength,
                 routing_mode=(
                     saved_lora.reference_routing_mode
-                    if use_saved_edit_reference
+                    if restore_reference_binding
                     else saved_lora.routing_mode
                 ),
                 trigger_phrase=(
                     (
                         saved_lora.reference_trigger_phrase
-                        if use_saved_edit_reference
+                        if restore_reference_binding
                         else saved_lora.trigger_phrase
                     )
                     or saved_lora.path.stem
@@ -2781,7 +2807,8 @@ class MainWindow(QMainWindow):
             f"Loaded source reference conditioning from {provenance.name}: "
             f"fixed seed {sampling_state.seed}, "
             f"{len(self.edit_reference_regions)} region(s), "
-            f"{len(reference_loras) - missing_loras} LoRA(s)"
+            f"{len(available_loras) - missing_loras} LoRA file(s) available, "
+            f"{active_reference_loras} active in image editing"
         )
 
     def _next_edit_region_name(self) -> str:
@@ -3243,10 +3270,11 @@ class MainWindow(QMainWindow):
                     self.edit_composite_feather_input.value()
                 ),
                 "edit_entire_image": self.edit_entire_image_input.isChecked(),
-                "preserve_identity": self.edit_preserve_identity_input.isChecked(),
-                "reference_description_retention": (
-                    self.edit_reference_retention_input.value()
-                ),
+                # The source image supplies all reference information for an edit.
+                # Generation/reference prompts, routes, emphases, and projector
+                # settings must never become active image-edit conditioning.
+                "preserve_identity": False,
+                "reference_description_retention": 0.0,
                 "regional_prompt_strength": self.edit_regional_strength_input.value(),
                 "regional_outside_penalty": self.edit_outside_penalty_input.value(),
                 "regional_feather_pixels": self.edit_spatial_falloff_input.value(),
@@ -3254,7 +3282,11 @@ class MainWindow(QMainWindow):
                     self.edit_subject_competition_input.isChecked()
                 ),
                 "regional_subject_fill": self.edit_subject_fill_input.isChecked(),
-                "regional_late_step_scale": self.edit_late_step_scale_input.value(),
+                "regional_late_step_scale": (
+                    self.edit_late_step_scale_input.value()
+                    if self.edit_regional_relaxation_input.isChecked()
+                    else 1.0
+                ),
                 "regional_lora_delta_adaptation": (
                     self.edit_lora_adaptation_input.isChecked()
                 ),
@@ -3262,31 +3294,11 @@ class MainWindow(QMainWindow):
                     self.edit_lora_adaptation_gain_input.value()
                 ),
                 "regions": [self._region_payload(region) for region in self.edit_regions],
-                "reference_prompt": self.edit_reference_global_prompt.toPlainText(),
-                "reference_regions": [
-                    self._region_payload(region)
-                    for region in self.edit_reference_regions
-                ],
-                "prompt_emphases": [
-                    {
-                        "scope_id": emphasis.scope_id,
-                        "phrase": emphasis.phrase,
-                        "strength": emphasis.strength,
-                        "occurrence": emphasis.occurrence,
-                    }
-                    for emphasis in self.edit_reference_prompt_emphases
-                ],
-                "projector_enabled": self._edit_reference_projector_enabled,
-                "projector_preset": self._edit_reference_projector_preset,
-                "projector_values": list(self._edit_reference_projector_values),
-                "projector_multiplier": self._edit_reference_projector_multiplier,
-                "projector_identity_protection": (
-                    self._edit_reference_projector_identity_protection
-                ),
-                "loras": [
-                    *self._edit_reference_lora_payload(),
-                    *self._edit_lora_payload(),
-                ],
+                "reference_prompt": "",
+                "reference_regions": [],
+                "prompt_emphases": [],
+                "projector_enabled": False,
+                "loras": self._edit_lora_payload(),
                 "project_json": project_document(self._project_state()),
             }
         )
@@ -4033,7 +4045,7 @@ class MainWindow(QMainWindow):
                 self.lora_strength_input.setValue(1.0)
                 self.lora_status.setText("Select a LoRA to inspect its Krea compatibility")
             else:
-                binding = self.lora_library.binding_for(lora_id)
+                binding = self._active_lora_binding(lora_id)
                 self.lora_strength_input.setValue(binding.strength)
                 entry = self.lora_library.get(lora_id)
                 self.lora_status.setText(
@@ -4065,7 +4077,13 @@ class MainWindow(QMainWindow):
         lora_id = self._current_lora_id()
         if lora_id is None:
             return
-        self.lora_library.set_strength(lora_id, strength)
+        if self._editing_scope_active():
+            binding = self._active_lora_binding(lora_id)
+            self._set_active_edit_lora_binding(
+                lora_id, replace(binding, strength=strength)
+            )
+        else:
+            self.lora_library.set_strength(lora_id, strength)
         item = self._lora_list_item(lora_id)
         if item is not None:
             item.setText(self._lora_label(lora_id))
@@ -4197,7 +4215,7 @@ class MainWindow(QMainWindow):
                     "id": f"edit:{entry.lora_id}",
                     "name": entry.display_name,
                     "path": str(entry.path),
-                    "strength": self.lora_library.binding_for(entry.lora_id).strength,
+                    "strength": binding.strength,
                     "global": binding.global_scope,
                     "region_ids": list(binding.region_ids),
                     "routing_mode": binding.routing_mode,
@@ -4217,7 +4235,7 @@ class MainWindow(QMainWindow):
                     "id": f"reference:{entry.lora_id}",
                     "name": entry.display_name,
                     "path": str(entry.path),
-                    "strength": self.lora_library.binding_for(entry.lora_id).strength,
+                    "strength": binding.strength,
                     "global": binding.global_scope,
                     "region_ids": list(binding.region_ids),
                     "routing_mode": binding.routing_mode,
@@ -4525,7 +4543,11 @@ class MainWindow(QMainWindow):
                     self.edit_subject_competition_input.isChecked()
                 ),
                 regional_subject_fill=self.edit_subject_fill_input.isChecked(),
-                regional_late_step_scale=self.edit_late_step_scale_input.value(),
+                regional_late_step_scale=(
+                    self.edit_late_step_scale_input.value()
+                    if self.edit_regional_relaxation_input.isChecked()
+                    else 1.0
+                ),
                 regional_lora_delta_adaptation=(
                     self.edit_lora_adaptation_input.isChecked()
                 ),
@@ -4941,6 +4963,9 @@ class MainWindow(QMainWindow):
         )
         self.edit_subject_fill_input.setChecked(edit_state.regional_subject_fill)
         self.edit_late_step_scale_input.setValue(edit_state.regional_late_step_scale)
+        self.edit_regional_relaxation_input.setChecked(
+            edit_state.regional_late_step_scale < 1.0
+        )
         self.edit_lora_adaptation_input.setChecked(
             edit_state.regional_lora_delta_adaptation
         )
