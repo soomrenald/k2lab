@@ -5,8 +5,7 @@ Code baseline: use `git log --oneline`; this repository contains only the deskto
 Project schema: `k2-region-lab-project`, version 18
 
 This document is the short operational handoff for resuming work on K2 Region Lab. The
-README remains the detailed feature and installation reference, the engineering reference
-documents the regional-control design. The browser/RunPod product is maintained separately at
+README remains the detailed feature, installation, and regional-control reference.
 
 ## 1. Current product state
 
