@@ -137,3 +137,24 @@ Completed so far:
 Still required before Gate 5 can be marked complete: executable Qwen hidden-state taps,
 Krea2 transformer forward execution, VAE decoding, native image output, and latent/image
 parity. Native generation remains unsupported in the backend until those are complete.
+
+## 2026-07-29 — Native Qwen text milestone
+
+Pinned shared core checkpoint: `f35f30fae2fe70c822b52a115a6e00b57e854e1e`
+
+Completed:
+
+- built the reviewed text-only Qwen3-VL-4B graph without importing ComfyUI;
+- strictly mapped 650 executable tensors, including 252 scaled-FP8 linear layers;
+- explicitly rejected unknown quantization markers and ignored only the reviewed
+  315-tensor vision tower that clean Krea2 text conditioning does not execute;
+- preserved the exact 12 pre-layer taps and the intentional absence of final
+  normalization on those intermediate states;
+- matched the Comfy reference conditioning shape `(1, 20, 30720)` with cosine
+  similarity `1.0`, mean absolute error `3.96e-6`, and maximum error `2.90e-4`;
+- produced byte-identical repeated native encodes in one process;
+- released all model allocations from VRAM after unload (the ROCm context retained
+  its normal approximately 32 MiB baseline).
+
+Production default remains `comfyui`; native generation remains unavailable while
+the transformer and VAE execution milestones are incomplete.
