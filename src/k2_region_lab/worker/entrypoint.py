@@ -10,12 +10,19 @@ from typing import Any
 
 from k2_region_lab.config import ModelDirectories
 from k2_region_lab.debug import configure_debug_logging
-from k2core.model import discover_model_artifacts
-from k2core.projector import DEFAULT_PROJECTOR_PRESET
-from k2core.regional_prompting import (
-    prompt_emphases_from_payload,
-    region_definitions_from_payload,
+from k2core.backends import ComfyUIBackend, NativeK2Backend
+from k2core.inference import (
+    BackendName,
+    FaceRefinementRequest,
+    GenerationRequest,
+    ImageEditRequest,
+    K2InferenceError,
+    PipelineConfig,
+    ProgressEvent,
+    configured_backend_name,
+    convert_error,
 )
+from k2core.model import discover_model_artifacts
 from k2core.worker.protocol import CommandKind, WorkerState
 from k2core.worker.runtime import (
     ComfyBaselineRuntime,
@@ -67,11 +74,33 @@ def model_directories(payload: dict[str, Any]) -> ModelDirectories:
     )
 
 
+def forward_progress(callback, event: ProgressEvent) -> None:
+    callback(
+        int(event.step or 0),
+        int(event.total_steps or 0),
+        dict(event.detail),
+    )
+
+
 def main() -> int:
     configure_debug_logging("worker")
     logger = logging.getLogger("k2_region_lab.worker.entrypoint")
     logger.debug("worker starting with executable=%s argv=%r", sys.executable, sys.argv)
+    try:
+        selected_backend = configured_backend_name(logger=logger)
+    except K2InferenceError as error:
+        logger.error("backend selection failed: %s", error)
+        emit(
+            WorkerState.ERROR,
+            str(error),
+            payload={
+                "exception_type": type(error).__name__,
+                "error": error.to_payload(),
+            },
+        )
+        return 1
     runtime: ComfyBaselineRuntime | None = None
+    backend: ComfyUIBackend | NativeK2Backend | None = None
     artifacts = None
     emit(WorkerState.UNLOADED, "GPU worker started")
     for encoded in sys.stdin:
@@ -140,16 +169,28 @@ def main() -> int:
                         if payload.get("face_detector_path") else None
                     ),
                 )
-                loaded = runtime.load(
-                    artifacts,
-                    memory_policy_key=str(payload.get("memory_policy", "safe_16gb")),
-                    reserve_vram_gb=float(payload.get("reserve_vram_gb", 4.0)),
-                    minimum_system_ram_gb=float(
-                        payload.get("minimum_system_ram_gb", 14.0)
-                    ),
-                    cpu_vae=bool(payload.get("cpu_vae", False)),
-                    oom_recovery=bool(payload.get("oom_recovery", True)),
+                backend = (
+                    ComfyUIBackend(runtime)
+                    if selected_backend is BackendName.COMFYUI
+                    else NativeK2Backend()
                 )
+                loaded_pipeline = backend.load(
+                    PipelineConfig(
+                        artifacts=artifacts,
+                        memory_policy=str(
+                            payload.get("memory_policy", "safe_16gb")
+                        ),
+                        reserve_vram_gb=float(
+                            payload.get("reserve_vram_gb", 4.0)
+                        ),
+                        minimum_system_ram_gb=float(
+                            payload.get("minimum_system_ram_gb", 14.0)
+                        ),
+                        cpu_vae=bool(payload.get("cpu_vae", False)),
+                        oom_recovery=bool(payload.get("oom_recovery", True)),
+                    )
+                )
+                loaded = dict(loaded_pipeline.metadata)
                 emit(
                     WorkerState.READY,
                     "Krea 2 baseline components loaded",
@@ -173,7 +214,7 @@ def main() -> int:
                     payload={"compatible": compatible, "loras": reports},
                 )
             elif kind == CommandKind.GENERATE_BASELINE:
-                if runtime is None or not runtime.loaded:
+                if backend is None or runtime is None or not runtime.loaded:
                     raise RuntimeError("load the Krea 2 baseline before generating")
                 generation_started_at = time.monotonic()
                 emit(
@@ -202,71 +243,14 @@ def main() -> int:
                         payload=event_payload,
                     )
 
-                generated = runtime.generate(
-                    prompt=str(payload.get("prompt", "")),
-                    width=int(payload.get("width", 1024)),
-                    height=int(payload.get("height", 1024)),
-                    steps=int(payload.get("steps", 8)),
-                    sampler=str(payload.get("sampler", "euler")),
-                    scheduler=str(payload.get("scheduler", "simple")),
-                    seed=int(payload.get("seed", 0)),
-                    output_directory=Path(payload["output_directory"]),
-                    filename_prefix=str(payload.get("filename_prefix", "baseline")),
-                    regions=region_definitions_from_payload(payload.get("regions", [])),
-                    emphases=prompt_emphases_from_payload(
-                        payload.get("prompt_emphases", [])
-                    ),
-                    regional_prompting=bool(payload.get("regional_prompting", True)),
-                    regional_prompt_strength=float(
-                        payload.get("regional_prompt_strength", 1.0)
-                    ),
-                    regional_outside_penalty=float(
-                        payload.get("regional_outside_penalty", 1.0)
-                    ),
-                    regional_feather_pixels=float(
-                        payload.get("regional_feather_pixels", 128.0)
-                    ),
-                    regional_subject_competition=bool(
-                        payload.get("regional_subject_competition", True)
-                    ),
-                    regional_subject_fill=bool(
-                        payload.get("regional_subject_fill", True)
-                    ),
-                    regional_late_step_scale=float(
-                        payload.get("regional_late_step_scale", 0.35)
-                    ),
-                    regional_lora_delta_adaptation=bool(
-                        payload.get("regional_lora_delta_adaptation", False)
-                    ),
-                    regional_lora_delta_adaptation_gain=float(
-                        payload.get("regional_lora_delta_adaptation_gain", 0.35)
-                    ),
-                    projector_enabled=bool(payload.get("projector_enabled", False)),
-                    projector_preset=str(
-                        payload.get("projector_preset", "filter_bypass2")
-                    ),
-                    projector_values=tuple(payload.get("projector_values", ())),
-                    projector_multiplier=float(payload.get("projector_multiplier", 1.0)),
-                    projector_identity_protection=float(
-                        payload.get("projector_identity_protection", 1.0)
-                    ),
-                    post_upscale=bool(payload.get("post_upscale", False)),
-                    upscale_scale=int(payload.get("upscale_scale", 2)),
-                    upscale_method=str(payload.get("upscale_method", "lanczos")),
-                    upscale_model_path=(
-                        Path(payload["upscale_model_path"])
-                        if payload.get("upscale_model_path")
-                        else None
-                    ),
-                    loras=list(payload.get("loras", [])),
-                    project_json=(
-                        dict(payload["project_json"])
-                        if isinstance(payload.get("project_json"), dict)
-                        else None
-                    ),
-                    progress=progress,
-                    event=runtime_event,
+                request = GenerationRequest.from_payload(
+                    payload, correlation_id=str(command_id or "")
                 )
+                generated = backend.generate(
+                    request,
+                    progress=lambda event: forward_progress(progress, event),
+                    diagnostic=runtime_event,
+                ).to_payload()
                 duration_seconds = time.monotonic() - generation_started_at
                 emit(
                     WorkerState.RUNNING,
@@ -287,7 +271,7 @@ def main() -> int:
                 )
                 return 0
             elif kind == CommandKind.EDIT_IMAGE:
-                if runtime is None or not runtime.loaded:
+                if backend is None or runtime is None or not runtime.loaded:
                     raise RuntimeError("load the Krea 2 baseline before image editing")
                 emit(
                     WorkerState.RUNNING,
@@ -311,86 +295,14 @@ def main() -> int:
                         payload=event_payload,
                     )
 
-                edited = runtime.edit_image(
-                    image_path=Path(payload["image_path"]),
-                    output_directory=(
-                        Path(payload["output_directory"])
-                        if payload.get("output_directory")
-                        else None
-                    ),
-                    prompt=str(payload.get("prompt", "")),
-                    regions=region_definitions_from_payload(payload.get("regions", [])),
-                    reference_prompt=str(payload.get("reference_prompt", "")),
-                    reference_regions=region_definitions_from_payload(
-                        payload.get("reference_regions", [])
-                    ),
-                    prompt_emphases=prompt_emphases_from_payload(
-                        payload.get("prompt_emphases", [])
-                    ),
-                    loras=list(payload.get("loras", [])),
-                    seed=int(payload.get("seed", 0)),
-                    steps=int(payload.get("steps", 8)),
-                    sampler=str(payload.get("sampler", "euler")),
-                    scheduler=str(payload.get("scheduler", "simple")),
-                    denoise=float(payload.get("denoise", 0.15)),
-                    latent_feather_pixels=int(
-                        payload.get("latent_feather_pixels", 64)
-                    ),
-                    composite_feather_pixels=int(
-                        payload.get("composite_feather_pixels", 48)
-                    ),
-                    edit_entire_image=bool(payload.get("edit_entire_image", False)),
-                    preserve_identity=bool(payload.get("preserve_identity", True)),
-                    reference_description_retention=float(
-                        payload.get("reference_description_retention", 1.0)
-                    ),
-                    regional_prompt_strength=float(
-                        payload.get("regional_prompt_strength", 1.0)
-                    ),
-                    regional_outside_penalty=float(
-                        payload.get("regional_outside_penalty", 1.0)
-                    ),
-                    regional_feather_pixels=float(
-                        payload.get("regional_feather_pixels", 128.0)
-                    ),
-                    regional_subject_competition=bool(
-                        payload.get("regional_subject_competition", True)
-                    ),
-                    regional_subject_fill=bool(
-                        payload.get("regional_subject_fill", True)
-                    ),
-                    regional_late_step_scale=float(
-                        payload.get("regional_late_step_scale", 0.35)
-                    ),
-                    regional_lora_delta_adaptation=bool(
-                        payload.get("regional_lora_delta_adaptation", False)
-                    ),
-                    regional_lora_delta_adaptation_gain=float(
-                        payload.get("regional_lora_delta_adaptation_gain", 0.35)
-                    ),
-                    projector_enabled=bool(payload.get("projector_enabled", False)),
-                    projector_preset=str(
-                        payload.get("projector_preset", DEFAULT_PROJECTOR_PRESET)
-                    ),
-                    projector_values=(
-                        tuple(float(value) for value in payload["projector_values"])
-                        if payload.get("projector_values") is not None
-                        else None
-                    ),
-                    projector_multiplier=float(
-                        payload.get("projector_multiplier", 1.0)
-                    ),
-                    projector_identity_protection=float(
-                        payload.get("projector_identity_protection", 1.0)
-                    ),
-                    project_json=(
-                        dict(payload["project_json"])
-                        if isinstance(payload.get("project_json"), dict)
-                        else None
-                    ),
-                    progress=edit_progress,
-                    event=edit_event,
+                request = ImageEditRequest.from_payload(
+                    payload, correlation_id=str(command_id or "")
                 )
+                edited = backend.generate(
+                    request,
+                    progress=lambda event: forward_progress(edit_progress, event),
+                    diagnostic=edit_event,
+                ).to_payload()
                 emit(
                     WorkerState.READY,
                     "Image editing complete",
@@ -404,7 +316,7 @@ def main() -> int:
                 )
                 return 0
             elif kind == CommandKind.REFINE_FACES:
-                if runtime is None or not runtime.loaded:
+                if backend is None or runtime is None or not runtime.loaded:
                     raise RuntimeError("load the Krea 2 baseline before refining faces")
                 emit(
                     WorkerState.RUNNING,
@@ -422,43 +334,13 @@ def main() -> int:
                         payload=event_payload,
                     )
 
-                refined = runtime.refine_faces(
-                    image_path=Path(payload["image_path"]),
-                    output_directory=(
-                        Path(payload["output_directory"])
-                        if payload.get("output_directory")
-                        else None
-                    ),
-                    regions=region_definitions_from_payload(payload.get("regions", [])),
-                    loras=list(payload.get("loras", [])),
-                    seed=int(payload.get("seed", 0)),
-                    steps=int(payload.get("steps", 8)),
-                    denoise=float(payload.get("denoise", 0.15)),
-                    crop_size=int(payload.get("crop_size", 512)),
-                    padding=float(payload.get("padding", 2.0)),
-                    feather=float(payload.get("feather", 0.12)),
-                    blend=float(payload.get("blend", 0.5)),
-                    lora_scale=float(payload.get("lora_scale", 0.5)),
-                    detector_threshold=float(
-                        payload.get("detector_threshold", 0.15)
-                    ),
-                    detector_provider=str(payload.get("detector_provider", "auto")),
-                    selected_face_indices=(
-                        tuple(int(index) for index in payload["selected_face_indices"])
-                        if payload.get("selected_face_indices") is not None
-                        else None
-                    ),
-                    manual_face_paths=tuple(
-                        tuple((float(point[0]), float(point[1])) for point in path)
-                        for path in payload.get("manual_face_paths", ())
-                    ),
-                    project_json=(
-                        dict(payload["project_json"])
-                        if isinstance(payload.get("project_json"), dict)
-                        else None
-                    ),
-                    event=refinement_event,
+                request = FaceRefinementRequest.from_payload(
+                    payload, correlation_id=str(command_id or "")
                 )
+                refined = backend.generate(
+                    request,
+                    diagnostic=refinement_event,
+                ).to_payload()
                 emit(
                     WorkerState.READY,
                     "Face refinement complete",
@@ -479,11 +361,31 @@ def main() -> int:
         except Exception as error:
             logger.exception("worker command failed")
             traceback.print_exc(file=sys.stderr)
+            structured = (
+                error
+                if isinstance(error, K2InferenceError)
+                else convert_error(
+                    error,
+                    backend_name=selected_backend.value,
+                    phase=kind.value if kind is not None else "worker_command",
+                    correlation_id=str(command_id or ""),
+                    gpu_work_started=kind
+                    in {
+                        CommandKind.LOAD_MODEL,
+                        CommandKind.GENERATE_BASELINE,
+                        CommandKind.EDIT_IMAGE,
+                        CommandKind.REFINE_FACES,
+                    },
+                )
+            )
             emit(
                 WorkerState.ERROR,
                 str(error),
                 command_id=command_id,
-                payload={"exception_type": type(error).__name__},
+                payload={
+                    "exception_type": type(error).__name__,
+                    "error": structured.to_payload(),
+                },
             )
             if kind in {
                 CommandKind.LOAD_MODEL,

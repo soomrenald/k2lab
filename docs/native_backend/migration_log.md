@@ -32,3 +32,30 @@ Cloud/GPU spend: none.
 
 Gate status: awaiting explicit Gate 1 approval. Model-loading implementation is prohibited
 until approval.
+
+## 2026-07-28 — Gate 1 approved / Gate 2 started
+
+The user explicitly approved Gate 1 with the recommended scope, reference, licensing,
+fixture-storage, and RunPod-deferral decisions. Gate 2 implementation began in the shared
+`k2core` package. Native model loading remains out of scope.
+
+## 2026-07-28 — Gate 2 candidate
+
+Pinned shared core commit: `e35a01d7f381764a7b3069aaeef13f3aa4c83b1f`
+
+Completed:
+
+- added immutable shared requests/results and structured errors;
+- added the backend lifecycle, explicit selector, ComfyUI adapter, and unsupported native
+  placeholder;
+- routed desktop worker load/generate/edit/refine operations through the adapter;
+- retained ComfyUI as the unset and explicit default;
+- verified explicit native failure without fallback;
+- updated and fetched the locked shared-core dependency;
+- passed core and K2Lab suites;
+- passed one real local ROCm clean-generation smoke through `ComfyUIBackend`.
+
+Production default: unchanged (`comfyui`).
+Native inference: not implemented.
+Cloud/GPU spend: no cloud spend; one local 512×512 eight-step smoke.
+Gate status: awaiting explicit Gate 2 approval.

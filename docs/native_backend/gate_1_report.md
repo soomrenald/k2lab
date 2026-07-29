@@ -1,8 +1,23 @@
 # Approval Gate 1 report
 
-Status: **AWAITING EXPLICIT APPROVAL**
+Status: **APPROVED 2026-07-28**
 Scope completed: Phase 0 only
 Branch: `feature/native-k2-backend`
+
+## Approval record
+
+The user explicitly approved Gate 1 with the recommended decisions:
+
+- current configured ComfyUI plus exact component hashes is the initial reference;
+- Krea2 Turbo with `euler`/`simple` is the first native target, without removing any
+  existing ComfyUI option;
+- Raw and additional native sampler combinations are deferred until characterized;
+- RunPod integration is deferred until its product repository is brought into scope;
+- no ComfyUI source will be vendored; use upstream libraries or clean-room behavior;
+- golden prompts will be synthetic, with large artifacts kept outside Git;
+- Gate 2 may add schemas, structured errors, `ComfyUIBackend`, and
+  `K2LAB_BACKEND=comfyui` as the default;
+- native model loading remains prohibited before its later approval gate.
 
 ## Completed work
 

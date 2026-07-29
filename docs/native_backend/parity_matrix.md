@@ -13,8 +13,8 @@ Reference baseline:
 
 | Capability / case | Current ComfyUI behavior | Native status | Required evidence / gate |
 | --- | --- | --- | --- |
-| Backend-neutral schema round-trip | Loose worker dictionaries only | NOT IMPLEMENTED | Exact request/result/metadata round-trip; Gate 2 |
-| Default backend remains ComfyUI | Only direct ComfyUI runtime exists | NOT IMPLEMENTED | Unset/`comfyui` selection tests and log evidence; Gate 2 |
+| Backend-neutral schema round-trip | Typed schemas now wrap the legacy worker dictionaries | PASS | Exact successful result contract and request delegation tests; Gate 2 |
+| Default backend remains ComfyUI | Unset and explicit `comfyui` select the adapter | PASS | Selector, worker integration, rollback tests and real worker log; Gate 2 |
 | Clean Krea2 Turbo text-to-image | Supported, CFG 1.0 | NOT IMPLEMENTED | Golden embedding/noise/sigma/latent/image fixture; Gate 5 |
 | Krea2 Raw / non-Turbo | Architecture selectable; production semantics unclear | BLOCKED | Product decision and reference fixture |
 | Seed repeatability | Seed passed to `comfy.sample.prepare_noise` and `sample` | NOT IMPLEMENTED | Same-backend repeats plus cross-backend initial-noise comparison; Gate 5 |
@@ -39,7 +39,7 @@ Reference baseline:
 | ROCm | Supported through selected ComfyUI environment | NOT IMPLEMENTED | Local smoke, attention backend, FP8 and memory evidence; Gates 5/10 |
 | Desktop entry point | Supported | NOT IMPLEMENTED | Identical shared-schema fixture through UI service; Gate 11 |
 | RunPod entry point | No implementation in this repository | BLOCKED | Scope/repository, job service, persistence/reconnect tests; Gate 11 |
-| Structured error taxonomy | Plain exception type/message events | NOT IMPLEMENTED | Every category serialized with correlation and retry fields; Gate 2 onward |
+| Structured error taxonomy | Legacy fields retained with additive structured error payload | PASS | Category conversion and explicit unsupported-native worker evidence; Gate 2 |
 | Durable correlation ID | Per-command UUID only | NOT IMPLEMENTED | Same ID across UI/service/worker/output; Gate 2/11 |
 
 No row may move from `NOT IMPLEMENTED` to `PASS` without a stored report linked to the
