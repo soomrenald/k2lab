@@ -1,0 +1,97 @@
+{
+  "schema_version": "k2lab-parity-fixture/1",
+  "fixture_id": "regional-prompting-krea2-two-vases-512",
+  "status": "PASS WITH APPROVED DIFFERENCE",
+  "artifact_policy": {
+    "storage": "outside_git",
+    "content_addressed": true,
+    "contains_only_synthetic_prompt_data": true
+  },
+  "request": {
+    "prompt": "A clean studio photograph on a plain white background.",
+    "width": 512,
+    "height": 512,
+    "steps": 8,
+    "seed": 20260729,
+    "sampler": "euler",
+    "scheduler": "simple",
+    "cfg": 1.0,
+    "regional_prompting": true,
+    "regional_prompt_strength": 1.0,
+    "regional_outside_penalty": 1.0,
+    "regional_feather_pixels": 128.0,
+    "regional_subject_competition": true,
+    "regional_subject_fill": true,
+    "regional_late_step_scale": 0.35,
+    "regions": [
+      {
+        "id": "left",
+        "name": "Red vase",
+        "box": {"x0": 32, "y0": 80, "x1": 240, "y1": 464},
+        "prompt": "a glossy red ceramic vase",
+        "priority": 2,
+        "spatial_role": "subject"
+      },
+      {
+        "id": "right",
+        "name": "Blue vase",
+        "box": {"x0": 272, "y0": 80, "x1": 480, "y1": 464},
+        "prompt": "a glossy blue ceramic vase",
+        "priority": 1,
+        "spatial_role": "subject"
+      }
+    ]
+  },
+  "environment": {
+    "captured_at": "2026-07-29",
+    "k2lab_commit": "520a6ca",
+    "k2core_commit": "1c571a8d5415612cf1a41a7c848bcc6f76e75290",
+    "comfyui_commit": "285a98944c397a4a81f15ac63d69fa3dbc0a27b9",
+    "torch": "2.10.0+rocm7.1",
+    "hip": "7.1.25424",
+    "accelerator": "AMD Radeon Graphics",
+    "accelerator_memory_bytes": 17095983104
+  },
+  "semantic_checkpoints": {
+    "compiled_prompt_exact": true,
+    "conditioning_text_token_count": 173,
+    "image_token_grid": [32, 32],
+    "region_order": ["left", "right"],
+    "text_token_spans": [[10, 73], [73, 136]],
+    "main_stream_attention_calls": 224,
+    "text_refiner_attention_calls": 16,
+    "native_clean_no_region_pixel_sha256": "b04a747c3b92720d30e0ee592465dfb0a8b869d764e9c058ba0baa0f96e45b87",
+    "native_clean_no_region_matches_gate_5": true
+  },
+  "measurements": {
+    "reference_size": [512, 512],
+    "candidate_size": [512, 512],
+    "reference_mode": "RGB",
+    "candidate_mode": "RGB",
+    "reference_pixel_sha256": "f45903f6925b033fd1118ecf4db12558d4d8775095517f4b6b8b3dedcd28b834",
+    "candidate_pixel_sha256": "45182ed825303b07a245411faa9d09020028df8daba0fd0c87339ec1b7287a51",
+    "cosine": 0.9988356883539914,
+    "mean_absolute_error": 0.010999941358379289,
+    "rmse": 0.03632964913324063,
+    "maximum_absolute_error": 0.6705882352941177,
+    "psnr_db": 28.79477592946924,
+    "exact_pixel_fraction": 0.5426623026529948,
+    "human_review": "visually equivalent structure, color, placement, scale, and containment"
+  },
+  "performance": {
+    "native_generation_seconds": 16.91583421699761,
+    "comfy_generation_seconds": 77.64419969299342
+  },
+  "diagnostics": {
+    "mask_preview_sha256": "d5729d5661ceba11704ff8e81e8f7856996347748643d0737b3fabdd53a78d66",
+    "latent_mask_preview_sha256": "c3a42436338b725404d99220c8929149f373907298bb245399e5ed8b6a8c3588",
+    "token_assignment_preview_sha256": "fbbed47eef1f5c13be61f7822bf863dbdba42bedd15e88dc1f1d302981bb380d",
+    "overlap_preview_sha256": "3bfe77354464c1577609f1630b6d9d8f41b8dbf25d683e878962719921397ba9",
+    "overlap_fixture_token_count": 192
+  },
+  "external_artifacts": {
+    "reference_png_sha256": "f2383e95513a7cc224a3c54080c0eabbf847d03399eee8fef5aad3a9e50e9043",
+    "candidate_png_sha256": "baa70f2f13b5d4fb80eb516efedd0e588c2bf2528765e1f761f9d0e4e3461316",
+    "clean_regression_png_sha256": "1a75319d356ddeaa7c33e6f90f783f72d48e161e0bbd364e459d1e794725ee5b"
+  }
+}

@@ -311,3 +311,23 @@ Completed:
 
 Gate 6 passes. The product default remains `comfyui`, and native remains developer-only
 while regional prompting and later phases are implemented.
+
+## 2026-07-29 — Gate 7 native regional prompting
+
+Pinned shared core checkpoint: `1c571a8d5415612cf1a41a7c848bcc6f76e75290`
+
+Completed:
+
+- bridged the existing K2Lab-owned regional compiler and exact chunked attention
+  controller into the native Diffusers transformer;
+- added explicit normalized-coordinate conversion and reusable mask, latent-grid,
+  token-assignment, and overlap visual diagnostics;
+- passed the one/multiple/overlap/edge/full/tiny/invalid/aspect/global interaction matrix;
+- matched the reference compiled prompt, 173 tokens, token spans, and 224/16 attention
+  call counts in an eight-step two-region generation;
+- measured native-versus-Comfy cosine `0.9988357`, MAE `0.0109999`, and RMSE `0.0363296`,
+  with visually equivalent placement and content;
+- proved the no-region path remains pixel-exact to the Gate 5 native golden output.
+
+Gate 7 passes with the approved scaled-FP8 image difference. The product default remains
+`comfyui`, and native remains developer-only.
