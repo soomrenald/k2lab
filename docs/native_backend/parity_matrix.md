@@ -15,13 +15,13 @@ Reference baseline:
 | --- | --- | --- | --- |
 | Backend-neutral schema round-trip | Typed schemas now wrap the legacy worker dictionaries | PASS | Exact successful result contract and request delegation tests; Gate 2 |
 | Default backend remains ComfyUI | Unset and explicit `comfyui` select the adapter | PASS | Selector, worker integration, rollback tests and real worker log; Gate 2 |
-| Clean Krea2 Turbo text-to-image | Supported, CFG 1.0 | NOT IMPLEMENTED | Golden embedding/noise/sigma/latent/image fixture; Gate 5 |
+| Clean Krea2 Turbo text-to-image | Supported, CFG 1.0 | PASS WITH APPROVED DIFFERENCE | Local 512×512 eight-step golden fixture: image cosine 0.9998963, MAE 0.0056209, pixel-exact native repeats; Gate 5 reliability work remains |
 | Krea2 Raw / non-Turbo | Architecture selectable; production semantics unclear | BLOCKED | Product decision and reference fixture |
-| Seed repeatability | Seed passed to `comfy.sample.prepare_noise` and `sample` | NOT IMPLEMENTED | Same-backend repeats plus cross-backend initial-noise comparison; Gate 5 |
+| Seed repeatability | Seed passed to `comfy.sample.prepare_noise` and `sample` | PASS | Explicit CPU generator, exact initial-noise contract, and pixel-exact repeated native golden runs; Gate 5 |
 | Dimensions / 16-pixel alignment | Supported | NOT IMPLEMENTED | Dimension matrix and latent-shape checkpoints; Gate 5 |
-| Sampler/scheduler combinations | UI exposes copied ComfyUI registries | BLOCKED | Approve required pair list, then sigma/scheduler parity; Gate 5 |
-| Progress | Per denoising step | NOT IMPLEMENTED | Ordered events and final completion; Gate 5 |
-| Cancellation | Desktop terminates disposable worker | NOT IMPLEMENTED | Response envelope, cleanup, and behavioral-difference review; Gate 5 |
+| Sampler/scheduler combinations | UI exposes copied ComfyUI registries | PASS | Approved first pair Euler/simple has exact sigma construction; every other pair is rejected explicitly by native capabilities |
+| Progress | Per denoising step | PASS | Ordered text, eight diffusion, and VAE events observed in golden runs; Gate 5 |
+| Cancellation | Desktop terminates disposable worker | PASS WITH APPROVED DIFFERENCE | Native cooperatively stops before the next step and cleans up; current Comfy desktop terminates its disposable worker |
 | Ordinary LoRA | Unfused ComfyUI adapter patches | NOT IMPLEMENTED | No/one/multiple/zero/negative/error/deterministic-order fixtures; Gate 6 |
 | Regional prompting | Unified prompt and optimized-attention override | NOT IMPLEMENTED | Region/overlap/role/token/mask/intermediate attention fixtures; Gate 7 |
 | Regional LoRA | Unfused text/image delta gates with unsafe target omission | NOT IMPLEMENTED | Target/delta/leakage/global-plus-regional fixtures; Gate 8 |
@@ -36,7 +36,7 @@ Reference baseline:
 | Model registry independent of ComfyUI | Versioned TOML accepts arbitrary paths; legacy discovery is opt-in | PASS | Eight required registry cases, full suites, and read-only validation of both installed Krea2 sets; Gate 3 |
 | Strict component loading | ComfyUI loader plus K2 header manifest | PASS | Exact approved hashes, 2,097/2,097 mapped tensors, parameter/dtype/device reports, and three stable ROCm unload cycles; Gate 4 |
 | CUDA | Supported through selected ComfyUI environment | NOT IMPLEMENTED | Approved GPU matrix and soak tests; Gates 5/10 |
-| ROCm | Supported through selected ComfyUI environment | NOT IMPLEMENTED | Local smoke, attention backend, FP8 and memory evidence; Gates 5/10 |
+| ROCm | Supported through selected ComfyUI environment | PASS | Local 16 GiB scaled-FP8 eight-step golden, repeat, cancellation, and cleanup evidence; wider Gate 10 matrix remains |
 | Desktop entry point | Supported | NOT IMPLEMENTED | Identical shared-schema fixture through UI service; Gate 11 |
 | RunPod entry point | No implementation in this repository | BLOCKED | Scope/repository, job service, persistence/reconnect tests; Gate 11 |
 | Structured error taxonomy | Legacy fields retained with additive structured error payload | PASS | Category conversion and explicit unsupported-native worker evidence; Gate 2 |

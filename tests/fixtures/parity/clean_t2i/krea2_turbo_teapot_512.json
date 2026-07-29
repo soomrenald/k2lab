@@ -1,0 +1,113 @@
+{
+  "schema_version": "k2lab-parity-fixture/1",
+  "fixture_id": "clean-t2i-krea2-turbo-teapot-512",
+  "status": "PASS WITH APPROVED DIFFERENCE",
+  "artifact_policy": {
+    "storage": "outside_git",
+    "content_addressed": true,
+    "contains_only_synthetic_prompt_data": true
+  },
+  "request": {
+    "prompt": "A small red ceramic teapot on a plain white table, studio lighting.",
+    "negative_prompt": "",
+    "width": 512,
+    "height": 512,
+    "steps": 8,
+    "seed": 20260729,
+    "sampler": "euler",
+    "scheduler": "simple",
+    "cfg": 1.0,
+    "denoise": 1.0
+  },
+  "components": {
+    "transformer": {
+      "filename": "krea2_turbo_fp8_scaled.safetensors",
+      "sha256": "eb4dd8c612cfd10f64f25b057e6e6bbcb5737c94a7372177e456dbf7579502f1",
+      "size_bytes": 13141730784
+    },
+    "text_encoder": {
+      "filename": "qwen3vl_4b_fp8_scaled.safetensors",
+      "sha256": "54bd5144df0bbc25dd6ccadfcb826b521445a1b06ae5a42570bdd2974ca87094",
+      "size_bytes": 5242467968
+    },
+    "vae": {
+      "filename": "qwen_image_vae.safetensors",
+      "sha256": "a70580f0213e67967ee9c95f05bb400e8fb08307e017a924bf3441223e023d1f",
+      "size_bytes": 253806246
+    },
+    "tokenizer": {
+      "sha256": "9362730d7f1fe82e277f363f2294f30edb2bb81b5c67b0d1b83813a5ac21f34d"
+    }
+  },
+  "environment": {
+    "captured_at": "2026-07-29",
+    "k2lab_commit": "4c5cfca581719c0f2af04d8c988dd466ad34f947",
+    "k2core_commit": "04d5b7115791739a5e091b517125250fe6dcb70b",
+    "comfyui_commit": "285a98944c397a4a81f15ac63d69fa3dbc0a27b9",
+    "python": "3.12.13",
+    "torch": "2.10.0+rocm7.1",
+    "hip": "7.1.25424",
+    "transformers": "5.14.1",
+    "diffusers": "0.39.0",
+    "safetensors": "0.8.0",
+    "accelerator": "AMD Radeon Graphics",
+    "accelerator_memory_bytes": 17095983104,
+    "attention": "pytorch_sdpa",
+    "dtype": "bfloat16_with_scaled_fp8_weights"
+  },
+  "exact_checkpoints": {
+    "conditioned_token_count": 20,
+    "initial_noise": "exact_by_explicit_cpu_generator",
+    "sigma_count": 9,
+    "sigmas": [
+      1.0,
+      0.9567237271222464,
+      0.9045307667386396,
+      0.8403488020923521,
+      0.7595109169491111,
+      0.6545668033876179,
+      0.5128441015091338,
+      0.3109010566906254,
+      0.0
+    ]
+  },
+  "thresholds": {
+    "minimum_cosine": 0.999,
+    "maximum_mean_absolute_error": 0.015,
+    "maximum_rmse": 0.04,
+    "maximum_absolute_error": 0.5,
+    "minimum_psnr_db": 30.0
+  },
+  "measurements": {
+    "reference_size": [512, 512],
+    "candidate_size": [512, 512],
+    "reference_mode": "RGB",
+    "candidate_mode": "RGB",
+    "reference_pixel_sha256": "8dc6dd72de033f1c20287a87987e20e846612f851b0b8113d95aaf7ea3bc038d",
+    "candidate_pixel_sha256": "b04a747c3b92720d30e0ee592465dfb0a8b869d764e9c058ba0baa0f96e45b87",
+    "cosine": 0.9998962645533075,
+    "mean_absolute_error": 0.005620854196984784,
+    "rmse": 0.011399782324404062,
+    "maximum_absolute_error": 0.29803921568627456,
+    "psnr_db": 38.86206882627532,
+    "exact_pixel_fraction": 0.29364649454752606
+  },
+  "repeatability": {
+    "native_runs": 2,
+    "pixel_exact": true,
+    "pixel_sha256": "b04a747c3b92720d30e0ee592465dfb0a8b869d764e9c058ba0baa0f96e45b87"
+  },
+  "performance": {
+    "native_load_seconds": 7.779167821994633,
+    "native_cold_generation_seconds": 18.102748731995234,
+    "native_warm_generation_seconds": 11.869422521005617,
+    "native_peak_allocated_bytes": 13917537792,
+    "comfy_load_seconds": 2.7006103089952376,
+    "comfy_generation_seconds": 78.2683244360087
+  },
+  "external_artifacts": {
+    "reference_png_sha256": "01f76a6c017e8ff758cb46affeca8d5206eeb4c7490890d12e4dd43f0fff6e28",
+    "candidate_run_1_png_sha256": "02af41c38c9a221861056581d72a3f3afb1a49f40d18edaf0ad19cee7bb433ea",
+    "candidate_run_2_png_sha256": "4994cf40bcda3b8ec0bb2bf9bd76c66cf2c1f6d179bedf75c9285a5a31aa00c1"
+  }
+}

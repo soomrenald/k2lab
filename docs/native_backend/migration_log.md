@@ -226,3 +226,22 @@ The product default remains `comfyui`, and native remains developer-only. Gate 5
 complete until the approved eight-step golden fixture, cancellation, malformed-input,
 dimension, sequential-generation, cleanup, desktop, and supported RunPod soak evidence
 is recorded.
+
+## 2026-07-29 — Gate 5 local golden candidate
+
+Pinned shared core checkpoint: `bc653e493d2378b166d1bcb968afe7dd492f3efa`
+
+Completed:
+
+- added reusable decoded-image parity measurements in shared core;
+- stored the synthetic 512×512 eight-step request, environment, component identities,
+  thresholds, measurements, timings, and external artifact hashes as a versioned fixture;
+- measured native-versus-Comfy image cosine `0.9998963`, MAE `0.0056209`, RMSE
+  `0.0113998`, and PSNR `38.8621 dB`;
+- proved pixel-exact native repeated-seed output in two runs;
+- proved cooperative step-boundary cancellation and cleanup on local ROCm;
+- passed 163 core tests and 181 K2Lab tests, with the existing two intentional skips.
+
+Gate 5 remains incomplete: the dimension/malformed-input matrices, ten sequential local
+generations, desktop smoke, and 100-generation supported-RunPod soak are not complete.
+The RunPod item remains blocked by deferred infrastructure scope/spend.
