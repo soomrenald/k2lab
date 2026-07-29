@@ -158,3 +158,27 @@ Completed:
 
 Production default remains `comfyui`; native generation remains unavailable while
 the transformer and VAE execution milestones are incomplete.
+
+## 2026-07-29 — Native Krea2 transformer milestone
+
+Pinned shared core checkpoint: `7c0dcfd5da045d3ed6ce1bfeeb45266795650f10`
+
+Completed:
+
+- used Diffusers 0.39's upstream `Krea2Transformer2DModel` rather than copying the
+  Comfy implementation;
+- strictly mapped all 686 checkpoint tensors and the flattened per-block modulation
+  tables onto the upstream graph;
+- preserved all 256 scaled-FP8 layers, including the checkpoint's 96 full-precision
+  and 160 fixed-scale FP8 activation-matmul policies;
+- retained FP32 RMSNorm execution and explicit repeated grouped-query K/V semantics;
+- implemented 5D latent validation, 2×2 packing/unpacking, padding/cropping, 3-axis
+  position IDs, timestep handling, and all-valid mask elision;
+- matched a local 512×512, sigma-1 Comfy velocity checkpoint with cosine similarity
+  `0.999693`, mean absolute error `0.0266`, RMSE `0.0346`, and maximum error `0.203`;
+- produced byte-identical repeated native transformer outputs in one process;
+- released all model allocations from VRAM after unload, leaving only the normal ROCm
+  context baseline.
+
+The product default remains `comfyui`. Native generation remains unavailable until
+VAE decode and complete multi-step/image parity are implemented.
