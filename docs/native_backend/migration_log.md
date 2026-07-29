@@ -376,3 +376,27 @@ Completed:
 
 Gate 9 passes with the approved scaled-FP8 difference and documented full-denoise
 finite-feather behavior. Native remains developer-only and `comfyui` remains the default.
+
+## 2026-07-29 — Gate 10 native memory and device management
+
+Pinned shared core checkpoint: `237fd23dc4a578e9d1a095fac0587d4d6bdf88e4`
+
+Completed:
+
+- replaced Comfy memory ownership for the native path with explicit K2 device planning,
+  allocator telemetry, sequential component execution, cleanup, optional VAE tiling,
+  and one configured safe VAE OOM fallback;
+- validated ten same-process load/unload cycles and five deterministic sequential
+  generations without persistent allocator growth;
+- classified a deliberate preflight OOM before GPU work, recovered with a fresh valid
+  request, and cancelled an OOM-prone workload after one denoising step;
+- cleared BLAS workspaces and request traceback/tensor references so final unload
+  consistently reaches zero allocated and reserved bytes;
+- completed local ROCm BF16, explicit FP16, mixed-lane FP8 weight, tiled VAE, CPU VAE,
+  clean-generation, and image-edit smoke tests;
+- passed 200 core tests, 2 intentional skips, and 14 subtests.
+
+Gate 10 is blocked because its mandatory A40 48 GB validation has no available or
+authorized execution target. No 80 GB device is available, and the release-level
+100-job soak remains outstanding. Phase 9 has not begun. Native stays developer-only
+and `comfyui` remains the product default.

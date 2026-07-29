@@ -350,7 +350,7 @@ model = [
 [package.metadata]
 requires-dist = [
     { name = "diffusers", marker = "extra == 'model'", specifier = ">=0.39" },
-    { name = "k2core", git = "https://github.com/soomrenald/k2core.git?rev=8f7ec5c53401643000cce1db12fb6be65d61d2ff" },
+    { name = "k2core", git = "https://github.com/soomrenald/k2core.git?rev=237fd23dc4a578e9d1a095fac0587d4d6bdf88e4" },
     { name = "numpy", specifier = ">=2.1" },
     { name = "onnxruntime", specifier = ">=1.20" },
     { name = "pillow", specifier = ">=12.3.0" },
@@ -369,7 +369,7 @@ provides-extras = ["model", "diagnostics", "dev"]
 [[package]]
 name = "k2core"
 version = "0.1.0"
-source = { git = "https://github.com/soomrenald/k2core.git?rev=8f7ec5c53401643000cce1db12fb6be65d61d2ff#8f7ec5c53401643000cce1db12fb6be65d61d2ff" }
+source = { git = "https://github.com/soomrenald/k2core.git?rev=237fd23dc4a578e9d1a095fac0587d4d6bdf88e4#237fd23dc4a578e9d1a095fac0587d4d6bdf88e4" }
 dependencies = [
     { name = "numpy" },
     { name = "pillow" },
