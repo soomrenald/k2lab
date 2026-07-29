@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from k2_region_lab.worker import entrypoint
-from k2core.inference import LoadedPipeline
+from k2core.inference import LoadedPipeline, ProgressEvent
 
 
 class Runtime:
@@ -199,6 +199,49 @@ class WorkerBackendSelectionTests(unittest.TestCase):
             failure["payload"]["error"]["category"],
             "ConfigurationError",
         )
+
+    def test_native_phase_progress_is_not_labeled_as_denoising(self) -> None:
+        output = io.StringIO()
+        with redirect_stdout(output):
+            entrypoint.emit_generation_progress(
+                "native-progress",
+                ProgressEvent(
+                    correlation_id="native-progress",
+                    phase="text_encoding",
+                    fraction=0.0,
+                ),
+            )
+            entrypoint.emit_generation_progress(
+                "native-progress",
+                ProgressEvent(
+                    correlation_id="native-progress",
+                    phase="vae_decode",
+                    fraction=1.0,
+                ),
+            )
+            entrypoint.emit_generation_progress(
+                "native-progress",
+                ProgressEvent(
+                    correlation_id="native-progress",
+                    phase="diffusion",
+                    step=3,
+                    total_steps=8,
+                    fraction=3 / 8,
+                    detail={"sigma": 0.8},
+                ),
+            )
+
+        events = [json.loads(line) for line in output.getvalue().splitlines()]
+        self.assertEqual(
+            [event["message"] for event in events],
+            [
+                "Prompt encoding started",
+                "VAE decode complete",
+                "Denoising step 3/8",
+            ],
+        )
+        self.assertEqual(events[0]["payload"]["phase"], "text_encoding")
+        self.assertEqual(events[2]["payload"]["memory"]["sigma"], 0.8)
 
 
 if __name__ == "__main__":

@@ -18,7 +18,7 @@ Reference baseline:
 | Clean Krea2 Turbo text-to-image | Supported, CFG 1.0 | PASS WITH APPROVED DIFFERENCE | Local 512×512 eight-step golden fixture: image cosine 0.9998963, MAE 0.0056209, pixel-exact native repeats; Gate 5 reliability work remains |
 | Krea2 Raw / non-Turbo | Architecture selectable; production semantics unclear | BLOCKED | Product decision and reference fixture |
 | Seed repeatability | Seed passed to `comfy.sample.prepare_noise` and `sample` | PASS | Explicit CPU generator, exact initial-noise contract, and pixel-exact repeated native golden runs; Gate 5 |
-| Dimensions / 16-pixel alignment | Supported | NOT IMPLEMENTED | Dimension matrix and latent-shape checkpoints; Gate 5 |
+| Dimensions / 16-pixel alignment | Supported | PASS | Square, portrait, landscape, and invalid-alignment latent-shape matrix; 512×512 local execution |
 | Sampler/scheduler combinations | UI exposes copied ComfyUI registries | PASS | Approved first pair Euler/simple has exact sigma construction; every other pair is rejected explicitly by native capabilities |
 | Progress | Per denoising step | PASS | Ordered text, eight diffusion, and VAE events observed in golden runs; Gate 5 |
 | Cancellation | Desktop terminates disposable worker | PASS WITH APPROVED DIFFERENCE | Native cooperatively stops before the next step and cleans up; current Comfy desktop terminates its disposable worker |

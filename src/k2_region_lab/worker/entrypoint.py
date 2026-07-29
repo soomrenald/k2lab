@@ -89,6 +89,43 @@ def forward_progress(callback, event: ProgressEvent) -> None:
     )
 
 
+def emit_generation_progress(command_id: str | None, event: ProgressEvent) -> None:
+    if event.phase == "diffusion":
+        emit(
+            WorkerState.RUNNING,
+            f"Denoising step {int(event.step or 0)}/{int(event.total_steps or 0)}",
+            command_id=command_id,
+            payload={
+                "phase": event.phase,
+                "step": int(event.step or 0),
+                "total_steps": int(event.total_steps or 0),
+                "fraction": event.fraction,
+                "memory": dict(event.detail),
+            },
+        )
+        return
+
+    labels = {
+        "text_encoding": "Prompt encoding",
+        "vae_decode": "VAE decode",
+    }
+    label = labels.get(event.phase, event.phase.replace("_", " ").title())
+    if event.fraction == 0.0:
+        label += " started"
+    elif event.fraction == 1.0:
+        label += " complete"
+    emit(
+        WorkerState.RUNNING,
+        label,
+        command_id=command_id,
+        payload={
+            "phase": event.phase,
+            "fraction": event.fraction,
+            **dict(event.detail),
+        },
+    )
+
+
 def registered_model(payload: dict[str, Any]) -> RegisteredModel:
     supplied_path = str(payload.get("model_registry") or "").strip()
     if not supplied_path:
@@ -299,18 +336,6 @@ def main() -> int:
                     command_id=command_id,
                 )
 
-                def progress(step: int, total: int, memory: dict[str, Any]) -> None:
-                    emit(
-                        WorkerState.RUNNING,
-                        f"Denoising step {step}/{total}",
-                        command_id=command_id,
-                        payload={
-                            "step": step,
-                            "total_steps": total,
-                            "memory": memory,
-                        },
-                    )
-
                 def runtime_event(message: str, event_payload: dict[str, Any]) -> None:
                     emit(
                         WorkerState.RUNNING,
@@ -324,7 +349,10 @@ def main() -> int:
                 )
                 generated = backend.generate(
                     request,
-                    progress=lambda event: forward_progress(progress, event),
+                    progress=lambda event: emit_generation_progress(
+                        command_id,
+                        event,
+                    ),
                     diagnostic=runtime_event,
                 ).to_payload()
                 duration_seconds = time.monotonic() - generation_started_at

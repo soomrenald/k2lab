@@ -97,6 +97,18 @@
     "pixel_exact": true,
     "pixel_sha256": "b04a747c3b92720d30e0ee592465dfb0a8b869d764e9c058ba0baa0f96e45b87"
   },
+  "sequential_reliability": {
+    "runs": 10,
+    "unique_pixel_hashes": 1,
+    "first_post_allocated_bytes": 113246208,
+    "last_post_allocated_bytes": 113246208,
+    "first_post_reserved_bytes": 136314880,
+    "last_post_reserved_bytes": 136314880,
+    "peak_allocated_bytes_each_run": 13917537792,
+    "mean_generation_seconds": 12.399745380102832,
+    "final_unloaded_allocated_bytes": 113246208,
+    "final_unloaded_reserved_bytes": 113246208
+  },
   "performance": {
     "native_load_seconds": 7.779167821994633,
     "native_cold_generation_seconds": 18.102748731995234,

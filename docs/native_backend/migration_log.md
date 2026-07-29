@@ -242,6 +242,15 @@ Completed:
 - proved cooperative step-boundary cancellation and cleanup on local ROCm;
 - passed 163 core tests and 181 K2Lab tests, with the existing two intentional skips.
 
-Gate 5 remains incomplete: the dimension/malformed-input matrices, ten sequential local
-generations, desktop smoke, and 100-generation supported-RunPod soak are not complete.
-The RunPod item remains blocked by deferred infrastructure scope/spend.
+Follow-up local Gate 5 evidence:
+
+- passed square, portrait, landscape, invalid-alignment, and malformed-request matrices;
+- completed ten sequential 512×512 eight-step runs with one pixel hash and zero
+  allocated/reserved VRAM growth;
+- completed a real desktop worker bootstrap/load/generate protocol smoke with pixel-exact
+  output and the command correlation ID preserved;
+- corrected the worker's native phase labels so prompt encoding and VAE decode no longer
+  appear as denoising step 0/0.
+
+All locally actionable Gate 5 checks now pass. Gate 5 remains incomplete only because its
+100-generation supported-RunPod soak is blocked by deferred infrastructure scope/spend.

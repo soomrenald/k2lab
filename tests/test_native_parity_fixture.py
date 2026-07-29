@@ -41,6 +41,17 @@ class NativeParityFixtureTests(unittest.TestCase):
         )
         self.assertGreaterEqual(measured["psnr_db"], thresholds["minimum_psnr_db"])
         self.assertTrue(fixture["repeatability"]["pixel_exact"])
+        sequential = fixture["sequential_reliability"]
+        self.assertEqual(sequential["runs"], 10)
+        self.assertEqual(sequential["unique_pixel_hashes"], 1)
+        self.assertEqual(
+            sequential["first_post_allocated_bytes"],
+            sequential["last_post_allocated_bytes"],
+        )
+        self.assertEqual(
+            sequential["first_post_reserved_bytes"],
+            sequential["last_post_reserved_bytes"],
+        )
 
     def test_clean_fixture_records_exact_current_turbo_contract(self) -> None:
         fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
