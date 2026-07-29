@@ -182,3 +182,24 @@ Completed:
 
 The product default remains `comfyui`. Native generation remains unavailable until
 VAE decode and complete multi-step/image parity are implemented.
+
+## 2026-07-29 — Native Krea2 VAE milestone
+
+Pinned shared core checkpoint: `5f65090c2b3a066464c8224f77d3720060f955d1`
+
+Completed:
+
+- used Diffusers 0.39's upstream `AutoencoderKLQwenImage` graph without importing or
+  copying ComfyUI runtime code;
+- strictly mapped all 194 checkpoint tensors and all 126,892,531 parameters, with no
+  missing, unexpected, shape-mismatched, or unmaterialized tensors;
+- implemented the exact 16-channel Krea/Wan latent mean/std conversion before decode;
+- validated a deterministic normalized latent against the current ComfyUI VAE at
+  128×128 output resolution with cosine similarity `0.9999896`, mean absolute error
+  `0.00134`, RMSE `0.00194`, and maximum error `0.01852`;
+- produced byte-identical repeated native decodes in one process;
+- released model allocations after unload, leaving only the normal approximately
+  34 MiB ROCm context allocation.
+
+The product default remains `comfyui`. Native generation remains unavailable until
+the clean end-to-end path and Gate 5 parity/reliability evidence are complete.
