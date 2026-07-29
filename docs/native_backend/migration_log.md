@@ -89,3 +89,30 @@ Runtime/model-loading changes: none.
 GPU work: none.
 Model copies or mutations: none.
 Gate status: awaiting explicit Gate 3 approval.
+
+## 2026-07-28 — Standing approval / Gate 4 complete
+
+The user approved Gate 3 and all later migration gates. This removes approval pauses but
+does not remove evidence, parity, rollback, sequencing, or safety requirements. RunPod,
+cloud spend, deployment, and removal of the ComfyUI fallback remain outside that standing
+authorization.
+
+Pinned shared core commit: `52458eae1e2431f47e8b382f4e1e0e268a9e999a`
+
+Completed:
+
+- added strict native safetensors loading without importing ComfyUI;
+- limited strict loading to the exact approved Turbo, encoder, and VAE identities;
+- added reviewed component key namespaces and static architecture configuration;
+- preserved source quantization metadata and dtypes by default;
+- added explicit dtype conversion and CPU/CUDA/ROCm device policy;
+- reported hashes, tensors, parameters, storage, dtypes, mappings, and load time;
+- added deterministic partial-failure cleanup and unload;
+- connected native registry/model selection to the existing worker protocol;
+- retained CPU staging for `auto` so all components are not forced into 16 GiB VRAM;
+- passed a real worker load and three local ROCm load/unload cycles.
+
+Production default: unchanged (`comfyui`).
+Native generation: unsupported.
+Model writes: none.
+Gate 4 status: approved under standing authorization; Phase 3 may proceed.

@@ -33,6 +33,8 @@ text_encoder = "models/text/qwen.safetensors"
 vae = "models/vae/qwen_vae.safetensors"
 face_detector = "models/detectors/face.onnx"
 upscale_model = "models/upscale/4x.pth"
+registry = "models/registry.toml"
+registered_model = "krea2_turbo"
 
 [runtime]
 auto_start_worker = false
@@ -71,6 +73,8 @@ filename_prefix = "configured"
             )
             self.assertEqual(settings.face_detector_path, root / "models/detectors/face.onnx")
             self.assertEqual(settings.default_upscale_model, root / "models/upscale/4x.pth")
+            self.assertEqual(settings.model_registry_path, root / "models/registry.toml")
+            self.assertEqual(settings.registered_model_name, "krea2_turbo")
             self.assertEqual(settings.output_directory, root / "renders")
             self.assertFalse(settings.auto_start_worker)
             self.assertEqual(settings.reserve_vram_gb, 3.5)

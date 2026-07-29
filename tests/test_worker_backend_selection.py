@@ -4,9 +4,11 @@ import io
 import json
 import unittest
 from contextlib import redirect_stdout
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from k2_region_lab.worker import entrypoint
+from k2core.inference import LoadedPipeline
 
 
 class Runtime:
@@ -116,13 +118,77 @@ class WorkerBackendSelectionTests(unittest.TestCase):
     def test_native_selector_fails_explicitly_without_loading_or_fallback(self) -> None:
         result, events = self._run({"K2LAB_BACKEND": "native"})
         self.assertEqual(result, 1)
-        self.assertFalse(Runtime.instances[0].loaded)
+        self.assertFalse(Runtime.instances)
         failure = next(item for item in events if item["state"] == "error")
         self.assertEqual(
             failure["payload"]["error"]["category"],
-            "UnsupportedFeatureError",
+            "ConfigurationError",
         )
         self.assertEqual(failure["payload"]["error"]["backend_name"], "native")
+
+    def test_native_selector_loads_the_explicit_registered_model_without_comfy_runtime(
+        self,
+    ) -> None:
+        class NativeBackend:
+            instances = []
+
+            def __init__(self) -> None:
+                self.pipeline = None
+                self.load_config = None
+                self.instances.append(self)
+
+            def load(self, config):
+                self.load_config = config
+                self.pipeline = SimpleNamespace(loaded=True)
+                return LoadedPipeline(
+                    backend_id="native",
+                    metadata={"strict_loading": config.strict_loading},
+                )
+
+        registered = SimpleNamespace(name="fixture")
+        load_payload = {
+            "comfyui_root": "/tmp/ComfyUI",
+            "diffusion_models": "/tmp/models/diffusion_models",
+            "text_encoders": "/tmp/models/text_encoders",
+            "vae": "/tmp/models/vae",
+            "model_registry": "/tmp/models.toml",
+            "registered_model": "fixture",
+        }
+        output = io.StringIO()
+        with (
+            patch.dict("os.environ", {"K2LAB_BACKEND": "native"}, clear=True),
+            patch.object(entrypoint, "configure_debug_logging"),
+            patch.object(entrypoint, "ComfyBaselineRuntime", Runtime),
+            patch.object(entrypoint, "NativeK2Backend", NativeBackend),
+            patch.object(
+                entrypoint,
+                "discover_model_artifacts",
+                return_value=SimpleNamespace(complete=True),
+            ),
+            patch.object(
+                entrypoint,
+                "load_model_registry",
+                return_value=SimpleNamespace(models=(registered,)),
+            ),
+            patch(
+                "sys.stdin",
+                io.StringIO(command("load-native", "load_model", load_payload)),
+            ),
+            redirect_stdout(output),
+        ):
+            result = entrypoint.main()
+
+        events = [json.loads(line) for line in output.getvalue().splitlines() if line]
+        self.assertEqual(result, 0)
+        self.assertFalse(Runtime.instances)
+        self.assertIs(NativeBackend.instances[0].load_config.registered_model, registered)
+        self.assertTrue(
+            any(
+                event["state"] == "ready"
+                and event["payload"]["strict_loading"] is True
+                for event in events
+            )
+        )
 
     def test_invalid_selector_returns_structured_configuration_error(self) -> None:
         result, events = self._run({"K2LAB_BACKEND": "automatic"})

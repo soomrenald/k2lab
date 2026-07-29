@@ -34,7 +34,7 @@ Reference baseline:
 | Post-upscale | Pillow or ComfyUI tiled model upscale | NOT IMPLEMENTED | Size, seam, metadata, memory fixtures; Gate 10 |
 | PNG/project metadata | Supported by current runtime | NOT IMPLEMENTED | Key/type/value equality and backward round-trip; Gate 2 onward |
 | Model registry independent of ComfyUI | Versioned TOML accepts arbitrary paths; legacy discovery is opt-in | PASS | Eight required registry cases, full suites, and read-only validation of both installed Krea2 sets; Gate 3 |
-| Strict component loading | ComfyUI loader plus K2 header manifest | NOT IMPLEMENTED | Key/shape/count/dtype/unload reports; Gate 4 |
+| Strict component loading | ComfyUI loader plus K2 header manifest | PASS | Exact approved hashes, 2,097/2,097 mapped tensors, parameter/dtype/device reports, and three stable ROCm unload cycles; Gate 4 |
 | CUDA | Supported through selected ComfyUI environment | NOT IMPLEMENTED | Approved GPU matrix and soak tests; Gates 5/10 |
 | ROCm | Supported through selected ComfyUI environment | NOT IMPLEMENTED | Local smoke, attention backend, FP8 and memory evidence; Gates 5/10 |
 | Desktop entry point | Supported | NOT IMPLEMENTED | Identical shared-schema fixture through UI service; Gate 11 |

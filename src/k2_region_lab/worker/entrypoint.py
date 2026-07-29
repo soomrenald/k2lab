@@ -13,6 +13,9 @@ from k2_region_lab.debug import configure_debug_logging
 from k2core.backends import ComfyUIBackend, NativeK2Backend
 from k2core.inference import (
     BackendName,
+    ConfigurationError,
+    DTypePolicy,
+    DevicePolicy,
     FaceRefinementRequest,
     GenerationRequest,
     ImageEditRequest,
@@ -22,7 +25,11 @@ from k2core.inference import (
     configured_backend_name,
     convert_error,
 )
-from k2core.model import discover_model_artifacts
+from k2core.model import (
+    RegisteredModel,
+    discover_model_artifacts,
+    load_model_registry,
+)
 from k2core.worker.protocol import CommandKind, WorkerState
 from k2core.worker.runtime import (
     ComfyBaselineRuntime,
@@ -79,6 +86,57 @@ def forward_progress(callback, event: ProgressEvent) -> None:
         int(event.step or 0),
         int(event.total_steps or 0),
         dict(event.detail),
+    )
+
+
+def registered_model(payload: dict[str, Any]) -> RegisteredModel:
+    supplied_path = str(payload.get("model_registry") or "").strip()
+    if not supplied_path:
+        raise ConfigurationError(
+            "Native loading requires a model registry.",
+            backend_name="native",
+            phase="model_loading",
+            remediation=(
+                "Set [models].registry/K2LAB_MODEL_REGISTRY and choose a registered model."
+            ),
+        )
+    registry = load_model_registry(Path(supplied_path))
+    supplied_name = str(payload.get("registered_model") or "").strip()
+    if supplied_name:
+        matches = [
+            model
+            for model in registry.models
+            if model.name.casefold() == supplied_name.casefold()
+        ]
+        if not matches:
+            raise ConfigurationError(
+                f"Registered model {supplied_name!r} is not present in the registry.",
+                technical_detail=supplied_path,
+                backend_name="native",
+                phase="model_loading",
+            )
+        return matches[0]
+    if len(registry.models) != 1:
+        raise ConfigurationError(
+            "A registered model name is required when the registry contains multiple models.",
+            backend_name="native",
+            phase="model_loading",
+            remediation="Set [models].registered_model/K2LAB_REGISTERED_MODEL.",
+        )
+    return registry.models[0]
+
+
+def backend_loaded(
+    selected_backend: BackendName,
+    runtime: ComfyBaselineRuntime | None,
+    backend: ComfyUIBackend | NativeK2Backend | None,
+) -> bool:
+    if selected_backend is BackendName.COMFYUI:
+        return runtime is not None and runtime.loaded
+    return (
+        isinstance(backend, NativeK2Backend)
+        and backend.pipeline is not None
+        and backend.pipeline.loaded
     )
 
 
@@ -146,7 +204,7 @@ def main() -> int:
                     payload={"complete": artifacts.complete, "manifests": manifests},
                 )
             elif kind == CommandKind.LOAD_MODEL:
-                if runtime is not None and runtime.loaded:
+                if backend_loaded(selected_backend, runtime, backend):
                     emit(
                         WorkerState.READY,
                         "Krea 2 baseline already loaded",
@@ -162,21 +220,23 @@ def main() -> int:
                     "Loading Krea 2 baseline components",
                     command_id=command_id,
                 )
-                runtime = runtime or ComfyBaselineRuntime(
-                    comfyui_root,
-                    face_detector_path=(
-                        Path(payload["face_detector_path"])
-                        if payload.get("face_detector_path") else None
-                    ),
-                )
-                backend = (
-                    ComfyUIBackend(runtime)
-                    if selected_backend is BackendName.COMFYUI
-                    else NativeK2Backend()
-                )
+                selected_model = None
+                if selected_backend is BackendName.COMFYUI:
+                    runtime = runtime or ComfyBaselineRuntime(
+                        comfyui_root,
+                        face_detector_path=(
+                            Path(payload["face_detector_path"])
+                            if payload.get("face_detector_path") else None
+                        ),
+                    )
+                    backend = backend or ComfyUIBackend(runtime)
+                else:
+                    selected_model = registered_model(payload)
+                    backend = backend or NativeK2Backend()
                 loaded_pipeline = backend.load(
                     PipelineConfig(
                         artifacts=artifacts,
+                        registered_model=selected_model,
                         memory_policy=str(
                             payload.get("memory_policy", "safe_16gb")
                         ),
@@ -188,6 +248,22 @@ def main() -> int:
                         ),
                         cpu_vae=bool(payload.get("cpu_vae", False)),
                         oom_recovery=bool(payload.get("oom_recovery", True)),
+                        strict_loading=bool(payload.get("strict_loading", True)),
+                        device_policy=DevicePolicy(
+                            transformer_device=str(
+                                payload.get("transformer_device", "auto")
+                            ),
+                            text_encoder_device=str(
+                                payload.get("text_encoder_device", "auto")
+                            ),
+                            vae_device=str(payload.get("vae_device", "auto")),
+                            compute_dtype=DTypePolicy(
+                                str(payload.get("compute_dtype", "auto"))
+                            ),
+                            weight_dtype=DTypePolicy(
+                                str(payload.get("weight_dtype", "auto"))
+                            ),
+                        ),
                     )
                 )
                 loaded = dict(loaded_pipeline.metadata)
@@ -214,7 +290,7 @@ def main() -> int:
                     payload={"compatible": compatible, "loras": reports},
                 )
             elif kind == CommandKind.GENERATE_BASELINE:
-                if backend is None or runtime is None or not runtime.loaded:
+                if not backend_loaded(selected_backend, runtime, backend):
                     raise RuntimeError("load the Krea 2 baseline before generating")
                 generation_started_at = time.monotonic()
                 emit(
@@ -271,7 +347,7 @@ def main() -> int:
                 )
                 return 0
             elif kind == CommandKind.EDIT_IMAGE:
-                if backend is None or runtime is None or not runtime.loaded:
+                if not backend_loaded(selected_backend, runtime, backend):
                     raise RuntimeError("load the Krea 2 baseline before image editing")
                 emit(
                     WorkerState.RUNNING,
@@ -316,7 +392,7 @@ def main() -> int:
                 )
                 return 0
             elif kind == CommandKind.REFINE_FACES:
-                if backend is None or runtime is None or not runtime.loaded:
+                if not backend_loaded(selected_backend, runtime, backend):
                     raise RuntimeError("load the Krea 2 baseline before refining faces")
                 emit(
                     WorkerState.RUNNING,

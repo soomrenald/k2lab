@@ -213,6 +213,8 @@ class AppSettings:
     filename_prefix: str = "baseline"
     face_detector_path: Path | None = None
     default_upscale_model: Path | None = None
+    model_registry_path: Path | None = None
+    registered_model_name: str = ""
     default_width: int = 1024
     default_height: int = 1024
     default_steps: int = 8
@@ -349,6 +351,18 @@ class AppSettings:
                 _env_or(models, "upscale_model", "K2_UPSCALE_MODEL", ""),
                 base=base,
             ),
+            model_registry_path=_optional_path(
+                _env_or(models, "registry", "K2LAB_MODEL_REGISTRY", ""),
+                base=base,
+            ),
+            registered_model_name=str(
+                _env_or(
+                    models,
+                    "registered_model",
+                    "K2LAB_REGISTERED_MODEL",
+                    "",
+                )
+            ).strip(),
             default_width=int(generation.get("width", 1024)),
             default_height=int(generation.get("height", 1024)),
             default_steps=int(generation.get("steps", 8)),

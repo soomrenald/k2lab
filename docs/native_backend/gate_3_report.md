@@ -1,6 +1,10 @@
 # Approval Gate 3 report
 
-Status: **AWAITING EXPLICIT APPROVAL**
+Status: **APPROVED**
+
+Gate 3 and all later migration gates received standing approval on 2026-07-28. Evidence
+requirements and phase ordering remain in force even though additional approval pauses
+are no longer required.
 
 ## Scope and outcome
 

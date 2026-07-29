@@ -5171,6 +5171,11 @@ class MainWindow(QMainWindow):
             ),
             "cpu_vae": self.cpu_vae_input.isChecked(),
             "oom_recovery": self.oom_recovery_input.isChecked(),
+            "model_registry": (
+                str(self.settings.model_registry_path)
+                if self.settings.model_registry_path else None
+            ),
+            "registered_model": self.settings.registered_model_name or None,
         }
 
     def _start_worker(self) -> None:

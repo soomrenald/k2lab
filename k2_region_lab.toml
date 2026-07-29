@@ -22,6 +22,9 @@ text_encoder = ""
 vae = ""
 face_detector = ""
 upscale_model = ""
+# Native backend only. Generate this file with --scan-comfyui-models.
+registry = ""
+registered_model = ""
 
 [runtime]
 auto_start_worker = true

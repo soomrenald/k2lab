@@ -64,3 +64,14 @@ Validation:
 
 This command does not read the desktop configuration, start Qt, construct an inference
 backend, or access a GPU.
+
+For native worker loading, configure the emitted registry and one model name:
+
+```toml
+[models]
+registry = "/absolute/path/to/k2lab-models.toml"
+registered_model = "krea2_turbo_fp8_scaled"
+```
+
+The equivalent environment variables are `K2LAB_MODEL_REGISTRY` and
+`K2LAB_REGISTERED_MODEL`. These settings are ignored by the default ComfyUI backend.
