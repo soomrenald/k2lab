@@ -1,0 +1,216 @@
+{
+  "schema_version": "k2lab-parity-fixture/1",
+  "fixture_id": "regional-lora-krea2-two-vases-512",
+  "status": "PASS WITH APPROVED DIFFERENCE",
+  "artifact_policy": {
+    "storage": "outside_git",
+    "content_addressed": true,
+    "contains_only_synthetic_prompt_and_adapter_data": true
+  },
+  "environment": {
+    "captured_at": "2026-07-29",
+    "k2lab_commit_before_report": "e9f86e4",
+    "k2core_commit": "76dc7119d80218d7874448d0b181cedccf22b0dc",
+    "comfyui_commit": "285a98944c397a4a81f15ac63d69fa3dbc0a27b9",
+    "python": "3.12.13",
+    "torch": "2.10.0+rocm7.1",
+    "hip": "7.1.25424",
+    "accelerator": "AMD Radeon Graphics",
+    "accelerator_memory_bytes": 17095983104
+  },
+  "adapters": {
+    "q_only": {
+      "format": "standard_lora",
+      "target_count": 1,
+      "target": "diffusion_model.blocks.0.attn.wq",
+      "rank": 4,
+      "size_bytes": 98692,
+      "sha256": "87739901fef1e9164ac80ba1097434260d929ae669da7408d0d0d55971f5746b"
+    },
+    "five_target": {
+      "format": "standard_lora",
+      "targets": [
+        "diffusion_model.blocks.0.attn.wq",
+        "diffusion_model.blocks.0.attn.wk",
+        "diffusion_model.blocks.0.attn.wv",
+        "diffusion_model.blocks.0.attn.wo",
+        "diffusion_model.blocks.0.mlp.down"
+      ],
+      "rank": 1,
+      "size_bytes": 251564,
+      "sha256": "c2b7ffcc35c6757ecd215e97ddce48d506f0b5a23d9514ecae06339ed9df8f96"
+    }
+  },
+  "semantic_checkpoints": {
+    "compiled_prompt_exact_across_backends": true,
+    "standard_conditioning_text_token_count": 173,
+    "character_identity_conditioning_text_token_count": 199,
+    "image_token_grid": [32, 32],
+    "standard_region_text_token_spans": [[10, 73], [73, 136]],
+    "standard_region_image_tokens_enabled": 312,
+    "main_stream_attention_calls_8_steps": 224,
+    "text_refiner_attention_calls_8_steps": 16,
+    "global_and_regional_adapter_order": [
+      "global-weak",
+      "left-weak",
+      "right-weak"
+    ],
+    "standard_five_target_applied": [
+      "blocks.0.attn.wq",
+      "blocks.0.attn.wo",
+      "blocks.0.mlp.down"
+    ],
+    "standard_five_target_locality_skipped": [
+      "blocks.0.attn.wk",
+      "blocks.0.attn.wv"
+    ],
+    "character_identity_five_target_applied_count": 5
+  },
+  "cases": {
+    "representative_q_only_8_step": {
+      "steps": 8,
+      "scope": "right",
+      "measurements": {
+        "reference_pixel_sha256": "e76aa09d65d586deac5f72c269a9fe72228fc6c14143997900d5deb27779918f",
+        "candidate_pixel_sha256": "a5282101e1dc4724ecd70e77ba5742de85788a21f3a56c82f08f26a08f40fd9e",
+        "cosine": 0.9982741457448803,
+        "mean_absolute_error": 0.013410525851779515,
+        "rmse": 0.04410759284227943,
+        "maximum_absolute_error": 0.7176470588235294,
+        "psnr_db": 27.109732861136095,
+        "exact_pixel_fraction": 0.5385932922363281
+      },
+      "thresholds": {
+        "minimum_cosine": 0.998,
+        "maximum_mean_absolute_error": 0.015,
+        "maximum_rmse": 0.05,
+        "maximum_absolute_error": 0.75,
+        "minimum_psnr_db": 27.0
+      },
+      "performance_seconds": {
+        "native": 16.337580017003347,
+        "comfyui": 82.6622931890015
+      },
+      "human_review": "visually equivalent vase structure, color, placement, scale, containment, highlights, and clean background; no unexplained artifact"
+    },
+    "global_plus_two_regional_2_step": {
+      "steps": 2,
+      "scopes": ["global", "left", "right"],
+      "strengths": [0.25, 0.5, 0.75],
+      "measurements": {
+        "reference_pixel_sha256": "cbfdd7f6e5de6b864037c6eb9bcd5379ceda90c820eae846c6b8c1bef05a03a7",
+        "candidate_pixel_sha256": "25f7a762443e32b452362eebbe2456e9e7d4b6e297d163bbd28c880b9a5c2f1f",
+        "cosine": 0.9930215990988618,
+        "mean_absolute_error": 0.02102591321359273,
+        "rmse": 0.08455803377462554,
+        "maximum_absolute_error": 1.0,
+        "psnr_db": 21.456902484390636,
+        "exact_pixel_fraction": 0.6633440653483073
+      },
+      "thresholds": {
+        "minimum_cosine": 0.99,
+        "maximum_mean_absolute_error": 0.025,
+        "maximum_rmse": 0.09,
+        "maximum_absolute_error": 1.0,
+        "minimum_psnr_db": 21.0
+      },
+      "performance_seconds": {
+        "native": 10.476730163994944,
+        "comfyui": 31.735745529993437
+      },
+      "human_review": "same two-vase composition, colors, placement, scale, containment, and dark two-step trajectory; no unexplained artifact"
+    },
+    "character_identity_five_target_2_step": {
+      "steps": 2,
+      "scope": "right",
+      "trigger_phrase": "vasestyle",
+      "measurements": {
+        "reference_pixel_sha256": "f176ca9caa3a9a18306e234524d29932eea007a51d7197a36f5cb012d9a630c2",
+        "candidate_pixel_sha256": "6d748c6d947e9c3b589356844e4b8d9fccfad75d8e7b4ab7fc573359bb75fbb2",
+        "cosine": 0.9972933297979744,
+        "mean_absolute_error": 0.01459540074167688,
+        "rmse": 0.05282424094686397,
+        "maximum_absolute_error": 0.8509803921568627,
+        "psnr_db": 25.54333469571909,
+        "exact_pixel_fraction": 0.6745109558105469
+      },
+      "thresholds": {
+        "minimum_cosine": 0.995,
+        "maximum_mean_absolute_error": 0.02,
+        "maximum_rmse": 0.06,
+        "maximum_absolute_error": 0.9,
+        "minimum_psnr_db": 25.0
+      },
+      "performance_seconds": {
+        "native": 10.60444448600174,
+        "comfyui": 31.86239671500516
+      },
+      "human_review": "same two-vase composition and identity-routed highlight behavior with no outside-region subject and no unexplained artifact"
+    }
+  },
+  "regressions": {
+    "no_lora_native_pixel_sha256": "b04a747c3b92720d30e0ee592465dfb0a8b869d764e9c058ba0baa0f96e45b87",
+    "no_lora_matches_gate_5": true,
+    "regional_disabled_global_lora_pixel_sha256": "002499bd83ada0e2374fb874b57267b2cc1653de26f4eb10deca00f104dc7dd5",
+    "regional_disabled_matches_gate_6_ordinary_lora": true,
+    "instrumentation_on_off_pixel_exact": true,
+    "instrumentation_off_seconds": 10.7057,
+    "instrumentation_on_seconds": 10.7388
+  },
+  "leakage_and_instrumentation": {
+    "toggles": [
+      "q_projection_deltas",
+      "k_projection_deltas",
+      "v_projection_deltas",
+      "hidden_state_deltas",
+      "attention_output_deltas",
+      "mlp_output_deltas",
+      "residual_deltas",
+      "token_modification_flags",
+      "attention_masks"
+    ],
+    "record_kinds": [
+      "q_projection_delta",
+      "k_projection_delta",
+      "v_projection_delta",
+      "hidden_state_contribution",
+      "attention_output_delta",
+      "mlp_output_delta",
+      "residual_input_delta"
+    ],
+    "character_identity_modified_token_observations": 802,
+    "character_identity_total_token_observations": 2446,
+    "maximum_outside_route_across_all_records": 0.0,
+    "comfy_outside_gate_delta_rms": 0.0,
+    "attention_mask_metadata_present": true,
+    "instrumentation_default_enabled": false,
+    "adaptation_final_region_scales_after_2_steps": {
+      "right": 0.9066050352255993
+    }
+  },
+  "overlap_behavior": {
+    "distinct_adapters": "each adapter retains its own strict box mask; their deltas add in shared image-token lanes",
+    "one_adapter_multiple_regions": "region masks combine by deterministic maximum union, never by summation",
+    "text_regions": "each assigned regional clause is enabled; attention ownership and priority remain defined by the regional prompt plan",
+    "regression_test": "RegionalLoraRoutingTests.test_overlapping_lora_routes_keep_independent_additive_masks"
+  },
+  "memory": {
+    "measurement": "maximum resident set size from /usr/bin/time -v for the representative isolated worker process",
+    "native_maximum_rss_kib": 19901772,
+    "comfyui_maximum_rss_kib": 32261024,
+    "comfyui_peak_gpu_allocated_bytes": 11779470336,
+    "comfyui_peak_gpu_reserved_bytes": 12840861696,
+    "native_q_only_adapter_bytes": 98304,
+    "native_five_target_adapter_bytes": 249856,
+    "note": "Native GPU allocator telemetry is scheduled for the K2Lab-owned device manager in Gate 10; Gate 8 measured isolated process memory and adapter storage."
+  },
+  "external_artifacts": {
+    "representative_reference_png_sha256": "8ef6e38d61f0ea47a5e1ba65aae879cfee5bccd1fc8948be19fcbbf17837572a",
+    "representative_candidate_png_sha256": "c2c4cec6976050e2067c6aa87d5960768487cb67b0a8f5eed96ebeb663fd9240",
+    "combination_reference_png_sha256": "62cdece2ce07a7002f9e5e2acecaa2996c2183d243f171876cc9e80e63b3fd6e",
+    "combination_candidate_png_sha256": "a298caa40513e5e5641cd6a97c8daf475c64d17760592c47790b669d0c7768d2",
+    "identity_reference_png_sha256": "7a4fd3b34e9439729c8f5b10fe06c93a562b571039808c9baa5c626eb8b0b524",
+    "identity_candidate_png_sha256": "f0afbd16d13cbe5004e9bde0d492ed7d4c1f9dedf340fbf8e570a5bd71a9813b",
+    "disabled_path_png_sha256": "ecd5536bfdc33bf4f73d236ccbec2d2b7d8b0f718ecab1b88df3405fb0a5647d"
+  }
+}

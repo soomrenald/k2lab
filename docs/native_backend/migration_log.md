@@ -331,3 +331,26 @@ Completed:
 
 Gate 7 passes with the approved scaled-FP8 image difference. The product default remains
 `comfyui`, and native remains developer-only.
+
+## 2026-07-29 — Gate 8 native regional LoRA
+
+Pinned shared core checkpoint: `76dc7119d80218d7874448d0b181cedccf22b0dc`
+
+Completed:
+
+- installed LoRA deltas inside native transformer linear forwards with exact job-local
+  text/image gates for combined, text-refiner, layerwise-text, and projector streams;
+- preserved ordered multiple-adapter composition, global-plus-regional scope, explicit
+  standard K/V omission, and current character-identity Q/K/V behavior;
+- added opt-in Q/K/V, hidden, attention-output, MLP-output, residual, token, and mask
+  instrumentation plus bounded per-step LoRA-delta attention adaptation;
+- measured zero delta outside every exercised route and proved instrumentation on/off
+  and the explicitly disabled regional path are pixel-exact;
+- completed representative, mixed-scope, and character-identity cross-backend fixtures
+  with visually equivalent outputs and no unexplained artifacts;
+- measured the representative native path at 16.34 seconds versus 82.66 seconds for
+  current Comfy low-VRAM execution and lower isolated process RSS;
+- passed 182 core tests, 2 intentional skips, and 12 subtests.
+
+Gate 8 passes with the approved scaled-FP8 image difference. Native remains developer-only
+and `comfyui` remains the product default.

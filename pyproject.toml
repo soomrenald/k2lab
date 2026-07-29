@@ -9,7 +9,7 @@ description = "Local pixel-space regional prompting, LoRA, and attention researc
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
-    "k2core @ git+https://github.com/soomrenald/k2core.git@1c571a8d5415612cf1a41a7c848bcc6f76e75290",
+    "k2core @ git+https://github.com/soomrenald/k2core.git@76dc7119d80218d7874448d0b181cedccf22b0dc",
     "numpy>=2.1",
     "onnxruntime>=1.20",
     "pillow>=12.3.0",

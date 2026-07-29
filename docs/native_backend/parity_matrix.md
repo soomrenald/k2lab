@@ -22,12 +22,12 @@ Reference baseline:
 | Sampler/scheduler combinations | UI exposes copied ComfyUI registries | PASS | Approved first pair Euler/simple has exact sigma construction; every other pair is rejected explicitly by native capabilities |
 | Progress | Per denoising step | PASS | Ordered text, eight diffusion, and VAE events observed in golden runs; Gate 5 |
 | Cancellation | Desktop terminates disposable worker | PASS WITH APPROVED DIFFERENCE | Native cooperatively stops before the next step and cleans up; current Comfy desktop terminates its disposable worker |
-| Ordinary LoRA | Unfused ComfyUI adapter patches | NOT IMPLEMENTED | No/one/multiple/zero/negative/error/deterministic-order fixtures; Gate 6 |
-| Regional prompting | Unified prompt and optimized-attention override | NOT IMPLEMENTED | Region/overlap/role/token/mask/intermediate attention fixtures; Gate 7 |
-| Regional LoRA | Unfused text/image delta gates with unsafe target omission | NOT IMPLEMENTED | Target/delta/leakage/global-plus-regional fixtures; Gate 8 |
-| Prompt emphasis | Attention-logit boost by resolved token span | NOT IMPLEMENTED | Occurrence/token-span and spatial-scope fixtures; Gate 7/8 |
+| Ordinary LoRA | Unfused ComfyUI adapter patches | PASS | No/one/multiple/zero/negative/error/re-enable matrix and cross-backend standard-LoRA fixture; Gate 6 |
+| Regional prompting | Unified prompt and optimized-attention override | PASS WITH APPROVED DIFFERENCE | Region/overlap/role/token/mask matrix and eight-step two-vase fixture; Gate 7 |
+| Regional LoRA | Unfused text/image delta gates with unsafe target omission | PASS WITH APPROVED DIFFERENCE | Q/K/V/output/MLP, leakage, mixed-scope, identity, adaptation, and visual fixtures; Gate 8 |
+| Prompt emphasis | Attention-logit boost by resolved token span | PASS | Occurrence/token-span, spatial scope, and shared native attention controller; Gate 7 |
 | Projector presets / custom vector | Global or token-selective 1x12 delta | NOT IMPLEMENTED | Projector output delta and identity protection fixtures; Gate 8 |
-| LoRA-delta attention adaptation | Bounded next-step regional scale | NOT IMPLEMENTED | Per-step statistics/scale fixtures; Gate 8 |
+| LoRA-delta attention adaptation | Bounded next-step regional scale | PASS | Shared bounded statistics algorithm and real two-step native response; Gate 8 |
 | Image editing | VAE source encode, denoise mask, exact exterior composite | NOT IMPLEMENTED | Strength/aspect/mask/boundary/source-pixel fixtures; Gate 9 |
 | Face detection | ONNX detector wrapper | NOT IMPLEMENTED | Asset/provider/box fixtures and license resolution; Gate 9/11 |
 | Face refinement | Crop-local img2img and composite | NOT IMPLEMENTED | Crop assignment, seed, LoRA, blend, failure fixtures; Gate 9 |
