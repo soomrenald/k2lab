@@ -116,3 +116,24 @@ Production default: unchanged (`comfyui`).
 Native generation: unsupported.
 Model writes: none.
 Gate 4 status: approved under standing authorization; Phase 3 may proceed.
+
+## 2026-07-29 — Phase 3 started
+
+Pinned shared core checkpoint: `9a61edfca3e1480cabd9be97509aef3adda4516c`
+
+Completed so far:
+
+- added registry ownership and deterministic hashing for standalone tokenizer assets;
+- made the legacy scanner locate the reference Qwen tokenizer without making it a
+  hard-coded runtime path;
+- implemented the exact Krea2 system/user/assistant prompt template and conditioned-token
+  boundary;
+- implemented the shifted 10,000-point Flux schedule and simple scheduler selection;
+- implemented CFG-1 Euler flow integration, deterministic Torch noise, and checkpoint
+  callbacks;
+- proved exact 50-token identity and float32 sigma identity against the current ComfyUI
+  reference for the synthetic Gate 2 prompt.
+
+Still required before Gate 5 can be marked complete: executable Qwen hidden-state taps,
+Krea2 transformer forward execution, VAE decoding, native image output, and latent/image
+parity. Native generation remains unsupported in the backend until those are complete.

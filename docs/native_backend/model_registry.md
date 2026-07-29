@@ -25,12 +25,21 @@ sha256 = "64-lowercase-hex-characters"
 [models.vae]
 path = "/models/krea2/qwen_image_vae.safetensors"
 sha256 = "64-lowercase-hex-characters"
+
+[models.tokenizer]
+path = "/models/krea2/qwen-tokenizer"
+sha256 = "deterministic-directory-sha256"
 ```
 
 Each model name must be unique without regard to case. Component paths may be anywhere on
 the filesystem and may be symlinks. A valid model currently requires the `krea2`
 architecture and exact transformer, Qwen3-VL encoder, and Qwen image VAE header
 fingerprints.
+
+The tokenizer entry is optional for discovery/loading but required for native prompt
+encoding. Its hash covers every file using sorted relative paths and individual file
+hashes. The required standalone Qwen tokenizer assets are `merges.txt`,
+`tokenizer_config.json`, and `vocab.json`.
 
 ## Legacy scanner
 
