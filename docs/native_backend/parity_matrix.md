@@ -28,11 +28,11 @@ Reference baseline:
 | Prompt emphasis | Attention-logit boost by resolved token span | PASS | Occurrence/token-span, spatial scope, and shared native attention controller; Gate 7 |
 | Projector presets / custom vector | Global or token-selective 1x12 delta | NOT IMPLEMENTED | Projector output delta and identity protection fixtures; Gate 8 |
 | LoRA-delta attention adaptation | Bounded next-step regional scale | PASS | Shared bounded statistics algorithm and real two-step native response; Gate 8 |
-| Image editing | VAE source encode, denoise mask, exact exterior composite | NOT IMPLEMENTED | Strength/aspect/mask/boundary/source-pixel fixtures; Gate 9 |
+| Image editing | VAE source encode, denoise mask, exact exterior composite | PASS WITH APPROVED DIFFERENCE | Strength/aspect/mask/boundary/source-pixel and cross-backend fixtures; Gate 9 |
 | Face detection | ONNX detector wrapper | NOT IMPLEMENTED | Asset/provider/box fixtures and license resolution; Gate 9/11 |
 | Face refinement | Crop-local img2img and composite | NOT IMPLEMENTED | Crop assignment, seed, LoRA, blend, failure fixtures; Gate 9 |
 | Post-upscale | Pillow or ComfyUI tiled model upscale | NOT IMPLEMENTED | Size, seam, metadata, memory fixtures; Gate 10 |
-| PNG/project metadata | Supported by current runtime | NOT IMPLEMENTED | Key/type/value equality and backward round-trip; Gate 2 onward |
+| PNG/project metadata | Supported by current runtime | PASS | Source text/project retention and explicit request replacement in native and Comfy image edits; Gate 9 |
 | Model registry independent of ComfyUI | Versioned TOML accepts arbitrary paths; legacy discovery is opt-in | PASS | Eight required registry cases, full suites, and read-only validation of both installed Krea2 sets; Gate 3 |
 | Strict component loading | ComfyUI loader plus K2 header manifest | PASS | Exact approved hashes, 2,097/2,097 mapped tensors, parameter/dtype/device reports, and three stable ROCm unload cycles; Gate 4 |
 | CUDA | Supported through selected ComfyUI environment | NOT IMPLEMENTED | Approved GPU matrix and soak tests; Gates 5/10 |

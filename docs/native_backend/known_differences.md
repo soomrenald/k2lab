@@ -47,6 +47,21 @@ The following current-state differences affect migration planning:
 6. Rollback keeps `comfyui` selected or reverts the native orchestrator and executable
    milestones. No fallback was removed.
 
+### KD-02 — Local full-denoise finite-feather image-edit boundary
+
+1. Fixture: `image-edit-krea2-two-vases-512`; regional source-latent editing.
+2. Measurement: medium native/Comfy support cosine `0.9996564`, MAE `0.0079054`, and
+   zero changed exterior pixels. The full-denoise stress case uses a 16-pixel composite
+   feather; the normal comparison uses 48 pixels.
+3. Sigma-1 local editing reconstructs the masked area independently, so a finite
+   rectangular composite cannot guarantee semantic continuity for every prompt.
+4. Low/medium edits are visually continuous. Full denoise can show the finite support,
+   especially when the feather is deliberately reduced; exterior pixels remain exact.
+5. Approved under the user's standing Gate 9 authorization on 2026-07-29, with the
+   stress/default outputs and control mitigations recorded in the versioned fixture.
+6. Rollback keeps `comfyui` selected or reverts the Gate 9 core and K2Lab commits. The
+   Comfy fallback and its matching mask semantics remain available.
+
 Future entries must include:
 
 1. affected fixture and feature;

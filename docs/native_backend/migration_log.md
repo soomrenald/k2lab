@@ -354,3 +354,25 @@ Completed:
 
 Gate 8 passes with the approved scaled-FP8 image difference. Native remains developer-only
 and `comfyui` remains the product default.
+
+## 2026-07-29 — Gate 9 native image editing
+
+Pinned shared core checkpoint: `8f7ec5c53401643000cce1db12fb6be65d61d2ff`
+
+Completed:
+
+- implemented deterministic VAE source encoding, latent normalization, partial shifted-flow
+  schedules, explicit noise, masked Euler sampling, VAE decode, and bounded compositing;
+- connected regional reference/edit clauses, prompt emphases, regional LoRAs, attention
+  adaptation, progress, cancellation checks, structured errors, and output metadata;
+- made strength zero a pixel-exact no-model passthrough in both native and Comfy backends;
+- retained source metadata unless explicitly replaced by the current request;
+- passed zero/low/medium/full, same/resized/unaligned-aspect, whole/regional/masked,
+  regional-LoRA, determinism, boundary, malformed-source, and recovery cases;
+- measured representative native-versus-Comfy support cosine `0.9996564`, MAE
+  `0.0079054`, RMSE `0.0174867`, and PSNR `35.1458 dB`;
+- preserved every pixel outside each regional composite support;
+- passed 188 core tests, 2 intentional skips, and 12 subtests.
+
+Gate 9 passes with the approved scaled-FP8 difference and documented full-denoise
+finite-feather behavior. Native remains developer-only and `comfyui` remains the default.

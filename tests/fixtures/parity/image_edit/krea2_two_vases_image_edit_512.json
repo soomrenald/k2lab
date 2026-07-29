@@ -1,0 +1,174 @@
+{
+  "schema_version": "k2lab-parity-fixture/1",
+  "fixture_id": "image-edit-krea2-two-vases-512",
+  "status": "PASS WITH APPROVED DIFFERENCE",
+  "artifact_policy": {
+    "storage": "outside_git",
+    "content_addressed": true,
+    "contains_only_synthetic_prompt_and_adapter_data": true
+  },
+  "environment": {
+    "captured_at": "2026-07-29",
+    "k2lab_commit_before_report": "40cfb3d9d0ada45cd855a509b02d1016f60a9efc",
+    "k2core_commit": "8f7ec5c53401643000cce1db12fb6be65d61d2ff",
+    "comfyui_commit": "285a98944c397a4a81f15ac63d69fa3dbc0a27b9",
+    "python": "3.12.13",
+    "torch": "2.10.0+rocm7.1",
+    "hip": "7.1.25424",
+    "accelerator": "AMD Radeon Graphics",
+    "accelerator_memory_bytes": 17095983104
+  },
+  "source": {
+    "size": [512, 512],
+    "mode": "RGB",
+    "pixel_sha256": "a5282101e1dc4724ecd70e77ba5742de85788a21f3a56c82f08f26a08f40fd9e",
+    "png_sha256": "c2c4cec6976050e2067c6aa87d5960768487cb67b0a8f5eed96ebeb663fd9240"
+  },
+  "semantic_checkpoints": {
+    "medium_conditioning_text_token_count": 220,
+    "medium_image_token_count": 1024,
+    "medium_region_count": 3,
+    "medium_region_text_token_spans": [[0, 63], [63, 126], [126, 179]],
+    "main_stream_attention_calls_2_steps": 56,
+    "text_refiner_attention_calls_2_steps": 4,
+    "reference_region_final_scales": {
+      "left-reference": 0.75,
+      "right-reference": 0.75
+    },
+    "regional_lora_status": "applied_regional",
+    "regional_lora_target": "transformer_blocks.0.attn.to_q",
+    "regional_lora_image_tokens_enabled": 312
+  },
+  "strength_matrix": {
+    "zero": {
+      "denoise": 0.0,
+      "changed_pixels": 0,
+      "pixel_exact_to_source": true
+    },
+    "low": {
+      "denoise": 0.1,
+      "changed_pixels": 89262,
+      "support_mean_absolute_delta_0_255": 3.314155,
+      "outside_changed_pixels": 0
+    },
+    "medium": {
+      "denoise": 0.5,
+      "changed_pixels": 92995,
+      "support_mean_absolute_delta_0_255": 9.080221,
+      "outside_changed_pixels": 0
+    },
+    "full": {
+      "denoise": 1.0,
+      "changed_pixels": 97339,
+      "support_mean_absolute_delta_0_255": 70.87851,
+      "outside_changed_pixels": 0
+    },
+    "monotonic_edit_magnitude": true
+  },
+  "representative_medium_parity": {
+    "request": {
+      "steps": 2,
+      "seed": 9029,
+      "denoise": 0.5,
+      "latent_feather_pixels": 32,
+      "composite_feather_pixels": 16,
+      "edit_box": [272, 80, 480, 464],
+      "composite_support": [257, 65, 495, 479]
+    },
+    "measurements_all_pixels": {
+      "cosine": 0.9998960095431085,
+      "mean_absolute_error": 0.0029713898702384603,
+      "rmse": 0.010720787688167048,
+      "maximum_absolute_error": 0.6588235294117647,
+      "psnr_db": 39.39546609126616,
+      "exact_pixel_fraction": 0.7584737141927084,
+      "pearson": 0.9995827897055342
+    },
+    "measurements_composite_support": {
+      "cosine": 0.9996563918696183,
+      "mean_absolute_error": 0.007905371109322767,
+      "rmse": 0.017486705956409915,
+      "maximum_absolute_error": 0.6588235294117647,
+      "psnr_db": 35.145839853523654,
+      "exact_pixel_fraction": 0.3574202627911068,
+      "pearson": 0.9987770848339957
+    },
+    "thresholds_composite_support": {
+      "minimum_cosine": 0.9995,
+      "maximum_mean_absolute_error": 0.009,
+      "maximum_rmse": 0.02,
+      "maximum_absolute_error": 0.7,
+      "minimum_psnr_db": 35.0
+    },
+    "native_pixel_sha256": "ce33700dffe6ce98534df1968e80885b4db319c23f3e8d6afd3039c7fff580e9",
+    "comfyui_pixel_sha256": "a7fbe8edb51c2ad040699c09cb64ef592fb095bccab8b294580490583c7098c6",
+    "outside_changed_pixels_native": 0,
+    "outside_changed_pixels_comfyui": 0,
+    "human_review": "equivalent source preservation, vase structure, highlights, edit magnitude, and blend boundary"
+  },
+  "determinism": {
+    "native_repeat_pixel_exact": true,
+    "first_pixel_sha256": "ce33700dffe6ce98534df1968e80885b4db319c23f3e8d6afd3039c7fff580e9",
+    "repeat_pixel_sha256": "ce33700dffe6ce98534df1968e80885b4db319c23f3e8d6afd3039c7fff580e9"
+  },
+  "geometry_and_mask_matrix": {
+    "same_size_512": {
+      "original_size": [512, 512],
+      "aligned_size": [512, 512],
+      "outside_changed_pixels": 0
+    },
+    "resized_whole_320": {
+      "original_size": [320, 320],
+      "aligned_size": [320, 320],
+      "source_metadata_retained": true
+    },
+    "unaligned_portrait": {
+      "original_size": [333, 509],
+      "aligned_size": [336, 512],
+      "output_size": [333, 509],
+      "outside_changed_pixels": 0,
+      "source_metadata_retained": true
+    },
+    "unaligned_landscape": {
+      "original_size": [509, 333],
+      "aligned_size": [512, 336],
+      "output_size": [509, 333],
+      "outside_changed_pixels": 0,
+      "source_metadata_retained": true
+    }
+  },
+  "boundary_review": {
+    "stress_case": {
+      "denoise": 1.0,
+      "composite_feather_pixels": 16,
+      "pixel_sha256": "5e87d383a45600095cbf8c589b24d577103f3b0498aaf2fa7602de827620b933",
+      "review": "expected visible rectangular semantic transition under full latent replacement and deliberately narrow feather"
+    },
+    "default_case": {
+      "denoise": 1.0,
+      "composite_feather_pixels": 48,
+      "pixel_sha256": "f8627fa04e2053fab07a0cd08ef6e24e0eeedadb4c04ecbffd053a005369634b",
+      "review": "default feather softens the transition; full denoise still reconstructs independently inside support"
+    },
+    "pixel_exact_outside_composite_support": true
+  },
+  "failure_recovery": {
+    "invalid_source_category": "InvalidRequestError",
+    "invalid_source_gpu_work_started": false,
+    "worker_exit_code": 1,
+    "fresh_worker_retry_completed": true
+  },
+  "performance": {
+    "measurement": "observed isolated worker wall-clock completion for the representative local two-step request",
+    "native_seconds_approximate": 20.2,
+    "comfyui_seconds_approximate": 31.3,
+    "note": "Includes process startup and component graph construction; this is directional local evidence, not a controlled benchmark."
+  },
+  "external_artifacts": {
+    "native_medium_png_sha256": "c1eaff031d8311b822213dcb78e65b5b558d20eb8a18b347f778ba8aeb7a48ed",
+    "native_medium_repeat_png_sha256": "f5db2ceab41415b9fe9e6727d56b4f339075d6fe8ef3d331671208c504702fde",
+    "comfyui_medium_png_sha256": "0aa277c2b8d747603b7ff778d0230358f243aaba96dbbb407c406745cc53d25e",
+    "native_full_stress_png_sha256": "02d4fc0089471d445911263410460bbcbd355ffe28499169756fd97a3a9eaa24",
+    "native_full_default_png_sha256": "c95d45f5e784cc3f5516cceb4aeabb2a2b821969e503ae0cc4acad88ac3290f6"
+  }
+}
