@@ -1,0 +1,75 @@
+{
+  "schema_version": "k2lab-parity-fixture/1",
+  "fixture_id": "ordinary-lora-krea2-turbo-teapot-rank4-512",
+  "status": "PASS",
+  "artifact_policy": {
+    "storage": "outside_git",
+    "content_addressed": true,
+    "contains_only_synthetic_prompt_and_adapter_data": true
+  },
+  "request": {
+    "prompt": "A small red ceramic teapot on a plain white table, studio lighting.",
+    "negative_prompt": "",
+    "width": 512,
+    "height": 512,
+    "steps": 8,
+    "seed": 20260729,
+    "sampler": "euler",
+    "scheduler": "simple",
+    "cfg": 1.0,
+    "denoise": 1.0
+  },
+  "adapter": {
+    "format": "standard_lora",
+    "target": "diffusion_model.blocks.0.attn.wq",
+    "rank": 4,
+    "alpha": 4.0,
+    "strength": 1.0,
+    "tensor_scale": 0.001,
+    "tensor_count": 3,
+    "size_bytes": 98692,
+    "sha256": "87739901fef1e9164ac80ba1097434260d929ae669da7408d0d0d55971f5746b"
+  },
+  "environment": {
+    "captured_at": "2026-07-29",
+    "k2lab_commit": "e7368237326e76770385dc573ae19b2a9688d7f2",
+    "k2core_commit": "5ae1d9b29652ba08213aa469fb76045fdd7a5462",
+    "comfyui_commit": "285a98944c397a4a81f15ac63d69fa3dbc0a27b9",
+    "python": "3.12.13",
+    "torch": "2.10.0+rocm7.1",
+    "hip": "7.1.25424",
+    "diffusers": "0.39.0",
+    "transformers": "5.14.1",
+    "accelerator": "AMD Radeon Graphics",
+    "accelerator_memory_bytes": 17095983104
+  },
+  "thresholds": {
+    "minimum_cosine": 0.999,
+    "maximum_mean_absolute_error": 0.015,
+    "maximum_rmse": 0.04,
+    "maximum_absolute_error": 0.5,
+    "minimum_psnr_db": 30.0
+  },
+  "measurements": {
+    "reference_size": [512, 512],
+    "candidate_size": [512, 512],
+    "reference_mode": "RGB",
+    "candidate_mode": "RGB",
+    "reference_pixel_sha256": "d8643ad535b75982e62a4f4b9152e016e3da1f72f8cdb30751d6b9023347abec",
+    "candidate_pixel_sha256": "002499bd83ada0e2374fb874b57267b2cc1653de26f4eb10deca00f104dc7dd5",
+    "cosine": 0.9998516796832365,
+    "mean_absolute_error": 0.007145351833767362,
+    "rmse": 0.013849423019601168,
+    "maximum_absolute_error": 0.396078431372549,
+    "psnr_db": 37.171366387041914,
+    "exact_pixel_fraction": 0.19588851928710938
+  },
+  "performance": {
+    "native_generation_seconds": 18.350922107012593,
+    "comfy_generation_seconds": 77.53143124000053
+  },
+  "external_artifacts": {
+    "reference_png_sha256": "0cc3bc701ad0ec82dd4907a81fe5e5be3c7308986634a2fc51c0b1bcbd9ad6ca",
+    "candidate_png_sha256": "d47e1f0add3fdd032d6871d89e8266b14b716094f447a13ff8d57b5673ee0bd1"
+  }
+}

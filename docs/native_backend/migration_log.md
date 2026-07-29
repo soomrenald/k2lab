@@ -295,3 +295,19 @@ Completed:
 
 Gate 6 remains incomplete pending the final versioned cross-backend parity fixture and
 repeat-enable matrix. The product default remains `comfyui`.
+
+## 2026-07-29 — Gate 6 native ordinary-LoRA parity
+
+Pinned shared core checkpoint: `5ae1d9b29652ba08213aa469fb76045fdd7a5462`
+
+Completed:
+
+- passed the complete no/one/multiple/zero/negative/missing/incompatible/re-enable matrix;
+- versioned an eight-step standard-LoRA cross-backend fixture with cosine `0.9998517`,
+  MAE `0.0071454`, RMSE `0.0138494`, and PSNR `37.1714 dB`;
+- reviewed the standard-LoRA native and Comfy outputs as visually equivalent;
+- separately validated the existing 256-target realism direct-LoKr adapter end to end;
+- retained non-destructive per-generation deltas and strict no-partial-application rules.
+
+Gate 6 passes. The product default remains `comfyui`, and native remains developer-only
+while regional prompting and later phases are implemented.
