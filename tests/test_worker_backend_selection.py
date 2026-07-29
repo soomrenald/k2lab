@@ -153,6 +153,8 @@ class WorkerBackendSelectionTests(unittest.TestCase):
             "vae": "/tmp/models/vae",
             "model_registry": "/tmp/models.toml",
             "registered_model": "fixture",
+            "cpu_offload": True,
+            "vae_tiling": True,
         }
         output = io.StringIO()
         with (
@@ -181,7 +183,10 @@ class WorkerBackendSelectionTests(unittest.TestCase):
         events = [json.loads(line) for line in output.getvalue().splitlines() if line]
         self.assertEqual(result, 0)
         self.assertFalse(Runtime.instances)
-        self.assertIs(NativeBackend.instances[0].load_config.registered_model, registered)
+        load_config = NativeBackend.instances[0].load_config
+        self.assertIs(load_config.registered_model, registered)
+        self.assertTrue(load_config.device_policy.cpu_offload)
+        self.assertTrue(load_config.device_policy.vae_tiling)
         self.assertTrue(
             any(
                 event["state"] == "ready"
@@ -227,7 +232,13 @@ class WorkerBackendSelectionTests(unittest.TestCase):
                     step=3,
                     total_steps=8,
                     fraction=3 / 8,
-                    detail={"sigma": 0.8},
+                    detail={
+                        "sigma": 0.8,
+                        "memory": {
+                            "gpu_free_bytes": 12,
+                            "gpu_total_bytes": 24,
+                        },
+                    },
                 ),
             )
 
@@ -242,6 +253,7 @@ class WorkerBackendSelectionTests(unittest.TestCase):
         )
         self.assertEqual(events[0]["payload"]["phase"], "text_encoding")
         self.assertEqual(events[2]["payload"]["memory"]["sigma"], 0.8)
+        self.assertEqual(events[2]["payload"]["memory"]["gpu_free_bytes"], 12)
 
 
 if __name__ == "__main__":

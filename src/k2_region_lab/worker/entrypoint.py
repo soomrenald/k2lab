@@ -91,6 +91,13 @@ def forward_progress(callback, event: ProgressEvent) -> None:
 
 def emit_generation_progress(command_id: str | None, event: ProgressEvent) -> None:
     if event.phase == "diffusion":
+        detail = dict(event.detail)
+        nested_memory = detail.pop("memory", {})
+        memory = (
+            {**dict(nested_memory), **detail}
+            if isinstance(nested_memory, dict)
+            else detail
+        )
         emit(
             WorkerState.RUNNING,
             f"Denoising step {int(event.step or 0)}/{int(event.total_steps or 0)}",
@@ -100,7 +107,7 @@ def emit_generation_progress(command_id: str | None, event: ProgressEvent) -> No
                 "step": int(event.step or 0),
                 "total_steps": int(event.total_steps or 0),
                 "fraction": event.fraction,
-                "memory": dict(event.detail),
+                "memory": memory,
             },
         )
         return
@@ -300,6 +307,8 @@ def main() -> int:
                             weight_dtype=DTypePolicy(
                                 str(payload.get("weight_dtype", "auto"))
                             ),
+                            cpu_offload=bool(payload.get("cpu_offload", False)),
+                            vae_tiling=bool(payload.get("vae_tiling", False)),
                         ),
                     )
                 )
