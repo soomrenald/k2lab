@@ -59,3 +59,33 @@ Production default: unchanged (`comfyui`).
 Native inference: not implemented.
 Cloud/GPU spend: no cloud spend; one local 512×512 eight-step smoke.
 Gate status: awaiting explicit Gate 2 approval.
+
+## 2026-07-28 — Gate 2 approved / Phase 1 started
+
+The user explicitly approved Gate 2. Phase 1 began with the approved constraints:
+
+- add only the K2Lab-owned registry, hash/header validation, and legacy scanner;
+- keep the registry usable with arbitrary absolute paths and symlinks;
+- do not copy, alter, map, or load model tensor payloads;
+- do not change the worker, ComfyUI backend, backend default, or generation behavior;
+- stop at Gate 3.
+
+## 2026-07-28 — Gate 3 candidate
+
+Pinned shared core commit: `221b358a4cecc9b40a794e7591e2ca43cd092b9e`
+
+Completed:
+
+- added a versioned TOML model registry with required component hashes;
+- added strict existence, safetensors, architecture-fingerprint, shape, and hash checks;
+- added symlink resolution and case-insensitive duplicate-name rejection;
+- added a read-only legacy ComfyUI scanner that emits registry TOML to stdout;
+- added a standalone validator that does not construct desktop settings or start Qt;
+- validated both locally installed Krea2 variants plus the shared encoder and VAE;
+- passed the full core and K2Lab suites.
+
+Production default: unchanged (`comfyui`).
+Runtime/model-loading changes: none.
+GPU work: none.
+Model copies or mutations: none.
+Gate status: awaiting explicit Gate 3 approval.

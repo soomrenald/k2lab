@@ -1,6 +1,9 @@
 # Approval Gate 2 report
 
-Status: **AWAITING EXPLICIT APPROVAL**
+Status: **APPROVED**
+
+The user explicitly approved Gate 2 on 2026-07-28. Phase 1 began with the recommended
+scope below; native loading and generation remain prohibited until their later gates.
 
 ## Completed work
 
@@ -166,7 +169,7 @@ containing K2Lab commit and `k2core` commit
 `e35a01d7f381764a7b3069aaeef13f3aa4c83b1f`; the prior K2Lab dependency pin is
 `a82b0b32a891e19eac5c5f6e35f8a9bfb715f9dc`.
 
-## Recommended next step
+## Approved next step
 
 After explicit Gate 2 approval, begin Phase 1 only:
 

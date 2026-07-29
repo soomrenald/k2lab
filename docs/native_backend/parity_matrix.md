@@ -33,7 +33,7 @@ Reference baseline:
 | Face refinement | Crop-local img2img and composite | NOT IMPLEMENTED | Crop assignment, seed, LoRA, blend, failure fixtures; Gate 9 |
 | Post-upscale | Pillow or ComfyUI tiled model upscale | NOT IMPLEMENTED | Size, seam, metadata, memory fixtures; Gate 10 |
 | PNG/project metadata | Supported by current runtime | NOT IMPLEMENTED | Key/type/value equality and backward round-trip; Gate 2 onward |
-| Model registry independent of ComfyUI | Exact arbitrary paths work, defaults/discovery are ComfyUI-shaped | NOT IMPLEMENTED | Hash/symlink/duplicate/missing/legacy scan tests; Gate 3 |
+| Model registry independent of ComfyUI | Versioned TOML accepts arbitrary paths; legacy discovery is opt-in | PASS | Eight required registry cases, full suites, and read-only validation of both installed Krea2 sets; Gate 3 |
 | Strict component loading | ComfyUI loader plus K2 header manifest | NOT IMPLEMENTED | Key/shape/count/dtype/unload reports; Gate 4 |
 | CUDA | Supported through selected ComfyUI environment | NOT IMPLEMENTED | Approved GPU matrix and soak tests; Gates 5/10 |
 | ROCm | Supported through selected ComfyUI environment | NOT IMPLEMENTED | Local smoke, attention backend, FP8 and memory evidence; Gates 5/10 |

@@ -8,7 +8,14 @@ from pathlib import Path
 
 from k2_region_lab.config import AppSettings
 from k2_region_lab.debug import configure_debug_logging
-from k2core.model import discover_model_artifacts
+from k2core.model import (
+    ModelRegistry,
+    RegistryValidation,
+    discover_model_artifacts,
+    load_model_registry,
+    scan_legacy_comfyui_models,
+    validate_model_registry,
+)
 
 
 def _format_size(size_bytes: int) -> str:
@@ -31,6 +38,52 @@ def check_models(settings: AppSettings) -> int:
         return 1
     print("model set complete")
     return 0
+
+
+def scan_comfyui_models(settings: AppSettings) -> int:
+    """Emit a K2Lab registry without changing any discovered model file."""
+
+    try:
+        registry = scan_legacy_comfyui_models(settings.model_directories)
+    except (OSError, RuntimeError, TypeError, ValueError) as error:
+        print(f"legacy ComfyUI model scan failed: {error}", file=sys.stderr)
+        return 1
+    print(registry.to_toml(), end="")
+    return 0
+
+
+def _print_registry_validation(
+    registry: ModelRegistry,
+    validation: RegistryValidation,
+) -> None:
+    print(
+        f"registry: {len(registry.models)} model(s), "
+        f"source={registry.source}, schema={registry.schema_version}"
+    )
+    for model in validation.models:
+        print(f"model {model.name} ({model.architecture}): {'PASS' if model.valid else 'FAIL'}")
+        for error in model.errors:
+            print(f"  error: {error}")
+        for component in model.components:
+            path = str(component.configured_path)
+            if component.resolved_path is not None and component.resolved_path != component.configured_path:
+                path = f"{path} -> {component.resolved_path}"
+            print(f"  {component.kind.value}: {'PASS' if component.valid else 'FAIL'} {path}")
+            for error in component.errors:
+                print(f"    error: {error}")
+            for warning in component.warnings:
+                print(f"    warning: {warning}")
+
+
+def check_model_registry(path: Path) -> int:
+    try:
+        registry = load_model_registry(path)
+    except (OSError, RuntimeError, TypeError, ValueError) as error:
+        print(f"model registry could not be read: {error}", file=sys.stderr)
+        return 2
+    validation = validate_model_registry(registry)
+    _print_registry_validation(registry, validation)
+    return 0 if validation.valid else 1
 
 
 def launch_desktop(settings: AppSettings, *, legacy_widgets: bool = False) -> int:
@@ -78,10 +131,22 @@ def launch_desktop(settings: AppSettings, *, legacy_widgets: bool = False) -> in
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="k2lab")
-    parser.add_argument(
+    headless = parser.add_mutually_exclusive_group()
+    headless.add_argument(
         "--check-models",
         action="store_true",
         help="inspect configured safetensors headers without starting Qt",
+    )
+    headless.add_argument(
+        "--scan-comfyui-models",
+        action="store_true",
+        help="print a hashed K2Lab registry for the configured legacy ComfyUI model paths",
+    )
+    headless.add_argument(
+        "--validate-model-registry",
+        type=Path,
+        metavar="PATH",
+        help="validate a K2Lab model registry without loading model tensors",
     )
     parser.add_argument(
         "--legacy-widgets",
@@ -89,7 +154,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="open the previous Qt Widgets interface instead of the Qt Quick workspace",
     )
     args = parser.parse_args(argv)
+    if args.validate_model_registry is not None:
+        return check_model_registry(args.validate_model_registry)
     settings = AppSettings.from_environment()
+    if args.scan_comfyui_models:
+        return scan_comfyui_models(settings)
     log_path = configure_debug_logging("desktop", settings.data_directory)
     if log_path is not None:
         logging.getLogger(__name__).debug("application settings: %r", settings)
