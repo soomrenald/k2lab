@@ -275,3 +275,23 @@ Completed:
 
 Gate 6 remains incomplete pending standard-LoRA cross-backend parity and the separate LoKr
 format used by several existing K2Lab adapters. The product default remains `comfyui`.
+
+## 2026-07-29 — Native direct LoKr milestone
+
+Pinned shared core checkpoint: `5ae1d9b29652ba08213aa469fb76045fdd7a5462`
+
+Completed:
+
+- added strict parsing for the direct `lokr_w1`/`lokr_w2` linear format used by current
+  K2Lab adapters while continuing to reject decomposed, Tucker, DoRA, incomplete, mixed,
+  and partially applicable files;
+- implemented factorized Kronecker-product forward deltas without materializing merged
+  matrices, and matched an explicit `torch.kron` reference within `9.54e-7`;
+- parsed the existing `realism_engine_krea2_v3.1` adapter with all 768 tensors mapped to
+  256 targets and 1,562,320,896 adapter bytes;
+- completed a real two-step 512×512 worker generation at strength `0.1` on the local
+  16 GiB ROCm device, with full LoKr inspection metadata in the result;
+- passed 169 core tests, 2 intentional skips, and 6 subtests.
+
+Gate 6 remains incomplete pending the final versioned cross-backend parity fixture and
+repeat-enable matrix. The product default remains `comfyui`.
