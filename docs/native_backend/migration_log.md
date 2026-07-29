@@ -254,3 +254,24 @@ Follow-up local Gate 5 evidence:
 
 All locally actionable Gate 5 checks now pass. Gate 5 remains incomplete only because its
 100-generation supported-RunPod soak is blocked by deferred infrastructure scope/spend.
+
+## 2026-07-29 — Native ordinary LoRA milestone
+
+Pinned shared core checkpoint: `39bce9c749c1daae603987228f9e53ada4707de7`
+
+Completed:
+
+- added strict standard safetensors LoRA parsing for A/B and down/up conventions;
+- implemented non-destructive per-forward adapter deltas with rank, alpha, positive,
+  zero, and negative strength handling;
+- validates every target/key/shape before changing the executable graph and rejects
+  regional scope, bare parameters, DoRA, LoKr, incomplete pairs, and partial application;
+- applies multiple adapters in declared order and reports hashes, tensors, targets,
+  ranks, strengths, bytes, status, and unmatched keys;
+- proved on the real local transformer that positive/negative adapters change output,
+  zero strength and disable/re-enable return pixel-exact base output, multiple adapters
+  remain ordered, and no VRAM allocation remains above the normal floor;
+- passed 168 core tests, 2 intentional skips, and 6 subtests.
+
+Gate 6 remains incomplete pending standard-LoRA cross-backend parity and the separate LoKr
+format used by several existing K2Lab adapters. The product default remains `comfyui`.
