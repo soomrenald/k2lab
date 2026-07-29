@@ -203,3 +203,26 @@ Completed:
 
 The product default remains `comfyui`. Native generation remains unavailable until
 the clean end-to-end path and Gate 5 parity/reliability evidence are complete.
+
+## 2026-07-29 — Native clean-generation orchestrator milestone
+
+Pinned shared core checkpoint: `04d5b7115791739a5e091b517125250fe6dcb70b`
+
+Completed:
+
+- connected the native prompt encoder, explicit per-request CPU RNG, simple sigma
+  schedule, Euler integration, transformer, latent normalization, VAE, PNG output,
+  progress, diagnostics, cancellation checks, and structured errors;
+- staged text encoder, transformer, and VAE execution sequentially so the path runs
+  on the supported local 16 GiB ROCm device;
+- exposed only clean text-to-image capability and explicitly rejected negative prompts,
+  partial denoise, regional controls, LoRAs, projector controls, and post-upscale;
+- completed a 512×512 two-step end-to-end generation and clean unload;
+- compared the native image with an identical current-Comfy request at cosine
+  `0.999104`, mean absolute pixel error `0.01048`, RMSE `0.03350`, and PSNR
+  `29.50 dB`.
+
+The product default remains `comfyui`, and native remains developer-only. Gate 5 is not
+complete until the approved eight-step golden fixture, cancellation, malformed-input,
+dimension, sequential-generation, cleanup, desktop, and supported RunPod soak evidence
+is recorded.
