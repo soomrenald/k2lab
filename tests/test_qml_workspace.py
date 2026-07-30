@@ -724,6 +724,14 @@ class QmlWorkspaceTests(unittest.TestCase):
             self.assertTrue(QMetaObject.invokeMethod(root_object, "openSetupWindow"))
             self.application.processEvents()
             self.assertIsNotNone(root_object.findChild(QObject, "checkpointSelector"))
+            self.assertIsNotNone(
+                root_object.findChild(QObject, "developerDiagnosticsPanel")
+            )
+            diagnostic_rows = controller.setupController.developerDiagnostics
+            self.assertEqual(
+                diagnostic_rows[0],
+                {"label": "Selected backend", "value": "comfyui"},
+            )
             root_object.close()
             controller.deleteLater()
             backend.close()

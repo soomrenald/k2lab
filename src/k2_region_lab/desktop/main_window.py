@@ -379,6 +379,7 @@ class MainWindow(QMainWindow):
         self._syncing_prompt_emphases = False
         self._models_compatible = False
         self._model_loaded = False
+        self._last_backend_diagnostics: dict[str, object] = {}
         self._current_project_path: Path | None = None
         self._background_image_path: Path | None = None
         self.edit_regions: list[RegionDefinition] = []
@@ -5645,6 +5646,18 @@ class MainWindow(QMainWindow):
         state = event.get("state", "unknown")
         message = event.get("message", "")
         payload = event.get("payload", {})
+        if isinstance(payload, dict):
+            for key in (
+                "backend",
+                "components",
+                "device_plan",
+                "model_name",
+                "strict_loading",
+            ):
+                if key in payload:
+                    self._last_backend_diagnostics[key] = payload[key]
+            if isinstance(payload.get("memory"), dict):
+                self._last_backend_diagnostics["memory"] = dict(payload["memory"])
         self.worker_status.setText(state)
         self.events.addItem(f"Worker [{state}]: {message}")
         if "memory" in payload:

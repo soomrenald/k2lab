@@ -481,6 +481,56 @@ Window {
                         }
                     }
                 }
+
+                Rectangle {
+                    objectName: "developerDiagnosticsPanel"
+                    Layout.fillWidth: true
+                    Layout.leftMargin: 16
+                    Layout.rightMargin: 16
+                    Layout.bottomMargin: 16
+                    implicitHeight: developerDiagnosticsContent.implicitHeight + 28
+                    radius: 11
+                    color: "#111621"
+                    border.color: "#293143"
+
+                    ColumnLayout {
+                        id: developerDiagnosticsContent
+                        anchors.fill: parent
+                        anchors.margins: 14
+                        spacing: 8
+
+                        SectionLabel { text: "Developer backend diagnostics" }
+                        Text {
+                            Layout.fillWidth: true
+                            text: "Read-only migration diagnostics. Backend selection remains environment-controlled."
+                            color: "#788195"
+                            font.pixelSize: 11
+                            wrapMode: Text.Wrap
+                        }
+                        Repeater {
+                            model: setupWindow.controller.developerDiagnostics
+                            delegate: RowLayout {
+                                required property var modelData
+                                Layout.fillWidth: true
+                                spacing: 12
+                                Text {
+                                    Layout.preferredWidth: 132
+                                    Layout.alignment: Qt.AlignTop
+                                    text: modelData.label
+                                    color: "#788195"
+                                    font.pixelSize: 11
+                                }
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: modelData.value
+                                    color: "#e2e5ed"
+                                    font.pixelSize: 11
+                                    wrapMode: Text.WrapAnywhere
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
 

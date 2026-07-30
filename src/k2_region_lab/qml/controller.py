@@ -19,12 +19,14 @@ from PySide6.QtCore import (
 from PySide6.QtWidgets import QFileDialog
 
 from k2_region_lab.config import ModelDirectories, discover_worker_python
+from k2_region_lab.desktop.backend_diagnostics import backend_diagnostic_rows
 from k2core.lora import (
     CHARACTER_IDENTITY_LORA_ROUTING,
     STANDARD_LORA_ROUTING,
     LoraBinding,
 )
 from k2core.memory import MEMORY_POLICIES, memory_policy
+from k2core.inference import configured_backend_name
 from k2_region_lab.output import validate_filename_prefix
 from k2core.regional_prompting import GLOBAL_EMPHASIS_SCOPE, PromptEmphasis
 from k2core.regions import PixelBox, RegionDefinition
@@ -248,6 +250,19 @@ class SetupController(QObject):
     def memoryStatus(self) -> str:
         return self.backend.memory_status.text()
 
+    @Property("QVariantList", notify=changed)
+    def developerDiagnostics(self) -> list[dict[str, str]]:
+        return backend_diagnostic_rows(
+            backend_name=configured_backend_name(),
+            settings=self.backend.settings,
+            load_payload=self.backend._last_backend_diagnostics,
+            loaded_loras=tuple(
+                entry.display_name
+                for entry in self.backend.lora_library.entries()
+            ),
+            memory_text=self.backend.memory_status.text(),
+        )
+
     @Slot(str, result="QVariant")
     def value(self, name: str):
         return self._values.get(name)
@@ -462,6 +477,10 @@ class SetupController(QObject):
             self.transformerStatus,
             self.textEncoderStatus,
             self.vaeStatus,
+            tuple(
+                (row["label"], row["value"])
+                for row in self.developerDiagnostics
+            ),
             tuple((item["label"], item["value"]) for item in self.checkpointOptions),
         )
         if snapshot != self._status_snapshot:
