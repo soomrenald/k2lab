@@ -500,3 +500,29 @@ pull-request/manual image validation remains non-publishing, while an approved
 `native-v*` tag publishes the native image under a distinct tag in the preserved public
 GHCR workspace package, validates the pushed digest, emits the SBOM, and signs the digest
 with GitHub OIDC.
+
+## 2026-07-29 — Gate 12 signed release-candidate checkpoint
+
+RunPod release source:
+`4b091c54162fc689833b5115f78e47b1955525cb`
+
+RunPod publication-evidence checkpoint:
+`3b13c46`
+
+The first immutable tag, `native-v0.4.0-rc.1`, published an image but its workflow
+stopped before scanning and signing because the embedded authenticated-health command
+had invalid Python indentation. The tag and failed run are retained as immutable
+evidence and must not be deployed. RunPod checkpoint `4b091c5` fixes the command and
+adds a regression test that compiles the exact embedded program.
+
+The replacement `native-v0.4.0-rc.2` workflow passed build, pushed-digest validation,
+no-ComfyUI inspection, pinned imports and runtime lock checks, empty-workspace
+authenticated health, zero-HIGH/zero-CRITICAL Trivy policy, SPDX generation, and GitHub
+OIDC signing. The immutable candidate is
+`ghcr.io/soomrenald/k2lab-runpod-workspace@sha256:7662f6440bd4e2a1f6059876c042df98a1e00284c89c35e6aaec3aa446be856f`.
+Independent Cosign verification matched the exact tag workflow identity, trusted GitHub
+Actions issuer, certificate chain, claims, and transparency-log entry.
+
+Publication and signing now pass. Fresh RunPod GPU boot, native generation, failure
+recovery, swap-back generation on the preserved ComfyUI digest, human output approval,
+and licensing/provenance decisions remain release blockers.

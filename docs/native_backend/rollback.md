@@ -54,9 +54,9 @@ report at that commit records the exact coupled k2core and RunPod checkpoints.
 | 10 | `native-backend-gate-10` | `1e31c4f` |
 | 11 | `native-backend-gate-11` | `58ec367` |
 
-Gate 12 is not tagged as passed. Its current evidence checkpoints before this rollback
-record are desktop `ec17433` and RunPod `f8b2184`; the clean-image source is `8aff782`.
-Overall release readiness remains blocked.
+Gate 12 is not tagged as passed. Its current later checkpoints include desktop `85cd0d2`,
+RunPod release source `4b091c5`, and RunPod publication evidence `3b13c46`; the original
+clean-image source is `8aff782`. Overall release readiness remains blocked.
 
 To return to an earlier passed gate without rewriting history, create a branch from its
 tag. To remove later feature-branch changes while retaining history, revert later
@@ -70,7 +70,9 @@ The preserved ComfyUI production target is version `0.3.0` at immutable index di
 The index, linux/amd64 manifest, and attestation resolve in GHCR. Desktop unset/explicit
 ComfyUI routing and the session fallback pass their targeted tests.
 
-The full drill remains blocked: the reviewed native candidate has not been published to
-an immutable registry digest, so there is no deployable native target to switch to before
-switching back to the preserved ComfyUI image. Do not mark rollback verified until both
-RunPod image transitions and post-transition authenticated health/generation checks pass.
+The reviewed candidate is published and signed at immutable digest
+`ghcr.io/soomrenald/k2lab-runpod-workspace@sha256:7662f6440bd4e2a1f6059876c042df98a1e00284c89c35e6aaec3aa446be856f`.
+The full drill remains blocked because that digest has not yet been booted on a fresh
+RunPod workspace and switched back to the preserved ComfyUI image. Do not mark rollback
+verified until both RunPod image transitions and post-transition authenticated
+health/generation checks pass.

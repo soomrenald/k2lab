@@ -7,11 +7,12 @@ Date: 2026-07-29
 Overall release readiness: **BLOCKED**
 
 The release-workload native soak passed on one NVIDIA A40. A clean native-only image was
-also built and booted locally from the approved immutable CUDA base. The native backend
-remains developer-only, `comfyui` remains the default, and the existing ComfyUI path
-remains available. This report does not approve a release: the clean image has not been
-published or booted on a RunPod GPU, first-party and model licensing decisions remain
-open, and representative output still requires human approval.
+built locally, published to GHCR as a distinct release candidate, validated at its pushed
+digest, and signed with GitHub OIDC. The native backend remains developer-only,
+`comfyui` remains the default, and the existing ComfyUI path remains available. This
+report does not approve a release: the published digest has not been booted on a fresh
+RunPod GPU, first-party and model licensing decisions remain open, and representative
+output still requires human approval.
 
 ## Pinned implementation and evidence
 
@@ -19,7 +20,8 @@ open, and representative output still requires human approval.
 - desktop checkpoint before this evidence update: `65782bc`
 - RunPod soak source: `79837482e458ef216ba3d990b134fd9a0a4d6ab9`
 - RunPod clean-image source: `8aff7822a61526222b77adbc482edb2c429bfaa6`
-- RunPod release-workflow source: `ff569c4189acf14ba7da60128953ad9091f379d6`
+- RunPod release-workflow source: `4b091c54162fc689833b5115f78e47b1955525cb`
+- RunPod publication-evidence checkpoint: `3b13c46`
 - canonical request fixture SHA-256:
   `472aa82fc8bbbd6ef65d2d5601e8ed0da9ce0d7652d7243e0acee706840a12c1`
 - full resumable state SHA-256:
@@ -28,6 +30,9 @@ open, and representative output still requires human approval.
   `tests/fixtures/parity/device/gate12_a40_100_job_soak.json`
 - clean-image build/boot evidence:
   `tests/fixtures/parity/integration/gate12_clean_native_image.json`
+- published-candidate evidence:
+  `tests/fixtures/parity/integration/gate12_published_native_rc.json` in the RunPod
+  repository
 
 The remote state is 132,353 bytes and remains at
 `/workspace/k2lab/state/gate12-native-soak-a40.json`. It contains every iteration,
@@ -140,24 +145,42 @@ Pinned Syft 1.42.3 emitted a 5,467,463-byte SPDX 2.3 JSON with 243 packages, 6,0
 files, and 7,107 relationships. Its SHA-256 is
 `5397252aeeec5e98a2c563f845229e48b85a2dc192f730d3ed7c83bea5595c2c`.
 Both raw local artifacts remain in `/tmp/k2lab-gate12-native-evidence`; the checked-in
-compact fixture records their hashes and summary. The image was not published, promoted,
-or executed on the RunPod GPU.
+compact fixture records their hashes and summary.
+
+The approved `native-v0.4.0-rc.2` tag publishes immutable index digest
+`ghcr.io/soomrenald/k2lab-runpod-workspace@sha256:7662f6440bd4e2a1f6059876c042df98a1e00284c89c35e6aaec3aa446be856f`.
+Its linux/amd64 manifest is `sha256:275714df05acfbbd2deca4e5974cc7c0141a45f840ab807e909379660851ce92`
+and its attestation manifest is
+`sha256:caf1fdec8be4c1c2ee3dd76c31883c18f334966c78c052dd78c49e3dee7c24e7`.
+Workflow run `30513561956` passed the immutable-base, no-ComfyUI, native-import,
+lock, empty-workspace authenticated-health, Trivy, SPDX, and OIDC-signing stages.
+The pushed candidate again reported zero HIGH and zero CRITICAL findings. Its downloaded
+SPDX 2.3 artifact contains 243 packages, 6,041 files, and 7,107 relationships; the
+5,470,485-byte file has SHA-256
+`1c1a058333bdfe6fd41f6c5df6227e93d577672082511140a966492678522479`.
+
+Independent Cosign 3.0.6 verification matched the exact
+`native-workspace-image.yml@refs/tags/native-v0.4.0-rc.2` GitHub workflow identity and
+GitHub Actions OIDC issuer, validated the claims and trusted certificate chain, and
+verified transparency-log inclusion. The earlier `native-v0.4.0-rc.1` is retained but
+must not be deployed: its workflow found invalid indentation in the embedded health
+probe before scanning or signing. RunPod commit `4b091c5` fixes the probe and adds a
+regression test that compiles the exact embedded Python.
 
 ## Automated verification
 
 - k2core: 202 passed, 2 intentional environment skips;
 - desktop K2Lab after this evidence update: 205 passed, 2 intentional environment
   skips, 6 subtests;
-- RunPod after the release-candidate workflow: 316 passed, 15 intentional
+- RunPod after recording the signed candidate: 317 passed, 15 intentional
   environment/live-test skips, 16 subtests;
 - RunPod frontend typecheck, contract tests, and production build passed;
 - Ruff and `git diff --check` passed in all changed repositories.
 
 ## Remaining release blockers
 
-- Create an approved `native-v*` release-candidate tag, allow its workflow to publish and
-  sign the content-addressed native-only candidate, and boot that digest on a RunPod GPU
-  for clean-install desktop/RunPod smoke, failure recovery, and rollback checks.
+- Boot the signed content-addressed candidate on a fresh RunPod GPU for clean-install
+  RunPod smoke, failure recovery, native generation, and swap-back rollback checks.
 - Obtain human approval for representative native outputs.
 - Decide and record K2Lab and k2core first-party licenses, model redistribution terms,
   and face-detector provenance. The notice inventory is evidence, not legal approval.
@@ -182,12 +205,14 @@ selection and session fallback matrix passes 28 targeted tests, and the Gate 1â€
 coordination tags resolve remotely.
 
 These are rollback prerequisites, not a completed image-swap drill. The reviewed native
-image is intentionally local-only, so RunPod cannot switch to its immutable registry
-digest and then back to the preserved ComfyUI digest. The compact blocked record is
-`tests/fixtures/parity/integration/gate12_rollback_readiness.json`.
+candidate is now deployable at the immutable RC2 digest, but it has not yet been switched
+onto a disposable RunPod workspace and back to the preserved ComfyUI digest. The compact
+pre-publication readiness record is
+`tests/fixtures/parity/integration/gate12_rollback_readiness.json`; the RunPod publication
+record is `tests/fixtures/parity/integration/gate12_published_native_rc.json`.
 
 ## Recommended next step
 
-Create an approved `native-v*` tag to publish and sign the exact reviewed candidate. Boot
-that digest on a RunPod GPU, run the clean-install validation matrix, and perform the
-rollback drill. Keep native opt-in until the remaining blockers are closed.
+Boot the signed RC2 digest on a disposable RunPod GPU, run the clean-install validation
+matrix, and perform the rollback drill. Keep native opt-in until that evidence, human
+output approval, and the licensing/provenance decisions are complete.

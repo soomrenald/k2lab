@@ -134,10 +134,10 @@ selection, scheduler choice, denoise strength, seed, or metadata.
 - 100-job supported-RunPod release soak: passed on NVIDIA A40 at 512×512, eight
   Euler/simple steps, with pixel-exact output, zero median GPU/RSS growth, and terminal
   cleanup to 0 MiB; see the Gate 12 report.
-- clean native-only image: local immutable-base build, no-ComfyUI assertion, pinned import
-  smoke, `pip check`, agent boot, Docker health, authenticated health, remediated
-  HIGH/CRITICAL scan, and SPDX SBOM passed; published RunPod GPU boot and clean desktop
-  integration remain blocked.
+- clean native-only image: local immutable-base build and signed RC2 publication passed
+  no-ComfyUI assertion, pinned import smoke, `pip check`, agent boot, Docker health,
+  authenticated health, remediated HIGH/CRITICAL scan, SPDX SBOM, and independent Cosign
+  verification; fresh RunPod GPU boot and clean desktop integration remain blocked.
 - paired identical-workload A40 peak memory: ComfyUI 18,889 MiB, native 13,653 MiB,
   native-to-ComfyUI ratio 0.7228 against the 1.15 ceiling, with both workers returning to
   0 MiB.
