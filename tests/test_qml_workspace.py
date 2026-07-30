@@ -7,6 +7,7 @@ import struct
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 PYSIDE_AVAILABLE = importlib.util.find_spec("PySide6") is not None
@@ -731,6 +732,76 @@ class QmlWorkspaceTests(unittest.TestCase):
             self.assertEqual(
                 diagnostic_rows[0],
                 {"label": "Selected backend", "value": "comfyui"},
+            )
+            root_object.close()
+            controller.deleteLater()
+            backend.close()
+
+    def test_native_capabilities_disable_unsupported_controls_with_reasons(
+        self,
+    ) -> None:
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.dict(os.environ, {"K2LAB_BACKEND": "native"}),
+        ):
+            backend = self.make_window(Path(directory))
+            controller = QmlWorkspaceController(backend)
+            notifications: list[str] = []
+            controller.notification.connect(notifications.append)
+
+            self.assertFalse(backend.workspace_tabs.isTabEnabled(2))
+            self.assertFalse(backend.post_upscale_input.isEnabled())
+            self.assertFalse(
+                backend.settings_tabs.isTabEnabled(backend.settings_tabs.count() - 1)
+            )
+            self.assertEqual(controller.backendName, "native")
+            self.assertFalse(controller.modeAvailable("face"))
+            self.assertFalse(controller.settingSpec("postUpscale")["enabled"])
+            self.assertIn(
+                "not supported",
+                controller.settingSpec("projectorEnabled")["unavailableReason"],
+            )
+            controller.setSetting("postUpscale", True)
+            self.assertFalse(controller.setting("postUpscale"))
+            controller.setMode("face")
+            self.assertEqual(controller.mode, "generation")
+            self.assertTrue(
+                any("K2LAB_BACKEND=comfyui" in message for message in notifications)
+            )
+
+            engine = QQmlApplicationEngine()
+            engine.rootContext().setContextProperty("controller", controller)
+            qml_path = (
+                Path(__file__).parents[1]
+                / "src"
+                / "k2_region_lab"
+                / "qml"
+                / "ui"
+                / "Main.qml"
+            )
+            engine.load(QUrl.fromLocalFile(str(qml_path)))
+            self.application.processEvents()
+            root_object = engine.rootObjects()[0]
+            self.assertFalse(
+                root_object.findChild(QObject, "faceModeButton").property("enabled")
+            )
+            self.assertTrue(
+                root_object.findChild(
+                    QObject, "backendLimitationBanner"
+                ).property("visible")
+            )
+            inspector_tabs = root_object.findChild(QObject, "inspectorTabs")
+            inspector_tabs.setProperty("currentIndex", 3)
+            self.application.processEvents()
+            self.assertFalse(
+                root_object.findChild(
+                    QObject, "postUpscaleCheckBox"
+                ).property("enabled")
+            )
+            self.assertFalse(
+                root_object.findChild(
+                    QObject, "projectorEnabledCheckBox"
+                ).property("enabled")
             )
             root_object.close()
             controller.deleteLater()

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from importlib.metadata import PackageNotFoundError, version
 from types import SimpleNamespace
 from typing import Any
 
-from k2core.backends import ComfyUIBackend, NativeK2Backend
+from k2core.backends import BackendCapabilities, ComfyUIBackend, NativeK2Backend
 from k2core.inference import BackendName
 from k2core.model import RegisteredModel, load_model_registry
 
@@ -40,14 +41,19 @@ def _registered_model(settings) -> RegisteredModel | None:
     return registry.models[0] if len(registry.models) == 1 else None
 
 
-def _capabilities(backend_name: BackendName, *, loaded: bool) -> tuple[str, ...]:
+def selected_backend_capabilities(
+    backend_name: BackendName,
+    *,
+    loaded: bool = False,
+) -> BackendCapabilities:
     if backend_name is BackendName.NATIVE:
-        capabilities = NativeK2Backend().capabilities()
-    else:
-        capabilities = ComfyUIBackend(
-            SimpleNamespace(loaded=loaded)
-        ).capabilities()
-    return tuple(sorted(capabilities.modes))
+        return NativeK2Backend().capabilities()
+    capabilities = ComfyUIBackend(SimpleNamespace(loaded=loaded)).capabilities()
+    return replace(
+        capabilities,
+        modes=capabilities.modes
+        | frozenset({"ordinary_lora", "post_upscale", "projector"}),
+    )
 
 
 def _device_plan(load_payload: dict[str, Any]) -> dict[str, Any]:
@@ -101,7 +107,7 @@ def backend_diagnostic_rows(
     else:
         placement = "Owned by the selected ComfyUI runtime"
         dtype = "Owned by checkpoint and ComfyUI runtime"
-    capabilities = _capabilities(
+    capabilities = selected_backend_capabilities(
         backend_name,
         loaded=bool(payload),
     )
@@ -118,7 +124,7 @@ def backend_diagnostic_rows(
     return [
         {"label": "Selected backend", "value": backend_name.value},
         {"label": "Backend version", "value": f"k2core {_package_version('k2core')}"},
-        {"label": "Capabilities", "value": ", ".join(capabilities)},
+        {"label": "Capabilities", "value": ", ".join(sorted(capabilities.modes))},
         {"label": "Unsupported", "value": unsupported},
         {"label": "Model hashes", "value": hashes},
         {"label": "Dtype", "value": dtype},
@@ -138,4 +144,3 @@ def backend_diagnostic_rows(
             ),
         },
     ]
-

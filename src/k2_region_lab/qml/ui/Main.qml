@@ -89,6 +89,7 @@ ApplicationWindow {
         property string glyph: ""
         checkable: true
         checked: controller.mode === modeName
+        enabled: controller.modeAvailable(modeName)
         implicitWidth: 66
         implicitHeight: 58
         font.pixelSize: 11
@@ -117,6 +118,9 @@ ApplicationWindow {
             border.width: 1
             radius: 10
         }
+        ToolTip.visible: hovered && !enabled
+        ToolTip.text: modeName === "face"
+                      ? controller.featureUnavailableReason("face_refinement") : ""
         onClicked: controller.setMode(modeName)
     }
 
@@ -218,7 +222,12 @@ ApplicationWindow {
 
                     RailButton { modeName: "generation"; text: "Generate"; glyph: "✦" }
                     RailButton { modeName: "edit"; text: "Edit"; glyph: "▣" }
-                    RailButton { modeName: "face"; text: "Faces"; glyph: "◉" }
+                    RailButton {
+                        objectName: "faceModeButton"
+                        modeName: "face"
+                        text: "Faces"
+                        glyph: "◉"
+                    }
                 }
 
                 Column {

@@ -19,14 +19,17 @@ from PySide6.QtCore import (
 from PySide6.QtWidgets import QFileDialog
 
 from k2_region_lab.config import ModelDirectories, discover_worker_python
-from k2_region_lab.desktop.backend_diagnostics import backend_diagnostic_rows
+from k2_region_lab.desktop.backend_diagnostics import (
+    backend_diagnostic_rows,
+    selected_backend_capabilities,
+)
 from k2core.lora import (
     CHARACTER_IDENTITY_LORA_ROUTING,
     STANDARD_LORA_ROUTING,
     LoraBinding,
 )
 from k2core.memory import MEMORY_POLICIES, memory_policy
-from k2core.inference import configured_backend_name
+from k2core.inference import BackendName, configured_backend_name
 from k2_region_lab.output import validate_filename_prefix
 from k2core.regional_prompting import GLOBAL_EMPHASIS_SCOPE, PromptEmphasis
 from k2core.regions import PixelBox, RegionDefinition
@@ -524,6 +527,8 @@ class QmlWorkspaceController(QObject):
         self._lora_last_strength: dict[tuple[str, str, str], float] = {}
         self._state_snapshot: tuple[Any, ...] | None = None
         self._state_revision = 0
+        self._backend_name = configured_backend_name()
+        self._backend_capabilities = selected_backend_capabilities(self._backend_name)
         self._generation_regions = RegionListModel(self)
         self._edit_regions = RegionListModel(self)
         self._reference_regions = RegionListModel(self)
@@ -614,8 +619,64 @@ class QmlWorkspaceController(QObject):
         if self._mode == self.IMAGE_EDIT:
             return complete and self.backend._edit_source_path is not None
         if self._mode == self.FACE_REFINEMENT:
-            return complete and bool(self.backend._selected_face_indices())
+            return self.modeAvailable(self.FACE_REFINEMENT) and complete and bool(
+                self.backend._selected_face_indices()
+            )
         return complete
+
+    @Property(str, constant=True)
+    def backendName(self) -> str:
+        return self._backend_name.value
+
+    @Property(str, constant=True)
+    def backendLimitationText(self) -> str:
+        if self._backend_name is BackendName.NATIVE:
+            return (
+                "Native developer preview: face refinement, projector, and "
+                "post-upscale are unavailable. Set K2LAB_BACKEND=comfyui to use them."
+            )
+        return ""
+
+    @Slot(str, result=bool)
+    def featureAvailable(self, feature: str) -> bool:
+        return feature in self._backend_capabilities.modes
+
+    @Slot(str, result=str)
+    def featureUnavailableReason(self, feature: str) -> str:
+        if self.featureAvailable(feature):
+            return ""
+        labels = {
+            "face_refinement": "Face refinement",
+            "post_upscale": "Post-upscale",
+            "projector": "Projector",
+        }
+        return (
+            f"{labels.get(feature, feature)} is not supported by the "
+            f"{self.backendName} backend. Set K2LAB_BACKEND=comfyui to use it."
+        )
+
+    @Slot(str, result=bool)
+    def modeAvailable(self, mode: str) -> bool:
+        feature = {
+            self.GENERATION: "text_to_image",
+            self.IMAGE_EDIT: "image_edit",
+            self.FACE_REFINEMENT: "face_refinement",
+        }.get(mode)
+        return feature is not None and self.featureAvailable(feature)
+
+    def _setting_feature(self, name: str) -> str | None:
+        if self._mode == self.FACE_REFINEMENT:
+            return "face_refinement"
+        if name in {"postUpscale", "upscaleScale", "upscaleMethod"}:
+            return "post_upscale"
+        if name in {
+            "projectorEnabled",
+            "projectorPreset",
+            "projectorMultiplier",
+            "projectorIdentityProtection",
+        }:
+            return "projector"
+        return None
 
     @Property(bool, notify=stateChanged)
     def busy(self) -> bool:
@@ -816,6 +877,10 @@ class QmlWorkspaceController(QObject):
     def setMode(self, mode: str) -> None:
         if mode not in {self.GENERATION, self.IMAGE_EDIT, self.FACE_REFINEMENT}:
             return
+        if not self.modeAvailable(mode):
+            feature = "face_refinement" if mode == self.FACE_REFINEMENT else mode
+            self.notification.emit(self.featureUnavailableReason(feature))
+            return
         if mode == self._mode:
             return
         self._mode = mode
@@ -1012,7 +1077,14 @@ class QmlWorkspaceController(QObject):
         control = self._setting_control(name)
         if control is None:
             return {}
-        spec: dict[str, Any] = {"enabled": bool(control.isEnabled())}
+        feature = self._setting_feature(name)
+        available = feature is None or self.featureAvailable(feature)
+        spec: dict[str, Any] = {
+            "enabled": bool(control.isEnabled() and available),
+            "unavailableReason": (
+                "" if available else self.featureUnavailableReason(feature)
+            ),
+        }
         if hasattr(control, "minimum"):
             spec.update(
                 {
@@ -1041,6 +1113,10 @@ class QmlWorkspaceController(QObject):
     def setSetting(self, name: str, value) -> None:
         control = self._setting_control(name)
         if control is None:
+            return
+        feature = self._setting_feature(name)
+        if feature is not None and not self.featureAvailable(feature):
+            self.notification.emit(self.featureUnavailableReason(feature))
             return
         if hasattr(control, "setChecked"):
             control.setChecked(bool(value))
@@ -1251,6 +1327,9 @@ class QmlWorkspaceController(QObject):
 
     @Slot(int, float)
     def setProjectorValue(self, index: int, value: float) -> None:
+        if not self.featureAvailable("projector"):
+            self.notification.emit(self.featureUnavailableReason("projector"))
+            return
         if not 0 <= index < len(self.backend.projector_vector_inputs):
             return
         self.backend.projector_vector_inputs[index].setValue(float(value))
@@ -1262,11 +1341,17 @@ class QmlWorkspaceController(QObject):
 
     @Slot()
     def browseUpscaleModel(self) -> None:
+        if not self.featureAvailable("post_upscale"):
+            self.notification.emit(self.featureUnavailableReason("post_upscale"))
+            return
         self.backend._browse_upscale_model()
         self.refresh()
 
     @Slot()
     def clearUpscaleModel(self) -> None:
+        if not self.featureAvailable("post_upscale"):
+            self.notification.emit(self.featureUnavailableReason("post_upscale"))
+            return
         self.backend._clear_upscale_model()
         self.refresh()
 
@@ -1386,11 +1471,22 @@ class QmlWorkspaceController(QObject):
 
     @Slot()
     def detectFaces(self) -> None:
+        if not self.featureAvailable("face_refinement"):
+            self.notification.emit(self.featureUnavailableReason("face_refinement"))
+            return
         self.backend._detect_faces_for_refinement()
         self.refresh()
 
     @Slot()
     def runActive(self) -> None:
+        if not self.modeAvailable(self._mode):
+            feature = (
+                "face_refinement"
+                if self._mode == self.FACE_REFINEMENT
+                else self._mode
+            )
+            self.notification.emit(self.featureUnavailableReason(feature))
+            return
         if self._mode == self.IMAGE_EDIT:
             self.backend._run_image_edit()
         elif self._mode == self.FACE_REFINEMENT:

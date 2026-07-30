@@ -266,6 +266,28 @@ Rectangle {
             }
         }
 
+        Rectangle {
+            objectName: "backendLimitationBanner"
+            visible: controller.backendLimitationText.length > 0
+            Layout.fillWidth: true
+            Layout.leftMargin: 10
+            Layout.rightMargin: 10
+            Layout.bottomMargin: 8
+            implicitHeight: limitationText.implicitHeight + 16
+            radius: 7
+            color: "#302718"
+            border.color: "#775b2e"
+            Text {
+                id: limitationText
+                anchors.fill: parent
+                anchors.margins: 8
+                text: controller.backendLimitationText
+                color: "#ffd291"
+                wrapMode: Text.Wrap
+                font.pixelSize: 11
+            }
+        }
+
         TabBar {
             id: inspectorTabs
             objectName: "inspectorTabs"
@@ -1154,7 +1176,10 @@ Rectangle {
                         visible: controller.mode === "generation"
                         Layout.leftMargin: 14
                         text: "Post-upscale after releasing Krea VRAM"
+                        enabled: controller.featureAvailable("post_upscale")
                         checked: Boolean(controller.setting("postUpscale"))
+                        ToolTip.visible: hovered && !enabled
+                        ToolTip.text: controller.featureUnavailableReason("post_upscale")
                         onToggled: controller.setSetting("postUpscale", checked)
                     }
                     RowLayout {
@@ -1197,12 +1222,16 @@ Rectangle {
                         visible: controller.mode === "generation"
                         Layout.leftMargin: 14
                         text: "Apply global projector vector"
+                        enabled: controller.featureAvailable("projector")
                         checked: Boolean(controller.setting("projectorEnabled"))
+                        ToolTip.visible: hovered && !enabled
+                        ToolTip.text: controller.featureUnavailableReason("projector")
                         onToggled: controller.setSetting("projectorEnabled", checked)
                     }
                     ColumnLayout {
                         visible: controller.mode === "generation"
                                  && Boolean(controller.setting("projectorEnabled"))
+                        enabled: controller.featureAvailable("projector")
                         Layout.fillWidth: true
                         Layout.leftMargin: 14
                         Layout.rightMargin: 14

@@ -50,6 +50,7 @@ from PySide6.QtWidgets import (
 )
 
 from k2_region_lab.config import AppSettings, ModelDirectories, discover_worker_python
+from k2_region_lab.desktop.backend_diagnostics import selected_backend_capabilities
 from k2_region_lab.desktop.region_canvas import RegionCanvas
 from k2_region_lab.desktop.resource_monitor import ResourceMonitorWidget
 from k2_region_lab.desktop.worker_client import ExternalWorkerClient
@@ -60,6 +61,7 @@ from k2core.face_detail import (
     expanded_square_crop,
 )
 from k2core.image_edit import ImageEditState, load_source_image
+from k2core.inference import configured_backend_name
 from k2core.lora import (
     CHARACTER_IDENTITY_LORA_ROUTING,
     STANDARD_LORA_ROUTING,
@@ -380,6 +382,8 @@ class MainWindow(QMainWindow):
         self._models_compatible = False
         self._model_loaded = False
         self._last_backend_diagnostics: dict[str, object] = {}
+        self._backend_name = configured_backend_name()
+        self._backend_capabilities = selected_backend_capabilities(self._backend_name)
         self._current_project_path: Path | None = None
         self._background_image_path: Path | None = None
         self.edit_regions: list[RegionDefinition] = []
@@ -1621,6 +1625,7 @@ class MainWindow(QMainWindow):
         self._build_lora_tab()
         self._build_token_emphasis_tab()
         self._build_projector_tab()
+        self._apply_backend_capability_controls()
         dock.setWidget(body)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
         self.model_dock = dock
@@ -1805,13 +1810,50 @@ class MainWindow(QMainWindow):
             self._syncing_projector_fields = False
 
     def _set_upscale_controls_enabled(self, _value=None) -> None:
-        enabled = self.post_upscale_input.isChecked()
+        supported = "post_upscale" in self._backend_capabilities.modes
+        enabled = supported and self.post_upscale_input.isChecked()
+        self.post_upscale_input.setEnabled(supported)
         self.upscale_scale_input.setEnabled(enabled)
         self.upscale_method_input.setEnabled(enabled)
         model_enabled = enabled and self.upscale_method_input.currentData() == "model"
         self.upscale_model_input.setEnabled(model_enabled)
         self.upscale_model_browse.setEnabled(model_enabled)
         self.upscale_model_clear.setEnabled(model_enabled and self._upscale_model_path is not None)
+
+    def _apply_backend_capability_controls(self) -> None:
+        modes = self._backend_capabilities.modes
+        if "face_refinement" not in modes:
+            reason = (
+                "Face refinement is not supported by the native backend. "
+                "Set K2LAB_BACKEND=comfyui to use it."
+            )
+            self.workspace_tabs.setTabEnabled(2, False)
+            self.workspace_tabs.setTabToolTip(2, reason)
+        if "post_upscale" not in modes:
+            reason = (
+                "Post-upscale is not supported by the native backend. "
+                "Set K2LAB_BACKEND=comfyui to use it."
+            )
+            self.post_upscale_input.setToolTip(reason)
+        if "projector" not in modes:
+            reason = (
+                "Projector controls are not supported by the native backend. "
+                "Set K2LAB_BACKEND=comfyui to use them."
+            )
+            controls = (
+                self.projector_enabled_input,
+                self.projector_preset_input,
+                *self.projector_vector_inputs,
+                self.projector_multiplier_input,
+                self.projector_identity_protection_input,
+            )
+            for control in controls:
+                control.setEnabled(False)
+                control.setToolTip(reason)
+            projector_index = self.settings_tabs.count() - 1
+            self.settings_tabs.setTabEnabled(projector_index, False)
+            self.settings_tabs.setTabToolTip(projector_index, reason)
+        self._set_upscale_controls_enabled()
 
     def _set_late_step_scale_enabled(self, enabled: bool) -> None:
         self.regional_late_step_scale_input.setEnabled(enabled)
