@@ -116,3 +116,12 @@ Future entries must include:
   ineffective ordinary-LoRA and image-edit examples, then approved the corrective
   real-LoRA and full-object eight-step edit candidates on 2026-07-30.
 - Native remains opt-in and `comfyui` remains the product default.
+
+Licensed RC3 subsequently rebuilt the unchanged native execution path with Apache-2.0
+and model-policy files in its image. Workflow run `30528145539` passed publication,
+no-ComfyUI inspection, imports, lock validation, empty-workspace boot, vulnerability
+policy, SPDX generation, and signing at immutable digest
+`sha256:491067b900a0203d60df7134542d7dbbd41bca5534a1051dab2ea1b298080ede`.
+The prior RC2 RunPod GPU evidence remains applicable because the intervening k2core
+source delta changes only ComfyUI capability metadata plus documentation, tests, and
+licensing.

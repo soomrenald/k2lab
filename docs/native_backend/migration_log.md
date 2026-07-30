@@ -623,3 +623,22 @@ fresh-GPU, rollback, licensing, and approved-scope policy requirements are compl
 Gate 12 passes for this scope. Public/shared inference, commercial operation,
 project-operated mirrors, unattended model acquisition, or model redistribution
 requires a new review.
+
+## 2026-07-30 — Licensed native RC3 publication
+
+RunPod publication-evidence checkpoint:
+`6b23b30`
+
+Tag `native-v0.4.0-rc.3` rebuilt RunPod checkpoint `cc905bb` and published immutable
+digest
+`ghcr.io/soomrenald/k2lab-runpod-workspace@sha256:491067b900a0203d60df7134542d7dbbd41bca5534a1051dab2ea1b298080ede`.
+Workflow run `30528145539` completed in 15m59s and passed immutable-base enforcement,
+no-ComfyUI inspection, native imports, lock validation, empty-workspace authenticated
+boot, zero-HIGH/zero-CRITICAL vulnerability policy, SPDX 2.3 generation, and GitHub
+OIDC signing.
+
+The extracted 5,470,483-byte SPDX JSON has SHA-256
+`8794a259d85dcdde39054ca1aad246feb59e86c631485a3d82268833fa7fe449`
+and records 243 packages, 6,041 files, and 7,107 relationships. GPU acceptance remains
+anchored to RC2 because the k2core delta to RC3 only expands ComfyUI capability metadata
+and adds documentation, tests, and license files; no native runtime source changed.

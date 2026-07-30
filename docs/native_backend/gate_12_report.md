@@ -18,6 +18,13 @@ tested deployment scope to private, single-operator workspaces with operator rev
 Human review has approved clean generation, regional LoRA, a real ordinary-LoRA
 comparison, and a visibly successful full-object image edit.
 
+The GPU-accepted RC2 remains the executable acceptance record. Licensed RC3 rebuilt the
+same native runtime with the Apache-2.0 and model-policy packaging closure, passed the
+complete publish workflow, and is the current release candidate. The k2core delta
+between RC2's tested checkpoint and RC3's licensed pin only expands ComfyUI capability
+metadata and adds documentation, tests, and license files; native runtime source is
+unchanged.
+
 Gate 12 does not approve bundling or redistributing weights, project-operated mirrors,
 unattended model acquisition, or exposing a public/shared inference service without
 appropriate content filtering or equivalent review. Explicit operator-requested
@@ -73,6 +80,7 @@ reasoning above.
 - RunPod release-workflow source: `4b091c54162fc689833b5115f78e47b1955525cb`
 - RunPod publication and GPU-acceptance evidence checkpoint: `59de1c5`
 - RunPod licensed-source and image-packaging checkpoint: `cc905bb`
+- RunPod licensed-image publication evidence checkpoint: `6b23b30`
 - canonical request fixture SHA-256:
   `472aa82fc8bbbd6ef65d2d5601e8ed0da9ce0d7652d7243e0acee706840a12c1`
 - full resumable state SHA-256:
@@ -85,6 +93,9 @@ reasoning above.
   `tests/fixtures/parity/integration/gate12_clean_desktop_acceptance.json`
 - published-candidate evidence:
   `tests/fixtures/parity/integration/gate12_published_native_rc.json` in the RunPod
+  repository
+- licensed RC3 publication evidence:
+  `tests/fixtures/parity/integration/gate12_licensed_native_rc.json` in the RunPod
   repository
 
 The remote state is 132,353 bytes and remains at
@@ -274,6 +285,8 @@ gates.
   environment/live-test skips, 16 subtests;
 - RunPod license/image-policy closure: 7 targeted tests passed, with Ruff and
   `git diff --check` clean;
+- RunPod RC3 publication-evidence closure: 8 targeted tests passed, with Ruff and
+  `git diff --check` clean;
 - RunPod frontend typecheck, contract tests, and production build passed;
 - Ruff and `git diff --check` passed in all changed repositories.
 
@@ -313,11 +326,19 @@ compact rollback record is
 and GPU-acceptance record is
 `tests/fixtures/parity/integration/gate12_published_native_rc.json`.
 
+The current licensed candidate is
+`ghcr.io/soomrenald/k2lab-runpod-workspace@sha256:491067b900a0203d60df7134542d7dbbd41bca5534a1051dab2ea1b298080ede`.
+Workflow run `30528145539` passed build/push, no-ComfyUI inspection, native imports,
+locked dependencies, empty-workspace authenticated boot, zero-HIGH/zero-CRITICAL
+policy, SPDX generation, and OIDC signing. Its GPU execution claim is inherited from
+RC2 only because the intervening k2core source delta does not alter native runtime code.
+
 ## Gate decision
 
 Gate 12 passes for the distribution scope above. The initial coordination checkpoint is
 tagged `native-backend-gate-12`; the cross-repository packaging closure is tagged
-`native-backend-gate-12-final` and records RunPod checkpoint `cc905bb`. Any future
-expansion to model redistribution, project-operated mirrors, unattended model
-acquisition, commercial operation, or public/shared inference reopens the corresponding
-license and deployment review.
+`native-backend-gate-12-final`, and the published licensed-image closure is tagged
+`native-backend-gate-12-rc3`. The latter records RunPod publication-evidence checkpoint
+`6b23b30`. Any future expansion to model redistribution, project-operated mirrors,
+unattended model acquisition, commercial operation, or public/shared inference reopens
+the corresponding license and deployment review.
