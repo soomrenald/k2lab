@@ -288,8 +288,17 @@ that option, at least one edit box should be used.
   determines how smoothly the edited result is blended over the original.
 
 Pixels outside final composite support are copied exactly from the source. A useful
-starting point is low denoise with the defaults of 64 px latent feather and 48 px
-composite feather.
+starting point for subtle texture or detail work is low denoise with the defaults of
+64 px latent feather and 48 px composite feather. Obvious color, material, or object
+replacement usually needs the normal eight-step workload and a higher denoise value;
+try `0.6`–`0.8`, then adjust downward if too much structure changes.
+
+The edit box is a hard permission boundary. Include every part that should change: a
+box below a vase rim, above a shoe sole, or inside an object's silhouette preserves the
+excluded pixels even when the prompt asks to replace the entire object. If restored
+source-region text contradicts the requested change, lower **Reference description
+retention**; this trades source-description/identity retention for stronger prompt
+adherence.
 
 If a boundary is visible, increase feathering moderately or enlarge the box to
 include contextual pixels. If too much of the source changes, lower denoise, reduce

@@ -114,6 +114,5 @@ Future entries must include:
   clean generation and regional LoRA, but rejected the ordinary-LoRA fixture as
   perceptually ineffective and the image-edit fixture for failing to visibly follow its
   prompt. Corrective real-LoRA and eight-step image-edit candidates now show visible
-  effects with close native/Comfy parity, but require repeat review. The corrective edit
-  turns the right-vase body green while retaining a blue rim from the source.
+  effects with close native/Comfy parity, but require repeat review.
 - Native remains developer-only and `comfyui` remains the product default.

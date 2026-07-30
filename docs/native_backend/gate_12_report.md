@@ -37,7 +37,7 @@ prompt. Repeat human review for those two capabilities before release.
 
 A replacement sheet was generated at
 `/tmp/k2lab-gate12-native-evidence/gate12_corrective_lora_edit_sheet.png`, SHA-256
-`f865eb771541d208b63171828dca9c5d00ddce369390bdc3b5e41a09743e3a08`.
+`b1c0de335f2ddf234248d39d674ca8cb38a24cc30e0dd8e8254971926abb4936`.
 It adds a baseline/source column so the capability effect is directly inspectable.
 
 - Ordinary LoRA now uses a real rank-1 standard LoRA with 256 fully applied targets at
@@ -45,9 +45,9 @@ It adds a baseline/source column so the capability effect is directly inspectabl
   `0.0684693`; native-to-Comfy has cosine `0.9999245`, MAE `0.0060059`, RMSE
   `0.0097463`, and PSNR `40.2232 dB`.
 - Image editing now uses eight steps at denoise 0.75 without the original competing
-  blue-vase reference clause. Both backends visibly change the right-vase body to green;
-  native-to-Comfy has cosine `0.9993267`, MAE `0.0060479`, RMSE `0.0265270`, and PSNR
-  `31.5262 dB`.
+  blue-vase reference clause and with a box covering the complete vase. Both backends
+  visibly change the entire right vase from blue to green; native-to-Comfy has cosine
+  `0.9998339`, MAE `0.0034189`, RMSE `0.0129130`, and PSNR `37.7794 dB`.
 
 These candidates show real effects but remain **PENDING HUMAN REVIEW**. They do not
 silently reverse the owner's earlier rejection.
@@ -265,8 +265,7 @@ gates.
 ## Remaining release blockers
 
 - Obtain human approval for the corrective real ordinary-LoRA candidate.
-- Obtain human approval for the corrective visibly green image-edit candidate,
-  including whether its remaining blue rim is acceptable source preservation.
+- Obtain human approval for the corrective visibly green full-vase image-edit candidate.
 - Decide and record K2Lab and k2core first-party licenses.
 - Approve a Krea community/enterprise license strategy plus required license acceptance,
   content filtering, and public-mirror policy. Confirm the converted Qwen text-encoder

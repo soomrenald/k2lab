@@ -583,6 +583,7 @@ Corrective candidates were then generated locally. The ordinary-LoRA candidate r
 the single-target synthetic adapter with a real 256-target standard LoRA and shows a
 material same-seed change while retaining close native/Comfy parity. The image-edit
 candidate replaces the original two-step, 0.5-denoise request and competing blue-vase
-reference clause with eight steps, 0.75 denoise, and an explicit replacement prompt;
-both backends visibly render the right-vase body emerald green. The corrective contact
-sheet remains pending owner review and does not override the earlier rejection.
+reference clause with eight steps, 0.75 denoise, a box covering the whole object, and an
+explicit replacement prompt; both backends visibly render the complete right vase
+emerald green. The corrective contact sheet remains pending owner review and does not
+override the earlier rejection.
