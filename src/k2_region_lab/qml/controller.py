@@ -23,13 +23,14 @@ from k2_region_lab.desktop.backend_diagnostics import (
     backend_diagnostic_rows,
     selected_backend_capabilities,
 )
+from k2_region_lab.desktop.issue_report import create_issue_report_bundle
 from k2core.lora import (
     CHARACTER_IDENTITY_LORA_ROUTING,
     STANDARD_LORA_ROUTING,
     LoraBinding,
 )
 from k2core.memory import MEMORY_POLICIES, memory_policy
-from k2core.inference import BackendName, configured_backend_name
+from k2core.inference import BackendName
 from k2_region_lab.output import validate_filename_prefix
 from k2core.regional_prompting import GLOBAL_EMPHASIS_SCOPE, PromptEmphasis
 from k2core.regions import PixelBox, RegionDefinition
@@ -192,6 +193,7 @@ class SetupController(QObject):
     def __init__(self, backend, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self.backend = backend
+        self.workspace = parent
         self._values: dict[str, Any] = {}
         self._baseline: dict[str, Any] = {}
         self._revision = 0
@@ -213,6 +215,17 @@ class SetupController(QObject):
     @Property("QVariantList", constant=True)
     def memoryPolicyOptions(self) -> list[dict[str, str]]:
         return [{"label": policy.label, "value": policy.key} for policy in MEMORY_POLICIES]
+
+    @Property("QVariantList", constant=True)
+    def backendOptions(self) -> list[dict[str, str]]:
+        return [
+            {"label": "ComfyUI (recommended)", "value": BackendName.COMFYUI.value},
+            {"label": "Native K2 (experimental)", "value": BackendName.NATIVE.value},
+        ]
+
+    @Property(str, notify=changed)
+    def selectedBackend(self) -> str:
+        return self.backend._backend_name.value
 
     @Property("QVariantList", notify=changed)
     def checkpointOptions(self) -> list[dict[str, str]]:
@@ -256,7 +269,7 @@ class SetupController(QObject):
     @Property("QVariantList", notify=changed)
     def developerDiagnostics(self) -> list[dict[str, str]]:
         return backend_diagnostic_rows(
-            backend_name=configured_backend_name(),
+            backend_name=self.backend._backend_name,
             settings=self.backend.settings,
             load_payload=self.backend._last_backend_diagnostics,
             loaded_loras=tuple(
@@ -265,6 +278,48 @@ class SetupController(QObject):
             ),
             memory_text=self.backend.memory_status.text(),
         )
+
+    @Slot(str, result=bool)
+    def selectBackend(self, name: str) -> bool:
+        if self.backend._generation_active:
+            self.notification.emit(
+                "Stop the current generation before changing the backend"
+            )
+            return False
+        workspace = self.workspace
+        if workspace is None or not hasattr(workspace, "selectBackend"):
+            self.notification.emit("Backend selection is unavailable")
+            return False
+        changed = bool(workspace.selectBackend(name))
+        if changed:
+            self._revision += 1
+            self.changed.emit()
+        return changed
+
+    @Slot(result=bool)
+    def useComfyuiFallback(self) -> bool:
+        return self.selectBackend(BackendName.COMFYUI.value)
+
+    @Slot(result=str)
+    def createIssueReport(self) -> str:
+        diagnostics = backend_diagnostic_rows(
+            backend_name=self.backend._backend_name,
+            settings=self.backend.settings,
+            load_payload=self.backend._last_backend_diagnostics,
+            loaded_loras=(),
+            memory_text=self.backend.memory_status.text(),
+        )
+        try:
+            path = create_issue_report_bundle(
+                data_directory=self.backend.settings.data_directory,
+                backend_name=self.backend._backend_name,
+                diagnostics=diagnostics,
+            )
+        except (OSError, RuntimeError, ValueError) as error:
+            self.notification.emit(f"Could not create issue report: {error}")
+            return ""
+        self.notification.emit(f"Prompt-safe issue report saved to {path}")
+        return str(path)
 
     @Slot(str, result="QVariant")
     def value(self, name: str):
@@ -527,7 +582,7 @@ class QmlWorkspaceController(QObject):
         self._lora_last_strength: dict[tuple[str, str, str], float] = {}
         self._state_snapshot: tuple[Any, ...] | None = None
         self._state_revision = 0
-        self._backend_name = configured_backend_name()
+        self._backend_name = backend._backend_name
         self._backend_capabilities = selected_backend_capabilities(self._backend_name)
         self._generation_regions = RegionListModel(self)
         self._edit_regions = RegionListModel(self)
@@ -624,16 +679,17 @@ class QmlWorkspaceController(QObject):
             )
         return complete
 
-    @Property(str, constant=True)
+    @Property(str, notify=stateChanged)
     def backendName(self) -> str:
         return self._backend_name.value
 
-    @Property(str, constant=True)
+    @Property(str, notify=stateChanged)
     def backendLimitationText(self) -> str:
         if self._backend_name is BackendName.NATIVE:
             return (
-                "Native developer preview: face refinement, projector, and "
-                "post-upscale are unavailable. Set K2LAB_BACKEND=comfyui to use them."
+                "Native experimental preview: face refinement, projector, and "
+                "post-upscale are unavailable. Use the ComfyUI fallback in Setup "
+                "to restore them."
             )
         return ""
 
@@ -652,8 +708,39 @@ class QmlWorkspaceController(QObject):
         }
         return (
             f"{labels.get(feature, feature)} is not supported by the "
-            f"{self.backendName} backend. Set K2LAB_BACKEND=comfyui to use it."
+            f"{self.backendName} backend. Use the ComfyUI fallback in Setup to use it."
         )
+
+    @Slot(str, result=bool)
+    def selectBackend(self, name: str) -> bool:
+        try:
+            backend_name = BackendName(str(name).strip().casefold())
+        except ValueError:
+            self.notification.emit(f"Unsupported backend selection: {name}")
+            return False
+        if backend_name is self._backend_name:
+            self.notification.emit(f"{backend_name.value} is already selected")
+            return True
+        if not self.backend._select_backend(backend_name):
+            self.notification.emit(
+                "Stop the current generation before changing the backend"
+            )
+            return False
+        self._backend_name = backend_name
+        self._backend_capabilities = selected_backend_capabilities(backend_name)
+        if not self.modeAvailable(self._mode):
+            self._mode = self.GENERATION
+            self.backend.workspace_tabs.setCurrentIndex(0)
+            self.activeRegionModelChanged.emit()
+            self.selectionChanged.emit()
+        self._state_snapshot = None
+        self.refresh()
+        self._setup_controller.refreshStatus()
+        self.notification.emit(
+            f"Using {backend_name.value} for this session; "
+            "restart still follows K2LAB_BACKEND"
+        )
+        return True
 
     @Slot(str, result=bool)
     def modeAvailable(self, mode: str) -> bool:
@@ -1645,6 +1732,7 @@ class QmlWorkspaceController(QObject):
             for record in self.backend._face_detections
         )
         return (
+            self._backend_name.value,
             self._mode,
             self._edit_layer,
             self._draw_mode,

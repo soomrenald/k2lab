@@ -61,7 +61,7 @@ from k2core.face_detail import (
     expanded_square_crop,
 )
 from k2core.image_edit import ImageEditState, load_source_image
-from k2core.inference import configured_backend_name
+from k2core.inference import BackendName, configured_backend_name
 from k2core.lora import (
     CHARACTER_IDENTITY_LORA_ROUTING,
     STANDARD_LORA_ROUTING,
@@ -471,7 +471,11 @@ class MainWindow(QMainWindow):
         self._build_event_dock()
         self._build_view_menu()
         self._fit_initial_window_to_screen()
-        self.worker_client = ExternalWorkerClient(settings, self)
+        self.worker_client = ExternalWorkerClient(
+            settings,
+            self,
+            backend_name=self._backend_name,
+        )
         self.worker_client.event_received.connect(self._worker_event)
         self.worker_client.stderr_received.connect(self._worker_stderr)
         self.worker_client.process_status.connect(self._worker_process_status)
@@ -1822,38 +1826,78 @@ class MainWindow(QMainWindow):
 
     def _apply_backend_capability_controls(self) -> None:
         modes = self._backend_capabilities.modes
-        if "face_refinement" not in modes:
-            reason = (
+        face_supported = "face_refinement" in modes
+        face_reason = (
+            ""
+            if face_supported
+            else (
                 "Face refinement is not supported by the native backend. "
-                "Set K2LAB_BACKEND=comfyui to use it."
+                "Choose ComfyUI in Experimental backend settings to use it."
             )
-            self.workspace_tabs.setTabEnabled(2, False)
-            self.workspace_tabs.setTabToolTip(2, reason)
-        if "post_upscale" not in modes:
-            reason = (
+        )
+        self.workspace_tabs.setTabEnabled(2, face_supported)
+        self.workspace_tabs.setTabToolTip(2, face_reason)
+
+        upscale_supported = "post_upscale" in modes
+        self.post_upscale_input.setToolTip(
+            ""
+            if upscale_supported
+            else (
                 "Post-upscale is not supported by the native backend. "
-                "Set K2LAB_BACKEND=comfyui to use it."
+                "Choose ComfyUI in Experimental backend settings to use it."
             )
-            self.post_upscale_input.setToolTip(reason)
-        if "projector" not in modes:
-            reason = (
+        )
+
+        projector_supported = "projector" in modes
+        projector_reason = (
+            ""
+            if projector_supported
+            else (
                 "Projector controls are not supported by the native backend. "
-                "Set K2LAB_BACKEND=comfyui to use them."
+                "Choose ComfyUI in Experimental backend settings to use them."
             )
-            controls = (
-                self.projector_enabled_input,
-                self.projector_preset_input,
-                *self.projector_vector_inputs,
-                self.projector_multiplier_input,
-                self.projector_identity_protection_input,
-            )
-            for control in controls:
-                control.setEnabled(False)
-                control.setToolTip(reason)
-            projector_index = self.settings_tabs.count() - 1
-            self.settings_tabs.setTabEnabled(projector_index, False)
-            self.settings_tabs.setTabToolTip(projector_index, reason)
+        )
+        controls = (
+            self.projector_enabled_input,
+            self.projector_preset_input,
+            *self.projector_vector_inputs,
+            self.projector_multiplier_input,
+            self.projector_identity_protection_input,
+        )
+        for control in controls:
+            control.setEnabled(projector_supported)
+            control.setToolTip(projector_reason)
+        projector_index = self.settings_tabs.count() - 1
+        self.settings_tabs.setTabEnabled(projector_index, projector_supported)
+        self.settings_tabs.setTabToolTip(projector_index, projector_reason)
         self._set_upscale_controls_enabled()
+
+    def _select_backend(self, backend_name: BackendName) -> bool:
+        """Switch the next isolated worker without persisting or migrating settings."""
+
+        if self._generation_active:
+            return False
+        if backend_name is self._backend_name:
+            return True
+        self.worker_client.stop()
+        self.worker_client.backend_name = backend_name
+        self._backend_name = backend_name
+        self._backend_capabilities = selected_backend_capabilities(backend_name)
+        self._last_backend_diagnostics = {}
+        self._model_loaded = False
+        self._models_compatible = False
+        self._accelerator_available = False
+        self._worker_bootstrap_stage = None
+        self.worker_status.setText("Stopped")
+        self.accelerator_status.setText("Not probed")
+        self.memory_status.setText("Backend changed; model is not loaded")
+        self.load_model_button.setEnabled(False)
+        self._apply_backend_capability_controls()
+        self.events.addItem(
+            f"Experimental backend changed to {backend_name.value}; "
+            "the next worker will use this backend"
+        )
+        return True
 
     def _set_late_step_scale_enabled(self, enabled: bool) -> None:
         self.regional_late_step_scale_input.setEnabled(enabled)

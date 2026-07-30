@@ -6,6 +6,7 @@ import os
 import struct
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -728,6 +729,9 @@ class QmlWorkspaceTests(unittest.TestCase):
             self.assertIsNotNone(
                 root_object.findChild(QObject, "developerDiagnosticsPanel")
             )
+            self.assertIsNotNone(root_object.findChild(QObject, "backendSelector"))
+            self.assertIsNotNone(root_object.findChild(QObject, "comfyuiFallbackButton"))
+            self.assertIsNotNone(root_object.findChild(QObject, "issueReportButton"))
             diagnostic_rows = controller.setupController.developerDiagnostics
             self.assertEqual(
                 diagnostic_rows[0],
@@ -766,7 +770,7 @@ class QmlWorkspaceTests(unittest.TestCase):
             controller.setMode("face")
             self.assertEqual(controller.mode, "generation")
             self.assertTrue(
-                any("K2LAB_BACKEND=comfyui" in message for message in notifications)
+                any("ComfyUI fallback" in message for message in notifications)
             )
 
             engine = QQmlApplicationEngine()
@@ -804,6 +808,55 @@ class QmlWorkspaceTests(unittest.TestCase):
                 ).property("enabled")
             )
             root_object.close()
+            controller.deleteLater()
+            backend.close()
+
+    def test_experimental_backend_switch_is_session_only_and_reversible(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.dict(os.environ, {"K2LAB_BACKEND": "native"}),
+        ):
+            backend = self.make_window(Path(directory))
+            controller = QmlWorkspaceController(backend)
+
+            self.assertEqual(controller.backendName, "native")
+            self.assertEqual(controller.setupController.selectedBackend, "native")
+            self.assertEqual(backend.worker_client.backend_name.value, "native")
+            self.assertFalse(backend.workspace_tabs.isTabEnabled(2))
+
+            self.assertTrue(controller.setupController.useComfyuiFallback())
+            self.assertEqual(controller.backendName, "comfyui")
+            self.assertEqual(controller.setupController.selectedBackend, "comfyui")
+            self.assertEqual(backend.worker_client.backend_name.value, "comfyui")
+            self.assertTrue(backend.workspace_tabs.isTabEnabled(2))
+            self.assertTrue(backend.post_upscale_input.isEnabled())
+            self.assertTrue(
+                backend.settings_tabs.isTabEnabled(backend.settings_tabs.count() - 1)
+            )
+            self.assertEqual(os.environ["K2LAB_BACKEND"], "native")
+
+            backend._generation_active = True
+            self.assertFalse(controller.setupController.selectBackend("native"))
+            self.assertEqual(controller.backendName, "comfyui")
+            backend._generation_active = False
+
+            self.assertFalse(controller.setupController.selectBackend("automatic"))
+            self.assertEqual(controller.backendName, "comfyui")
+            controller.deleteLater()
+            backend.close()
+
+    def test_issue_report_action_excludes_prompts_and_lora_names(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            backend = self.make_window(root)
+            backend.global_prompt.setPlainText("private prompt should not be exported")
+            controller = QmlWorkspaceController(backend)
+
+            path = Path(controller.setupController.createIssueReport())
+            self.assertTrue(path.is_file())
+            with zipfile.ZipFile(path) as archive:
+                encoded = archive.read("issue-report.json")
+            self.assertNotIn(b"private prompt should not be exported", encoded)
             controller.deleteLater()
             backend.close()
 

@@ -103,6 +103,6 @@ class BackendDiagnosticTests(unittest.TestCase):
         )
         self.assertEqual(rows["Dtype"], "compute=bfloat16, weights=auto")
         self.assertEqual(rows["Loaded LoRAs"], "portrait, style")
-        self.assertIn("Gate 11 PASS", rows["Last parity status"])
+        self.assertIn("Gate 12 100-job soak PASS", rows["Last parity status"])
+        self.assertIn("release readiness blocked", rows["Last parity status"])
         self.assertIn("face refinement", rows["Unsupported"])
-

@@ -11,6 +11,7 @@ from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, Signal
 
 from k2_region_lab.config import AppSettings
 from k2_region_lab.worker.bootstrap import K2CORE_PACKAGE_ENV
+from k2core.inference import BackendName, configured_backend_name
 from k2core.worker.protocol import CommandKind
 
 
@@ -19,9 +20,16 @@ class ExternalWorkerClient(QObject):
     stderr_received = Signal(str)
     process_status = Signal(str)
 
-    def __init__(self, settings: AppSettings, parent: QObject | None = None) -> None:
+    def __init__(
+        self,
+        settings: AppSettings,
+        parent: QObject | None = None,
+        *,
+        backend_name: BackendName | None = None,
+    ) -> None:
         super().__init__(parent)
         self.settings = settings
+        self.backend_name = backend_name or configured_backend_name()
         self.process = QProcess(self)
         self.process.setProcessChannelMode(QProcess.ProcessChannelMode.SeparateChannels)
         self.process.readyReadStandardOutput.connect(self._read_stdout)
@@ -52,6 +60,7 @@ class ExternalWorkerClient(QObject):
         environment.remove("PYTHONHOME")
         environment.insert("VIRTUAL_ENV", str(worker_environment))
         environment.insert("K2LAB_DATA_DIR", str(self.settings.data_directory))
+        environment.insert("K2LAB_BACKEND", self.backend_name.value)
         environment.insert(
             K2CORE_PACKAGE_ENV,
             str(Path(k2core.__file__).resolve().parent),

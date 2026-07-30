@@ -109,6 +109,8 @@
   "release_readiness": {
     "native_backend_default_changed": false,
     "comfyui_fallback_retained": true,
+    "experimental_selector_present": true,
+    "prompt_safe_issue_report_present": true,
     "clean_native_image_manifest_present": true,
     "clean_native_image_built_and_booted": false,
     "dependency_license_inventory_present": true,

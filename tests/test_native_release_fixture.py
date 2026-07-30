@@ -75,6 +75,8 @@ class NativeReleaseFixtureTests(unittest.TestCase):
         readiness = self.fixture["release_readiness"]
         self.assertFalse(readiness["native_backend_default_changed"])
         self.assertTrue(readiness["comfyui_fallback_retained"])
+        self.assertTrue(readiness["experimental_selector_present"])
+        self.assertTrue(readiness["prompt_safe_issue_report_present"])
         self.assertFalse(readiness["clean_native_image_built_and_booted"])
         self.assertFalse(readiness["first_party_and_model_license_review_complete"])
         self.assertFalse(readiness["representative_output_human_approval_complete"])

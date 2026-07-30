@@ -450,6 +450,9 @@ Completed:
 - completed the 999.25-second session for approximately $0.1221 at $0.44/hour;
 - added workspace-owned tokenizer handling, third-party notice inventories, and a
   native-only container/workflow candidate that contains no ComfyUI install;
+- added a session-only experimental desktop selector, one-click ComfyUI fallback, and
+  allowlisted prompt-safe issue-report ZIP without changing saved settings or the
+  environment-controlled default;
 - retained `comfyui` as the product default and preserved both rollback environment
   variables.
 

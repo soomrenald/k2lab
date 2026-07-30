@@ -499,14 +499,56 @@ Window {
                         anchors.margins: 14
                         spacing: 8
 
-                        SectionLabel { text: "Developer backend diagnostics" }
+                        SectionLabel { text: "Experimental backend" }
                         Text {
                             Layout.fillWidth: true
-                            text: "Read-only migration diagnostics. Backend selection remains environment-controlled."
+                            text: "Session-only preview control. Restarting K2 Region Lab returns to K2LAB_BACKEND (ComfyUI by default). Changing backend stops the worker but does not alter projects, models, or saved settings."
                             color: "#788195"
                             font.pixelSize: 11
                             wrapMode: Text.Wrap
                         }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 8
+                            ComboBox {
+                                id: backendSelector
+                                objectName: "backendSelector"
+                                Layout.fillWidth: true
+                                model: setupWindow.controller.backendOptions
+                                textRole: "label"
+                                valueRole: "value"
+                                currentIndex: {
+                                    let revision = setupWindow.controller.revision
+                                    let selected = setupWindow.controller.selectedBackend
+                                    for (let index = 0; index < count; ++index) {
+                                        if (valueAt(index) === selected)
+                                            return index
+                                    }
+                                    return 0
+                                }
+                                onActivated: setupWindow.controller.selectBackend(currentValue)
+                            }
+                            SetupButton {
+                                objectName: "comfyuiFallbackButton"
+                                text: "Use ComfyUI fallback"
+                                enabled: setupWindow.controller.selectedBackend !== "comfyui"
+                                onClicked: setupWindow.controller.useComfyuiFallback()
+                            }
+                            SetupButton {
+                                objectName: "issueReportButton"
+                                text: "Create issue report"
+                                onClicked: setupWindow.controller.createIssueReport()
+                            }
+                        }
+                        Text {
+                            Layout.fillWidth: true
+                            visible: setupWindow.controller.selectedBackend === "native"
+                            text: "Native is experimental. Unsupported controls are disabled explicitly; there is no automatic fallback during a job."
+                            color: "#ffca8a"
+                            font.pixelSize: 11
+                            wrapMode: Text.Wrap
+                        }
+                        SectionLabel { text: "Prompt-safe diagnostics" }
                         Repeater {
                             model: setupWindow.controller.developerDiagnostics
                             delegate: RowLayout {

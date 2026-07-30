@@ -86,6 +86,11 @@ The paired RunPod branch now includes:
   Trivy, and emits an SPDX bill of materials;
 - third-party notices for desktop, k2core, and RunPod, plus automated drift checks.
 
+The desktop branch now also includes a session-only **Native K2 (experimental)**
+selector, one-click ComfyUI fallback, capability re-gating in both directions, and a
+prompt-safe issue-report ZIP. The selector does not persist or change the environment;
+restart continues to use `K2LAB_BACKEND`, whose unset default is ComfyUI.
+
 The Dockerfile and workflow are source-level candidates only. No immutable base digest
 was available locally, so no clean image has been built, booted, or promoted.
 
@@ -109,8 +114,8 @@ was available locally, so no clean image has been built, booted, or promoted.
 - Obtain human approval for representative native outputs.
 - Decide and record K2Lab and k2core first-party licenses, model redistribution terms,
   and face-detector provenance. The notice inventory is evidence, not legal approval.
-- Add the user-facing experimental selector, one-click fallback, and issue-report bundle
-  only after the clean-image and release decisions are complete.
+- Exercise the experimental selector, one-click fallback, and issue-report bundle in
+  the clean release-candidate image.
 - Preserve prior image tags and dependency locks and perform the documented rollback
   drill. Do not make native the default during this work.
 

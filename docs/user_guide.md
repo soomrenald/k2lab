@@ -97,6 +97,26 @@ unrelated GPU applications.
 After the settings are correct, select **Apply settings**. Closing the setup window
 with unapplied changes offers **Apply settings**, **Discard**, or **Cancel**.
 
+### Experimental backend and support bundle
+
+ComfyUI remains the recommended/default backend. The **Experimental backend** section
+can select **Native K2 (experimental)** for the current application session. Changing
+the selection stops the isolated worker and clears its loaded-model state; it does not
+modify projects, model files, configuration, or the `K2LAB_BACKEND` environment
+variable. Restarting K2Lab therefore returns to the configured environment selection,
+which defaults to ComfyUI.
+
+Native never falls back silently during a job. Unsupported face refinement, projector,
+and post-upscale controls are disabled with an explanation. Select **Use ComfyUI
+fallback** to restore those controls for the next worker.
+
+Select **Create issue report** to save a ZIP below the application data directory's
+`issue-reports/` folder. The bundle contains version, platform, backend, capability,
+model-hash, placement, parity, and memory summaries. It intentionally excludes full
+prompts, environment variables, logs, user paths, projects, images, and LoRA names.
+Review `issue-report.json` before sharing the bundle; attach logs or projects separately
+only after checking them for private content.
+
 ## 3. Workspace tour
 
 The left rail selects one of three independent modes:
@@ -423,3 +443,6 @@ DEBUG=1 k2lab
 
 Logs are written under `~/.local/share/k2-region-lab/logs/` unless
 `K2LAB_DATA_DIR` selects another application-data directory.
+
+For a bounded first report, open Setup and select **Create issue report**. That bundle
+does not include the debug logs or full prompts.
