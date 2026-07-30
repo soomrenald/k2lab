@@ -4,18 +4,24 @@ Date: 2026-07-30
 
 100-job soak status: **PASS**
 
-Overall release readiness: **BLOCKED**
+Overall release readiness: **PASS FOR THE APPROVED DISTRIBUTION SCOPE**
 
 The release-workload native soak passed on one NVIDIA A40. A clean native-only image was
 built locally, published to GHCR as a distinct release candidate, validated at its pushed
 digest, signed with GitHub OIDC, and accepted on a fresh disposable RunPod A40. The same
 Pod was reset to the preserved ComfyUI image, retained its model inventory, generated
 successfully through the rollback backend, and was deleted with its volume. The native
-backend remains developer-only, `comfyui` remains the default, and the existing ComfyUI
-path remains available. This report does not approve a release: first-party licensing
-and Krea deployment-policy decisions remain open. Human review has approved clean
-generation, regional LoRA, a real ordinary-LoRA comparison, and a visibly successful
-full-object image edit.
+backend remains opt-in, `comfyui` remains the default, and the existing ComfyUI path
+remains available. K2Lab and k2core are licensed under Apache-2.0. The approved
+noncommercial open-source distribution policy includes no model weights and limits the
+tested deployment scope to private, single-operator workspaces with operator review.
+Human review has approved clean generation, regional LoRA, a real ordinary-LoRA
+comparison, and a visibly successful full-object image edit.
+
+Gate 12 does not approve bundling, downloading, mirroring, or redistributing weights,
+nor exposing a public/shared inference service without appropriate content filtering
+or equivalent review. Those changes require a new model-license and deployment review
+under `MODEL_USE_POLICY.md`.
 
 ## Human representative-output review
 
@@ -55,7 +61,10 @@ reasoning above.
 
 ## Pinned implementation and evidence
 
-- k2core: `237fd23dc4a578e9d1a095fac0587d4d6bdf88e4`
+- k2core executable evidence checkpoint:
+  `237fd23dc4a578e9d1a095fac0587d4d6bdf88e4`
+- current licensed k2core package pin:
+  `903166f756614b13c0add0196fb5705206370dc3`
 - desktop checkpoint before this evidence update: `65782bc`
 - RunPod soak source: `79837482e458ef216ba3d990b134fd9a0a4d6ab9`
 - RunPod clean-image source: `8aff7822a61526222b77adbc482edb2c429bfaa6`
@@ -256,22 +265,23 @@ gates.
 ## Automated verification
 
 - k2core: 202 passed, 2 intentional environment skips;
-- desktop K2Lab after this evidence update: 205 passed, 2 intentional environment
+- desktop K2Lab after license/policy closure: 208 passed, 2 intentional environment
   skips, 6 subtests;
 - RunPod after recording GPU acceptance: 317 passed, 15 intentional
   environment/live-test skips, 16 subtests;
 - RunPod frontend typecheck, contract tests, and production build passed;
 - Ruff and `git diff --check` passed in all changed repositories.
 
-## Remaining release blockers
+## Approved release conditions
 
-- Decide and record K2Lab and k2core first-party licenses.
-- Approve a Krea community/enterprise license strategy plus required license acceptance,
-  content filtering, and public-mirror policy. Confirm the converted Qwen text-encoder
-  derivation/notice chain before redistributing that artifact. The notice inventory is
-  evidence, not legal approval.
-- Preserve prior image tags and dependency locks. Do not make native the default during
-  this work.
+- Distribute K2Lab and k2core source under their Apache-2.0 licenses.
+- Do not bundle, download, cache, mirror, or redistribute model weights. Operators
+  obtain models from authorized sources, configure paths, and accept upstream terms
+  directly.
+- Keep the tested desktop and RunPod configurations private and operator-reviewed.
+  Public/shared deployments require safeguards appropriate to the current Krea terms.
+- Preserve prior image tags and dependency locks. Native remains opt-in and ComfyUI
+  remains the default.
 
 ## Rollback
 
@@ -297,8 +307,9 @@ compact rollback record is
 and GPU-acceptance record is
 `tests/fixtures/parity/integration/gate12_published_native_rc.json`.
 
-## Recommended next step
+## Gate decision
 
-Choose K2Lab/k2core first-party licenses and approve the Krea
-license-acceptance/content-filtering/mirror strategy. Keep native opt-in until those
-remaining blockers are complete.
+Gate 12 passes for the distribution scope above. Tag this coordination checkpoint as
+`native-backend-gate-12`. Any future expansion to model redistribution, automatic model
+downloads, commercial operation, or public/shared inference reopens the corresponding
+license and deployment review.

@@ -107,10 +107,12 @@ Future entries must include:
   session-only native selection, capability gating, prompt-safe reporting, and
   non-persistent ComfyUI fallback. GPU generation was not repeated in that temporary
   desktop environment.
-- Dependency notices are recorded, and the exact FantasyPortrait detector hash now
-  matches the official Apache-2.0 artifact. First-party licenses, Krea
-  license-acceptance/content-filtering/mirror policy, converted Qwen artifact notices,
-  remain unresolved. Human review accepted clean generation and regional LoRA, initially
-  rejected perceptually ineffective ordinary-LoRA and image-edit examples, then approved
-  the corrective real-LoRA and full-object eight-step edit candidates on 2026-07-30.
-- Native remains developer-only and `comfyui` remains the product default.
+- Dependency notices are recorded, K2Lab and k2core are Apache-2.0, and the exact
+  FantasyPortrait detector hash matches the official Apache-2.0 artifact. The approved
+  model policy distributes no weights and limits tested deployment to private,
+  operator-reviewed workspaces. The unresolved converted-Qwen notice chain therefore
+  blocks future redistribution of that artifact, not source-only distribution. Human
+  review accepted clean generation and regional LoRA, initially rejected perceptually
+  ineffective ordinary-LoRA and image-edit examples, then approved the corrective
+  real-LoRA and full-object eight-step edit candidates on 2026-07-30.
+- Native remains opt-in and `comfyui` remains the product default.

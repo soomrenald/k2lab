@@ -53,11 +53,12 @@ report at that commit records the exact coupled k2core and RunPod checkpoints.
 | 9 | `native-backend-gate-09` | `bcdd3f3` |
 | 10 | `native-backend-gate-10` | `1e31c4f` |
 | 11 | `native-backend-gate-11` | `58ec367` |
+| 12 | `native-backend-gate-12` | See the immutable tag target |
 
-Gate 12 is not tagged as passed. Its current later checkpoints include desktop `13a9fff`,
-RunPod release source `4b091c5`, and RunPod publication/GPU-acceptance evidence
-`59de1c5`; the original clean-image source is `8aff782`. Overall release readiness
-remains blocked.
+Gate 12 passes for the source-only, no-model-distribution, private-operator scope.
+Its evidence includes desktop `13a9fff`, RunPod release source `4b091c5`, RunPod
+publication/GPU-acceptance evidence `59de1c5`, and original clean-image source
+`8aff782`.
 
 To return to an earlier passed gate without rewriting history, create a branch from its
 tag. To remove later feature-branch changes while retaining history, revert later
@@ -82,7 +83,6 @@ volume. Compact prompt-safe evidence is recorded in
 `tests/fixtures/parity/integration/gate12_rollback_readiness.json` and at RunPod
 checkpoint `59de1c5`.
 
-This verifies image rollback; it does not approve the release or change the product
-default. Until the remaining Gate 12 blockers close, keep desktop
+This verifies image rollback and does not change the product default. Keep desktop
 `K2LAB_BACKEND=comfyui` and RunPod `K2LAB_INFERENCE_BACKEND=comfyui` available as the
 immediate runtime rollback.

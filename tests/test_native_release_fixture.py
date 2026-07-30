@@ -294,6 +294,18 @@ class NativeReleaseFixtureTests(unittest.TestCase):
         )
         self.assertFalse(evidence["result"]["release_approved"])
 
+    def test_current_gate12_report_passes_only_the_approved_distribution_scope(
+        self,
+    ) -> None:
+        report = (
+            ROOT / "docs" / "native_backend" / "gate_12_report.md"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("Overall release readiness: **PASS FOR THE APPROVED", report)
+        self.assertIn("Gate 12 passes for the distribution scope above", report)
+        self.assertIn("Do not bundle, download, cache, mirror, or redistribute", report)
+        self.assertIn("Native remains opt-in and ComfyUI", report)
+
 
 if __name__ == "__main__":
     unittest.main()

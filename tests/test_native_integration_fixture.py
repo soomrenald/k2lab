@@ -33,7 +33,13 @@ class NativeIntegrationFixtureTests(unittest.TestCase):
         core_commit = evidence["implementation"]["k2core_commit"]
         self.assertIn(
             core_commit,
+            (ROOT / "docs" / "native_backend" / "gate_11_report.md").read_text(
+                encoding="utf-8"
+            ),
+        )
+        self.assertRegex(
             (ROOT / "pyproject.toml").read_text(encoding="utf-8"),
+            r"k2core\.git@[0-9a-f]{40}",
         )
         observed_hash = hashlib.sha256(REQUEST_FIXTURE.read_bytes()).hexdigest()
         self.assertEqual(

@@ -10,9 +10,7 @@ from k2core.inference import BackendName
 from k2core.model import RegisteredModel, load_model_registry
 
 
-LAST_NATIVE_PARITY_STATUS = (
-    "Gate 12 100-job soak PASS; overall release readiness blocked (2026-07-29)"
-)
+LAST_NATIVE_PARITY_STATUS = "Gate 12 PASS for source-only, private-operator scope (2026-07-30)"
 
 
 def _package_version(name: str) -> str:

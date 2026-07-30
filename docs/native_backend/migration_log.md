@@ -588,3 +588,28 @@ explicit replacement prompt; both backends visibly render the complete right vas
 emerald green. The owner approved both corrective rows on 2026-07-30. Representative
 human output review is now complete; the original rejection remains recorded as the
 reason the acceptance evidence was replaced.
+
+## 2026-07-30 — Gate 12 license and distribution-policy closure
+
+Current licensed k2core checkpoint:
+`903166f756614b13c0add0196fb5705206370dc3`
+
+Completed:
+
+- licensed K2Lab and k2core first-party source under Apache-2.0;
+- pinned the desktop package to the licensed k2core checkpoint without changing the
+  executable GPU evidence checkpoint;
+- approved noncommercial open-source distribution with no bundled, downloaded,
+  mirrored, cached, or redistributed model weights;
+- made model acquisition and upstream-term acceptance the deployment operator's
+  responsibility;
+- limited the tested deployment scope to private, single-operator workspaces with
+  operator prompt/output review;
+- retained the converted Qwen FP8 notice-chain gap as a blocker for future artifact
+  redistribution, not for source-only distribution; and
+- kept native opt-in, ComfyUI as the default, and the existing rollback path intact.
+
+All Gate 12 functional, representative-output, clean-build, security, signing,
+fresh-GPU, rollback, licensing, and approved-scope policy requirements are complete.
+Gate 12 passes for this scope. Public/shared inference, commercial operation, automatic
+model acquisition, or model redistribution requires a new review.

@@ -22,8 +22,8 @@ assignments.
 | R15 | RunPod behavior diverges because no current RunPod implementation exists here | High / Critical | Identify scope before coding; use shared schemas/service; durable job/correlation/output store tests | Gate 1/11 / platform |
 | R16 | Private prompts leak through parity artifacts or structured logs | Medium / High | Synthetic fixtures, prompt redaction by default, opt-in warning, artifact access policy | Gate 2 / security |
 | R17 | GPL-3.0 ComfyUI code is copied into a differently licensed product | Medium / Critical | No vendoring before formal review; prefer upstream libraries and clean-room behavior specs | Before code copying / legal |
-| R18 | K2Lab/`k2core` have no declared license, preventing compatibility conclusions | High / High | Establish repository licenses and third-party policy before vendoring/distribution changes | Gate 1 / owner + legal |
-| R19 | Model license/deployment obligations are incomplete | High / High | Exact FantasyPortrait detector provenance is resolved; approve Krea license acceptance/content filtering/mirror policy and confirm converted-artifact notices before release | Gate 12 / owner + legal + product |
+| R18 | K2Lab/`k2core` have no declared license, preventing compatibility conclusions | Closed / High | Both repositories now declare Apache-2.0 and retain third-party boundaries | Gate 12 / owner |
+| R19 | Model license/deployment obligations are incomplete | Closed for approved scope / High | Source-only distribution includes no weights; private deployments use operator review; public/shared deployment or model redistribution requires renewed review and safeguards | Gate 12 / owner + operator |
 | R20 | Golden tensors/images are too large or hardware-sensitive for Git | High / Medium | Approved immutable artifact store, hashes in Git, same-backend variability study | Gate 2 / test infrastructure |
 | R21 | Existing QML/hidden-Widgets architecture causes duplicate backend business logic | High / High | Add one application service behind `MainWindow`; do not reimplement in QML or RunPod | Gate 2/11 / application |
 | R22 | Error conversion hides actionable ComfyUI/native failure causes | Medium / High | Typed categories with original detail/cause, retry/GPU-started fields, category tests | Gate 2 onward / service |
@@ -35,10 +35,12 @@ policy and has a hashed SPDX SBOM. The paired identical-workload A40 comparison 
 passes at a 0.7228 native-to-ComfyUI peak ratio. The signed candidate clean-boot,
 structured failure recovery, native generation, in-place image rollback, post-rollback
 ComfyUI generation, and cleanup drill pass on a fresh disposable A40. R12's bounded
-runtime and cleanup mitigations now have release-candidate evidence. R17–R19 remain
-open: the exact FantasyPortrait detector hash now matches its official Apache-2.0
-repository, but notice inventories do not replace first-party license decisions or the
-required Krea license-acceptance/content-filtering/mirror strategy.
+runtime and cleanup mitigations now have release-candidate evidence. R17 remains an
+ongoing no-vendoring constraint. R18 is closed by Apache-2.0 licenses in both first-party
+repositories. R19 is closed for the approved source-only, no-model-distribution,
+private-operator scope; public/shared deployment, commercial operation, or model
+redistribution reopens it. The exact FantasyPortrait detector hash matches its official
+Apache-2.0 repository.
 
 Representative-output review accepted clean generation and regional LoRA, but confirmed
 that the original ordinary-LoRA and image-edit examples did not close R08 and R11 at the

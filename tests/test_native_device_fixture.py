@@ -24,7 +24,16 @@ class NativeDeviceFixtureTests(unittest.TestCase):
             "k2lab-gate10-device-evidence/1",
         )
         core_commit = fixture["implementation"]["k2core_commit"]
-        self.assertIn(core_commit, (ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+        self.assertIn(
+            core_commit,
+            (ROOT / "docs" / "native_backend" / "gate_10_report.md").read_text(
+                encoding="utf-8"
+            ),
+        )
+        self.assertRegex(
+            (ROOT / "pyproject.toml").read_text(encoding="utf-8"),
+            r"k2core\.git@[0-9a-f]{40}",
+        )
         self.assertEqual(fixture["hardware"]["gpu"], "NVIDIA A40")
         self.assertGreaterEqual(fixture["hardware"]["gpu_total_bytes"], 40 * 1024**3)
         for digest in fixture["model_hashes"].values():
