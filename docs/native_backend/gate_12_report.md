@@ -13,8 +13,25 @@ Pod was reset to the preserved ComfyUI image, retained its model inventory, gene
 successfully through the rollback backend, and was deleted with its volume. The native
 backend remains developer-only, `comfyui` remains the default, and the existing ComfyUI
 path remains available. This report does not approve a release: first-party licensing
-and Krea deployment-policy decisions remain open, and representative output still
-requires human approval.
+and Krea deployment-policy decisions remain open. Human review accepted native-to-Comfy
+parity overall and the visible regional-LoRA behavior, but rejected the ordinary-LoRA
+and image-edit examples as evidence of successful functionality.
+
+## Human representative-output review
+
+The representative contact sheet was reviewed by the owner on 2026-07-29:
+
+| Capability | Human result | Interpretation |
+| --- | --- | --- |
+| Clean generation | ACCEPTED | Native output matches ComfyUI sufficiently closely |
+| Regional prompting / regional LoRA | ACCEPTED | Native matches ComfyUI sufficiently closely and visibly produces one red vase and one blue vase |
+| Ordinary global LoRA | REJECTED | Native matches ComfyUI, but the deliberately weak synthetic adapter produces no useful perceptual effect; parity alone does not demonstrate a successful user-facing LoRA |
+| Image edit | REJECTED | Native matches ComfyUI, but the requested right-vase change to emerald-green glass is not visibly performed; parity and exterior preservation alone do not demonstrate prompt adherence |
+
+The rejected rows must not be counted as representative-output approval. Replace the
+ordinary-LoRA fixture with a real, perceptually meaningful adapter and remediate or
+re-characterize the image-edit path so that a representative edit visibly follows its
+prompt. Repeat human review for those two capabilities before release.
 
 ## Pinned implementation and evidence
 
@@ -228,7 +245,9 @@ gates.
 
 ## Remaining release blockers
 
-- Obtain human approval for representative native outputs.
+- Demonstrate a perceptually meaningful ordinary global LoRA and obtain human approval.
+- Remediate image-edit prompt adherence and obtain human approval for a visibly
+  successful representative edit.
 - Decide and record K2Lab and k2core first-party licenses.
 - Approve a Krea community/enterprise license strategy plus required license acceptance,
   content filtering, and public-mirror policy. Confirm the converted Qwen text-encoder

@@ -40,6 +40,13 @@ open: the exact FantasyPortrait detector hash now matches its official Apache-2.
 repository, but notice inventories do not replace first-party license decisions or the
 required Krea license-acceptance/content-filtering/mirror strategy.
 
+Representative-output review accepted clean generation and regional LoRA, but confirmed
+that R08 and R11 remain open at the user-visible level. The synthetic ordinary-LoRA
+fixture is too weak to demonstrate a perceptual adapter effect, and the representative
+image edit did not visibly follow its emerald-green-glass instruction. Numerical
+application/parity and protected-exterior checks remain useful evidence, but do not
+close either risk without a visibly successful representative result.
+
 ## Highest-priority Gate 1 decisions
 
 1. Establish the exact production reference environment and hashes.

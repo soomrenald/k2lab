@@ -564,3 +564,17 @@ installed FantasyPortrait detector hash matches the official Apache-2.0 reposito
 its source-provenance gap is closed; the converted Qwen text-encoder derivation/notice
 chain still requires confirmation before redistribution. Native remains opt-in and
 `comfyui` remains the default.
+
+## 2026-07-29 — Gate 12 representative-output human review
+
+The owner accepted the native-to-ComfyUI visual match across the contact sheet and
+accepted the regional-LoRA example's visible red-vase/blue-vase separation. Clean
+generation and regional LoRA therefore pass representative human review.
+
+The owner rejected the ordinary-LoRA and image-edit examples as demonstrations of
+successful functionality. The ordinary fixture used a deliberately weak synthetic
+single-target adapter and showed no useful perceptual effect. The image-edit fixture
+requested that the right vase become emerald-green glass, but the displayed output did
+not visibly perform that edit. Backend similarity does not convert either result into a
+feature pass. Gate 12 remains blocked until both examples are remediated, regenerated,
+and approved in a new human review.
