@@ -107,6 +107,8 @@ Future entries must include:
   session-only native selection, capability gating, prompt-safe reporting, and
   non-persistent ComfyUI fallback. GPU generation was not repeated in that temporary
   desktop environment.
-- Dependency notices are recorded. First-party licenses, model/face-detector provenance,
-  redistribution review, and representative-output human approval remain unresolved.
+- Dependency notices are recorded, and the exact FantasyPortrait detector hash now
+  matches the official Apache-2.0 artifact. First-party licenses, Krea
+  license-acceptance/content-filtering/mirror policy, converted Qwen artifact notices,
+  and representative-output human approval remain unresolved.
 - Native remains developer-only and `comfyui` remains the product default.

@@ -59,7 +59,8 @@
     "remaining_release_blockers": [
       "representative native output human approval",
       "K2Lab and k2core first-party license decisions",
-      "model redistribution and face-detector provenance decisions"
+      "Krea license acceptance, content filtering, and mirror policy",
+      "converted Qwen text-encoder derivation and notice confirmation before redistribution"
     ]
   }
 }

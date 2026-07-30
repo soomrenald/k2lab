@@ -12,9 +12,9 @@ digest, signed with GitHub OIDC, and accepted on a fresh disposable RunPod A40. 
 Pod was reset to the preserved ComfyUI image, retained its model inventory, generated
 successfully through the rollback backend, and was deleted with its volume. The native
 backend remains developer-only, `comfyui` remains the default, and the existing ComfyUI
-path remains available. This report does not approve a release: first-party and model
-licensing decisions remain open, and representative output still requires human
-approval.
+path remains available. This report does not approve a release: first-party licensing
+and Krea deployment-policy decisions remain open, and representative output still
+requires human approval.
 
 ## Pinned implementation and evidence
 
@@ -229,8 +229,11 @@ gates.
 ## Remaining release blockers
 
 - Obtain human approval for representative native outputs.
-- Decide and record K2Lab and k2core first-party licenses, model redistribution terms,
-  and face-detector provenance. The notice inventory is evidence, not legal approval.
+- Decide and record K2Lab and k2core first-party licenses.
+- Approve a Krea community/enterprise license strategy plus required license acceptance,
+  content filtering, and public-mirror policy. Confirm the converted Qwen text-encoder
+  derivation/notice chain before redistributing that artifact. The notice inventory is
+  evidence, not legal approval.
 - Preserve prior image tags and dependency locks. Do not make native the default during
   this work.
 
@@ -260,6 +263,6 @@ and GPU-acceptance record is
 
 ## Recommended next step
 
-Collect human approval for representative native outputs and resolve the first-party
-licenses, model redistribution terms, and face-detector provenance decisions. Keep
-native opt-in until those remaining blockers are complete.
+Collect human approval for representative native outputs, choose K2Lab/k2core
+first-party licenses, and approve the Krea license-acceptance/content-filtering/mirror
+strategy. Keep native opt-in until those remaining blockers are complete.

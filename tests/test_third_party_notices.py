@@ -26,3 +26,12 @@ class ThirdPartyNoticeTests(unittest.TestCase):
         self.assertIn("does not contain copied or vendored ComfyUI source", notice)
         self.assertIn("no declared project license", notice)
         self.assertIn("SHA-256 registry entry proves file identity, not permission", notice)
+        self.assertIn("Krea 2 Community License Agreement v1", notice)
+        self.assertIn("content-filter", notice)
+        self.assertIn(
+            "7ea8de1da304c1459a11f637798bb1140805365aeb3cf6637ca6d61909720aec",
+            notice,
+        )
+        self.assertIn("FantasyPortrait detector's source and file identity are", notice)
+        self.assertIn("official Qwen3-VL-4B-Instruct repository", notice)
+        self.assertIn("official Qwen-Image repository and VAE", notice)

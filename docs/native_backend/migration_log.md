@@ -559,5 +559,8 @@ RunPod candidate and prior desktop GPU gates provide that execution evidence.
 The fresh candidate boot, structured failure recovery, native generation, image-swap
 rollback, post-rollback generation, and destructive cleanup checks now pass. Gate 12
 overall remains blocked by representative-output human approval, K2Lab/k2core license
-decisions, and model redistribution and face-detector provenance decisions. Native
-remains opt-in and `comfyui` remains the default.
+decisions, and the Krea license-acceptance/content-filtering/mirror strategy. The exact
+installed FantasyPortrait detector hash matches the official Apache-2.0 repository, so
+its source-provenance gap is closed; the converted Qwen text-encoder derivation/notice
+chain still requires confirmation before redistribution. Native remains opt-in and
+`comfyui` remains the default.
