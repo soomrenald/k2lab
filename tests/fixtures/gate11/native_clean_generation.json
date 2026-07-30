@@ -1,0 +1,48 @@
+{
+  "prompt": "A red ceramic teapot on a pale stone table, soft studio light",
+  "width": 256,
+  "height": 256,
+  "steps": 2,
+  "sampler": "euler",
+  "scheduler": "simple",
+  "seed": 424242,
+  "output_directory": "/workspace/outputs",
+  "filename_prefix": "gate11-native-clean",
+  "regions": [
+    {
+      "id": "teapot",
+      "name": "Teapot",
+      "box": {
+        "x0": 48,
+        "y0": 40,
+        "x1": 208,
+        "y1": 224
+      },
+      "prompt": "red ceramic teapot",
+      "face_identity_prompt": "",
+      "enabled": true,
+      "priority": 0,
+      "spatial_role": "subject"
+    }
+  ],
+  "prompt_emphases": [
+    {
+      "scope_id": "teapot",
+      "phrase": "ceramic",
+      "strength": 0.7,
+      "occurrence": 0
+    }
+  ],
+  "loras": [],
+  "regional_prompting": true,
+  "regional_prompt_strength": 1.0,
+  "regional_outside_penalty": 1.0,
+  "regional_feather_pixels": 32.0,
+  "regional_subject_competition": true,
+  "regional_subject_fill": true,
+  "regional_late_step_scale": 0.35,
+  "regional_lora_delta_adaptation": false,
+  "regional_lora_delta_adaptation_gain": 0.35,
+  "projector_enabled": false,
+  "post_upscale": false
+}

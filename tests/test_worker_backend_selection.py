@@ -4,11 +4,12 @@ import io
 import json
 import unittest
 from contextlib import redirect_stdout
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from k2_region_lab.worker import entrypoint
-from k2core.inference import LoadedPipeline, ProgressEvent
+from k2core.inference import GenerationRequest, LoadedPipeline, ProgressEvent
 
 
 class Runtime:
@@ -194,6 +195,107 @@ class WorkerBackendSelectionTests(unittest.TestCase):
                 for event in events
             )
         )
+
+    def test_gate11_fixture_uses_shared_generation_schema_at_desktop_entrypoint(
+        self,
+    ) -> None:
+        fixture_path = (
+            Path(__file__).parent
+            / "fixtures"
+            / "gate11"
+            / "native_clean_generation.json"
+        )
+        generation_fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+
+        class NativeBackend:
+            instances = []
+
+            def __init__(self) -> None:
+                self.pipeline = None
+                self.generate_request = None
+                self.instances.append(self)
+
+            def load(self, config):
+                self.pipeline = SimpleNamespace(loaded=True)
+                return LoadedPipeline(
+                    backend_id="native",
+                    metadata={"model_name": config.registered_model.name},
+                )
+
+            def generate(self, request, **_callbacks):
+                self.generate_request = request
+                return SimpleNamespace(
+                    to_payload=lambda: {
+                        "image_path": (
+                            "/workspace/outputs/gate11-native-clean.png"
+                        ),
+                        "width": request.width,
+                        "height": request.height,
+                        "seed": request.seed,
+                    }
+                )
+
+        registered = SimpleNamespace(name="gate11-krea2")
+        model_payload = {
+            "comfyui_root": "/tmp/ComfyUI",
+            "diffusion_models": "/tmp/models/diffusion_models",
+            "text_encoders": "/tmp/models/text_encoders",
+            "vae": "/tmp/models/vae",
+            "model_registry": "/tmp/models.toml",
+            "registered_model": "gate11-krea2",
+        }
+        encoded = "\n".join(
+            (
+                command("gate11-load", "load_model", model_payload),
+                command(
+                    "gate11-generation",
+                    "generate_baseline",
+                    {**model_payload, **generation_fixture},
+                ),
+            )
+        )
+        output = io.StringIO()
+        with (
+            patch.dict("os.environ", {"K2LAB_BACKEND": "native"}, clear=True),
+            patch.object(entrypoint, "configure_debug_logging"),
+            patch.object(entrypoint, "NativeK2Backend", NativeBackend),
+            patch.object(
+                entrypoint,
+                "discover_model_artifacts",
+                return_value=SimpleNamespace(complete=True),
+            ),
+            patch.object(
+                entrypoint,
+                "load_model_registry",
+                return_value=SimpleNamespace(models=(registered,)),
+            ),
+            patch("sys.stdin", io.StringIO(encoded)),
+            redirect_stdout(output),
+        ):
+            result = entrypoint.main()
+
+        self.assertEqual(result, 0)
+        request = NativeBackend.instances[0].generate_request
+        self.assertIsInstance(request, GenerationRequest)
+        self.assertEqual(request.correlation_id, "gate11-generation")
+        self.assertEqual(request.prompt, generation_fixture["prompt"])
+        self.assertEqual(request.seed, generation_fixture["seed"])
+        self.assertEqual(request.sampler, generation_fixture["sampler"])
+        self.assertEqual(request.scheduler, generation_fixture["scheduler"])
+        self.assertEqual(request.regions[0].region_id, "teapot")
+        self.assertEqual(request.prompt_emphases[0].phrase, "ceramic")
+        events = [
+            json.loads(line)
+            for line in output.getvalue().splitlines()
+            if line
+        ]
+        completed = next(
+            event
+            for event in events
+            if event["command_id"] == "gate11-generation"
+            and event["state"] == "ready"
+        )
+        self.assertEqual(completed["payload"]["seed"], 424242)
 
     def test_invalid_selector_returns_structured_configuration_error(self) -> None:
         result, events = self._run({"K2LAB_BACKEND": "automatic"})
