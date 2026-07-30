@@ -33,6 +33,25 @@ ordinary-LoRA fixture with a real, perceptually meaningful adapter and remediate
 re-characterize the image-edit path so that a representative edit visibly follows its
 prompt. Repeat human review for those two capabilities before release.
 
+### Corrective candidates awaiting re-review
+
+A replacement sheet was generated at
+`/tmp/k2lab-gate12-native-evidence/gate12_corrective_lora_edit_sheet.png`, SHA-256
+`f865eb771541d208b63171828dca9c5d00ddce369390bdc3b5e41a09743e3a08`.
+It adds a baseline/source column so the capability effect is directly inspectable.
+
+- Ordinary LoRA now uses a real rank-1 standard LoRA with 256 fully applied targets at
+  strength 1.0. The LoRA-off baseline-to-native comparison has MAE `0.0261261` and RMSE
+  `0.0684693`; native-to-Comfy has cosine `0.9999245`, MAE `0.0060059`, RMSE
+  `0.0097463`, and PSNR `40.2232 dB`.
+- Image editing now uses eight steps at denoise 0.75 without the original competing
+  blue-vase reference clause. Both backends visibly change the right-vase body to green;
+  native-to-Comfy has cosine `0.9993267`, MAE `0.0060479`, RMSE `0.0265270`, and PSNR
+  `31.5262 dB`.
+
+These candidates show real effects but remain **PENDING HUMAN REVIEW**. They do not
+silently reverse the owner's earlier rejection.
+
 ## Pinned implementation and evidence
 
 - k2core: `237fd23dc4a578e9d1a095fac0587d4d6bdf88e4`
@@ -245,9 +264,9 @@ gates.
 
 ## Remaining release blockers
 
-- Demonstrate a perceptually meaningful ordinary global LoRA and obtain human approval.
-- Remediate image-edit prompt adherence and obtain human approval for a visibly
-  successful representative edit.
+- Obtain human approval for the corrective real ordinary-LoRA candidate.
+- Obtain human approval for the corrective visibly green image-edit candidate,
+  including whether its remaining blue rim is acceptable source preservation.
 - Decide and record K2Lab and k2core first-party licenses.
 - Approve a Krea community/enterprise license strategy plus required license acceptance,
   content filtering, and public-mirror policy. Confirm the converted Qwen text-encoder

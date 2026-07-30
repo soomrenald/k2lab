@@ -113,5 +113,7 @@ Future entries must include:
   and representative-output human approval remain unresolved. Human review accepted
   clean generation and regional LoRA, but rejected the ordinary-LoRA fixture as
   perceptually ineffective and the image-edit fixture for failing to visibly follow its
-  prompt. Those two capabilities require remediation and repeat review.
+  prompt. Corrective real-LoRA and eight-step image-edit candidates now show visible
+  effects with close native/Comfy parity, but require repeat review. The corrective edit
+  turns the right-vase body green while retaining a blue rim from the source.
 - Native remains developer-only and `comfyui` remains the product default.

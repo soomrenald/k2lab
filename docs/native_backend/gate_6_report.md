@@ -2,7 +2,7 @@
 
 Date: 2026-07-29
 
-Gate status: **PASS**
+Gate status: **PASS FOR ADAPTER PARITY; REPRESENTATIVE EFFECT RE-REVIEW PENDING**
 
 The product default remains `comfyui`; the native backend remains developer-only while
 regional prompting and later phases are implemented.
@@ -52,9 +52,19 @@ two-step image divergence.
 | Maximum absolute error | 0.3960784 | at most 0.5 |
 | PSNR | 37.1714 dB | at least 30 dB |
 
-Human review found the native and Comfy outputs visually equivalent. Native generation
-took 18.35 seconds; the current Comfy low-VRAM reference took 77.53 seconds on the same
-local ROCm system.
+Human review found the native and Comfy outputs visually equivalent, but later Gate 12
+review correctly rejected this deliberately weak synthetic adapter as a demonstration
+of useful perceptual LoRA behavior. It remains valid numerical routing/parity evidence,
+not representative user-facing effect evidence. Native generation took 18.35 seconds;
+the current Comfy low-VRAM reference took 77.53 seconds on the same local ROCm system.
+
+A corrective Gate 12 candidate uses the locally supplied
+`real_3d_krea2_loraholic` standard LoRA at strength 1.0. It maps all 256 targets with no
+unmatched keys and visibly changes the same-seed teapot's lid/knob geometry, contour,
+material rendering, and shadow. Native and Comfy candidate outputs measure cosine
+`0.9999245`, MAE `0.0060059`, RMSE `0.0097463`, and PSNR `40.2232 dB`.
+The LoRA-off baseline to native-LoRA candidate measures MAE `0.0261261` and RMSE
+`0.0684693`, confirming a material output effect. Human re-review is still required.
 
 ## Existing direct-LoKr compatibility
 

@@ -578,3 +578,11 @@ requested that the right vase become emerald-green glass, but the displayed outp
 not visibly perform that edit. Backend similarity does not convert either result into a
 feature pass. Gate 12 remains blocked until both examples are remediated, regenerated,
 and approved in a new human review.
+
+Corrective candidates were then generated locally. The ordinary-LoRA candidate replaces
+the single-target synthetic adapter with a real 256-target standard LoRA and shows a
+material same-seed change while retaining close native/Comfy parity. The image-edit
+candidate replaces the original two-step, 0.5-denoise request and competing blue-vase
+reference clause with eight steps, 0.75 denoise, and an explicit replacement prompt;
+both backends visibly render the right-vase body emerald green. The corrective contact
+sheet remains pending owner review and does not override the earlier rejection.

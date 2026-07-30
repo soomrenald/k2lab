@@ -2,9 +2,13 @@
 
 Date: 2026-07-29
 
-Gate status: **PASS WITH APPROVED DIFFERENCE**
+Gate status: **REOPENED; CORRECTIVE CANDIDATE AWAITS HUMAN REVIEW**
 
 The native backend remains developer-only and the product default remains `comfyui`.
+The original automated geometry, determinism, and parity matrix still passes, but the
+owner later rejected its two-step medium example because it did not visibly follow the
+emerald-green-glass instruction. Numerical edit magnitude is not semantic prompt
+adherence, so that example no longer counts as a representative feature pass.
 
 ## Pinned implementation
 
@@ -74,8 +78,27 @@ and 56 main/4 text-refiner attention calls.
 Across the full image, cosine was `0.9998960` and 75.85% of channel values were exact.
 Both outputs preserved every pixel outside the composite support. Visual review found
 equivalent source preservation, vase structure, highlights, edit magnitude, and blend
-boundary. The remaining numerical difference is the already-approved scaled-FP8 graph
-drift.
+boundary. Subsequent owner review correctly found that neither output visibly changed
+the right vase from blue ceramic to emerald-green glass. The remaining numerical
+difference is the already-approved scaled-FP8 graph drift, but parity with an
+unsuccessful edit does not establish feature success.
+
+## Corrective semantic-edit candidate
+
+The original example combined only two denoising steps at strength 0.5 with a retained
+reference clause that still described the target as a blue ceramic vase. A corrective
+candidate uses eight steps, denoise 0.75, no competing blue-vase reference clause,
+regional prompt strength 2.0, and this explicit instruction:
+
+`replace the right blue ceramic vase with a vivid emerald-green translucent glass vase`
+
+Both native and Comfy visibly turn the body of the right vase emerald green while
+preserving the left red vase and the protected exterior. In a central right-vase crop,
+the green-dominant pixel fraction changes from `0.0000` in the source to `0.6377`
+native and `0.6717` Comfy. Native-to-Comfy full-image comparison measures cosine
+`0.9993267`, MAE `0.0060479`, RMSE `0.0265270`, and PSNR `31.5262 dB`.
+The blue rim that remains is source-preservation residue and must be considered in human
+re-review; the candidate is not approved merely because its quantitative checks pass.
 
 ## Strength, determinism, and geometry
 
