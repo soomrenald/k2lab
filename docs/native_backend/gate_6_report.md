@@ -2,7 +2,7 @@
 
 Date: 2026-07-29
 
-Gate status: **PASS FOR ADAPTER PARITY; REPRESENTATIVE EFFECT RE-REVIEW PENDING**
+Gate status: **PASS**
 
 The product default remains `comfyui`; the native backend remains developer-only while
 regional prompting and later phases are implemented.
@@ -64,7 +64,8 @@ unmatched keys and visibly changes the same-seed teapot's lid/knob geometry, con
 material rendering, and shadow. Native and Comfy candidate outputs measure cosine
 `0.9999245`, MAE `0.0060059`, RMSE `0.0097463`, and PSNR `40.2232 dB`.
 The LoRA-off baseline to native-LoRA candidate measures MAE `0.0261261` and RMSE
-`0.0684693`, confirming a material output effect. Human re-review is still required.
+`0.0684693`, confirming a material output effect. The owner approved this corrective
+representative output on 2026-07-30.
 
 ## Existing direct-LoKr compatibility
 

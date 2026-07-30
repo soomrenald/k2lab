@@ -2,7 +2,7 @@
 
 Date: 2026-07-29
 
-Gate status: **REOPENED; CORRECTIVE CANDIDATE AWAITS HUMAN REVIEW**
+Gate status: **PASS**
 
 The native backend remains developer-only and the product default remains `comfyui`.
 The original automated geometry, determinism, and parity matrix still passes, but the
@@ -98,8 +98,8 @@ Both native and Comfy visibly turn the complete right vase emerald green while
 preserving the left red vase and the protected exterior. In the full right-vase crop,
 the blue-dominant pixel fraction changes from `0.6266` in the source to `0.0000` in both
 outputs. Native-to-Comfy full-image comparison measures cosine `0.9998339`, MAE
-`0.0034189`, RMSE `0.0129130`, and PSNR `37.7794 dB`. The candidate is not approved
-merely because its quantitative checks pass.
+`0.0034189`, RMSE `0.0129130`, and PSNR `37.7794 dB`. The owner approved this
+corrective representative output on 2026-07-30.
 
 ## Strength, determinism, and geometry
 

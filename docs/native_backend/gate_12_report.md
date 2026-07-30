@@ -1,6 +1,6 @@
 # Gate 12 release-readiness report
 
-Date: 2026-07-29
+Date: 2026-07-30
 
 100-job soak status: **PASS**
 
@@ -13,9 +13,9 @@ Pod was reset to the preserved ComfyUI image, retained its model inventory, gene
 successfully through the rollback backend, and was deleted with its volume. The native
 backend remains developer-only, `comfyui` remains the default, and the existing ComfyUI
 path remains available. This report does not approve a release: first-party licensing
-and Krea deployment-policy decisions remain open. Human review accepted native-to-Comfy
-parity overall and the visible regional-LoRA behavior, but rejected the ordinary-LoRA
-and image-edit examples as evidence of successful functionality.
+and Krea deployment-policy decisions remain open. Human review has approved clean
+generation, regional LoRA, a real ordinary-LoRA comparison, and a visibly successful
+full-object image edit.
 
 ## Human representative-output review
 
@@ -33,7 +33,7 @@ ordinary-LoRA fixture with a real, perceptually meaningful adapter and remediate
 re-characterize the image-edit path so that a representative edit visibly follows its
 prompt. Repeat human review for those two capabilities before release.
 
-### Corrective candidates awaiting re-review
+### Corrective candidates approved
 
 A replacement sheet was generated at
 `/tmp/k2lab-gate12-native-evidence/gate12_corrective_lora_edit_sheet.png`, SHA-256
@@ -49,8 +49,9 @@ It adds a baseline/source column so the capability effect is directly inspectabl
   visibly change the entire right vase from blue to green; native-to-Comfy has cosine
   `0.9998339`, MAE `0.0034189`, RMSE `0.0129130`, and PSNR `37.7794 dB`.
 
-These candidates show real effects but remain **PENDING HUMAN REVIEW**. They do not
-silently reverse the owner's earlier rejection.
+The owner approved both corrective candidates on 2026-07-30. This closes
+representative-output human review while preserving the original rejection and its
+reasoning above.
 
 ## Pinned implementation and evidence
 
@@ -264,8 +265,6 @@ gates.
 
 ## Remaining release blockers
 
-- Obtain human approval for the corrective real ordinary-LoRA candidate.
-- Obtain human approval for the corrective visibly green full-vase image-edit candidate.
 - Decide and record K2Lab and k2core first-party licenses.
 - Approve a Krea community/enterprise license strategy plus required license acceptance,
   content filtering, and public-mirror policy. Confirm the converted Qwen text-encoder
@@ -300,6 +299,6 @@ and GPU-acceptance record is
 
 ## Recommended next step
 
-Collect human approval for representative native outputs, choose K2Lab/k2core
-first-party licenses, and approve the Krea license-acceptance/content-filtering/mirror
-strategy. Keep native opt-in until those remaining blockers are complete.
+Choose K2Lab/k2core first-party licenses and approve the Krea
+license-acceptance/content-filtering/mirror strategy. Keep native opt-in until those
+remaining blockers are complete.

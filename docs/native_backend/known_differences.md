@@ -110,9 +110,7 @@ Future entries must include:
 - Dependency notices are recorded, and the exact FantasyPortrait detector hash now
   matches the official Apache-2.0 artifact. First-party licenses, Krea
   license-acceptance/content-filtering/mirror policy, converted Qwen artifact notices,
-  and representative-output human approval remain unresolved. Human review accepted
-  clean generation and regional LoRA, but rejected the ordinary-LoRA fixture as
-  perceptually ineffective and the image-edit fixture for failing to visibly follow its
-  prompt. Corrective real-LoRA and eight-step image-edit candidates now show visible
-  effects with close native/Comfy parity, but require repeat review.
+  remain unresolved. Human review accepted clean generation and regional LoRA, initially
+  rejected perceptually ineffective ordinary-LoRA and image-edit examples, then approved
+  the corrective real-LoRA and full-object eight-step edit candidates on 2026-07-30.
 - Native remains developer-only and `comfyui` remains the product default.

@@ -41,11 +41,11 @@ repository, but notice inventories do not replace first-party license decisions 
 required Krea license-acceptance/content-filtering/mirror strategy.
 
 Representative-output review accepted clean generation and regional LoRA, but confirmed
-that R08 and R11 remain open at the user-visible level. The synthetic ordinary-LoRA
-fixture is too weak to demonstrate a perceptual adapter effect, and the representative
-image edit did not visibly follow its emerald-green-glass instruction. Numerical
-application/parity and protected-exterior checks remain useful evidence, but do not
-close either risk without a visibly successful representative result.
+that the original ordinary-LoRA and image-edit examples did not close R08 and R11 at the
+user-visible level. Corrective evidence uses a real 256-target standard LoRA and an
+eight-step, full-object emerald-green-glass edit. Both retain close native/Comfy parity,
+and the owner approved both on 2026-07-30. The representative-output portions of R08 and
+R11 are therefore closed; their automated regression mitigations remain required.
 
 ## Highest-priority Gate 1 decisions
 

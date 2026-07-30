@@ -585,5 +585,6 @@ material same-seed change while retaining close native/Comfy parity. The image-e
 candidate replaces the original two-step, 0.5-denoise request and competing blue-vase
 reference clause with eight steps, 0.75 denoise, a box covering the whole object, and an
 explicit replacement prompt; both backends visibly render the complete right vase
-emerald green. The corrective contact sheet remains pending owner review and does not
-override the earlier rejection.
+emerald green. The owner approved both corrective rows on 2026-07-30. Representative
+human output review is now complete; the original rejection remains recorded as the
+reason the acceptance evidence was replaced.
