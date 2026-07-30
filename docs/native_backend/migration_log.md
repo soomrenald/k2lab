@@ -460,3 +460,22 @@ The 100-job soak passes. Overall release readiness remains blocked until the nat
 image is built and booted from an approved immutable base, the cross-backend A40
 peak-memory threshold is resolved, licensing/provenance decisions are recorded,
 representative outputs receive human approval, and the release rollback drill passes.
+
+## 2026-07-29 — Gate 12 clean native image checkpoint
+
+RunPod source checkpoint:
+`ef555b37b9781b93f1985e6b46baaf582cffad99`
+
+Completed:
+
+- exported the exact web runtime closure from `uv.lock` and enforced every artifact hash
+  during the image build;
+- built the native-only image from the approved immutable CUDA base with no ComfyUI tree;
+- verified pinned imports and a clean `pip check`;
+- booted the agent against an empty temporary workspace with native as the image default;
+- received authenticated `ready` health with container, agent, and storage stages true;
+- passed 315 RunPod tests, 15 intentional skips, 16 subtests, and Ruff.
+
+The local image is not a published release candidate. GPU boot, vulnerability scanning,
+SBOM output, clean desktop integration, rollback drill, human output approval, and
+licensing decisions remain release blockers.

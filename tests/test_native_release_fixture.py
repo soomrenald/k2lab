@@ -13,6 +13,13 @@ FIXTURE = (
     / "device"
     / "gate12_a40_100_job_soak.json"
 )
+CLEAN_IMAGE_FIXTURE = (
+    Path(__file__).parent
+    / "fixtures"
+    / "parity"
+    / "integration"
+    / "gate12_clean_native_image.json"
+)
 
 
 class NativeReleaseFixtureTests(unittest.TestCase):
@@ -78,8 +85,58 @@ class NativeReleaseFixtureTests(unittest.TestCase):
         self.assertTrue(readiness["experimental_selector_present"])
         self.assertTrue(readiness["prompt_safe_issue_report_present"])
         self.assertFalse(readiness["clean_native_image_built_and_booted"])
+        self.assertTrue(readiness["clean_native_image_built_and_booted_locally"])
+        self.assertFalse(
+            readiness["clean_native_image_built_and_booted_on_runpod_gpu"]
+        )
         self.assertFalse(readiness["first_party_and_model_license_review_complete"])
         self.assertFalse(readiness["representative_output_human_approval_complete"])
+
+    def test_clean_native_image_uses_pinned_source_and_immutable_base(self) -> None:
+        evidence = json.loads(CLEAN_IMAGE_FIXTURE.read_text(encoding="utf-8"))
+        self.assertEqual(
+            evidence["schema_version"],
+            "k2lab-clean-native-image-evidence/1",
+        )
+        source = evidence["source"]
+        self.assertEqual(len(source["runpod_commit"]), 40)
+        self.assertEqual(source["k2core_commit"], self.fixture["implementation"]["k2core_commit"])
+        self.assertRegex(source["base_image"], r"@sha256:[0-9a-f]{64}$")
+
+        image = evidence["image"]
+        self.assertRegex(image["image_id"], r"^sha256:[0-9a-f]{64}$")
+        for key in ("manifest_list_sha256", "manifest_sha256", "config_sha256"):
+            self.assertRegex(image[key], r"^[0-9a-f]{64}$")
+        self.assertGreater(image["size_bytes"], 0)
+        self.assertFalse(image["published"])
+
+    def test_clean_native_image_smoke_passes_without_overstating_release(self) -> None:
+        evidence = json.loads(CLEAN_IMAGE_FIXTURE.read_text(encoding="utf-8"))
+        runtime = evidence["runtime"]
+        self.assertEqual(runtime["inference_backend"], "native")
+        self.assertEqual(runtime["worker_python"], "/opt/k2lab-venv/bin/python")
+        self.assertEqual(runtime["fastapi"], "0.139.2")
+
+        validation = evidence["validation"]
+        for check in (
+            "build_passed",
+            "comfyui_tree_absent",
+            "native_import_smoke_passed",
+            "pip_check_passed",
+            "agent_boot_passed",
+            "ruff_passed",
+        ):
+            self.assertTrue(validation[check])
+        self.assertEqual(validation["authenticated_health_status"], "ready")
+        self.assertTrue(validation["models_and_worker_expected_false_without_weights"])
+
+        boundaries = evidence["release_boundaries"]
+        self.assertFalse(boundaries["vulnerability_scan_complete"])
+        self.assertFalse(boundaries["sbom_emitted"])
+        self.assertFalse(boundaries["published_candidate_booted_on_runpod_gpu"])
+        self.assertFalse(boundaries["clean_desktop_install_tested"])
+        self.assertFalse(boundaries["rollback_drill_complete"])
+        self.assertFalse(boundaries["release_approved"])
 
 
 if __name__ == "__main__":

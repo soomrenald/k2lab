@@ -113,6 +113,8 @@
     "prompt_safe_issue_report_present": true,
     "clean_native_image_manifest_present": true,
     "clean_native_image_built_and_booted": false,
+    "clean_native_image_built_and_booted_locally": true,
+    "clean_native_image_built_and_booted_on_runpod_gpu": false,
     "dependency_license_inventory_present": true,
     "first_party_and_model_license_review_complete": false,
     "representative_output_human_approval_complete": false

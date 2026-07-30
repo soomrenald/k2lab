@@ -6,23 +6,28 @@ Date: 2026-07-29
 
 Overall release readiness: **BLOCKED**
 
-The release-workload native soak passed on one NVIDIA A40. The native backend remains
-developer-only, `comfyui` remains the default, and the existing ComfyUI path remains
-available. This report does not approve a release: the clean native-only image has not
-yet been built and booted, first-party and model licensing decisions remain open, and
-representative output still requires human approval.
+The release-workload native soak passed on one NVIDIA A40. A clean native-only image was
+also built and booted locally from the approved immutable CUDA base. The native backend
+remains developer-only, `comfyui` remains the default, and the existing ComfyUI path
+remains available. This report does not approve a release: the clean image has not been
+published or booted on a RunPod GPU, its vulnerability scan and SBOM workflow have not
+run, first-party and model licensing decisions remain open, and representative output
+still requires human approval.
 
 ## Pinned implementation and evidence
 
 - k2core: `237fd23dc4a578e9d1a095fac0587d4d6bdf88e4`
 - desktop checkpoint before this evidence update: `65782bc`
-- RunPod source: `79837482e458ef216ba3d990b134fd9a0a4d6ab9`
+- RunPod soak source: `79837482e458ef216ba3d990b134fd9a0a4d6ab9`
+- RunPod clean-image source: `ef555b37b9781b93f1985e6b46baaf582cffad99`
 - canonical request fixture SHA-256:
   `472aa82fc8bbbd6ef65d2d5601e8ed0da9ce0d7652d7243e0acee706840a12c1`
 - full resumable state SHA-256:
   `91882f8d1665e1ea0cb8cc6f06e90f1f1b81a22d0049ce9e616612ef54f46e10`
 - compact versioned evidence:
   `tests/fixtures/parity/device/gate12_a40_100_job_soak.json`
+- clean-image build/boot evidence:
+  `tests/fixtures/parity/integration/gate12_clean_native_image.json`
 
 The remote state is 132,353 bytes and remains at
 `/workspace/k2lab/state/gate12-native-soak-a40.json`. It contains every iteration,
@@ -91,24 +96,43 @@ selector, one-click ComfyUI fallback, capability re-gating in both directions, a
 prompt-safe issue-report ZIP. The selector does not persist or change the environment;
 restart continues to use `K2LAB_BACKEND`, whose unset default is ComfyUI.
 
-The Dockerfile and workflow are source-level candidates only. No immutable base digest
-was available locally, so no clean image has been built, booted, or promoted.
+The clean Dockerfile was built locally from
+`docker.io/nvidia/cuda@sha256:ac55d124da4882b497f732d8dfd9a702d5447a5f29d08d56da6f64f0a1eb34bc`.
+Its local image ID and manifest-list digest are
+`sha256:14f3cb49bf08ce1a342115b9e0083d15bac1a117b9232850d6a37f66ec6d1d3d`;
+the image is 7,279,066,599 bytes. The build uses one Python environment, installs the
+web dependency closure from the checked-in `uv.lock` export with hash enforcement, and
+installs the local package with `--no-deps`.
+
+Local clean-image validation confirmed:
+
+- no `/opt/ComfyUI` tree or ComfyUI-named directory under `/opt`;
+- native is the image default and `/opt/k2lab-venv/bin/python` is the worker;
+- pinned Torch, Diffusers, Transformers, Safetensors, FastAPI, Uvicorn, and k2core
+  imports succeed;
+- `pip check` reports no broken requirements;
+- the agent boots from an empty temporary `/workspace`, passes Docker health, and returns
+  authenticated status `ready` with container, agent, and storage readiness true.
+
+Model and worker readiness were false as expected because the temporary smoke workspace
+contained no model weights. The image was not published, scanned, promoted, or executed
+on the RunPod GPU, so this closes only the local clean-image build/boot portion.
 
 ## Automated verification
 
 - k2core: 202 passed, 2 intentional environment skips;
-- desktop K2Lab after this evidence update: 198 passed, 2 intentional environment
+- desktop K2Lab after this evidence update: 203 passed, 2 intentional environment
   skips, 6 subtests;
-- RunPod before the soak-probe-only commits: 310 passed, 15 intentional
+- RunPod after the clean-image lock: 315 passed, 15 intentional
   environment/live-test skips, 16 subtests;
-- focused RunPod soak-probe contract tests after those commits: 4 passed;
 - RunPod frontend typecheck, contract tests, and production build passed;
 - Ruff and `git diff --check` passed in all changed repositories.
 
 ## Remaining release blockers
 
-- Build and boot the native-only image from an approved immutable base digest, then run
-  clean-install desktop/RunPod smoke, failure recovery, and rollback checks in that image.
+- Publish the content-addressed native-only candidate, run its Trivy/SBOM workflow, and
+  boot it on a RunPod GPU for clean-install desktop/RunPod smoke, failure recovery, and
+  rollback checks.
 - Capture an identical-workload ComfyUI A40 peak-VRAM baseline or explicitly revise the
   15% memory threshold.
 - Obtain human approval for representative native outputs.
@@ -129,7 +153,7 @@ removed.
 
 ## Recommended next step
 
-Resolve an approved immutable base-image digest and build the native-only candidate.
-Boot it as a non-publishing release candidate, run the clean-install validation matrix,
-then perform the rollback drill. Keep native opt-in until the remaining blockers are
-closed.
+Run the existing non-publishing image-validation workflow to produce the vulnerability
+scan and SBOM, then publish the exact reviewed candidate through an approved release
+process. Boot that digest on a RunPod GPU, run the clean-install validation matrix, and
+perform the rollback drill. Keep native opt-in until the remaining blockers are closed.

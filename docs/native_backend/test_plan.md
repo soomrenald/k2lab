@@ -134,6 +134,9 @@ selection, scheduler choice, denoise strength, seed, or metadata.
 - 100-job supported-RunPod release soak: passed on NVIDIA A40 at 512×512, eight
   Euler/simple steps, with pixel-exact output, zero median GPU/RSS growth, and terminal
   cleanup to 0 MiB; see the Gate 12 report.
+- clean native-only image: local immutable-base build, no-ComfyUI assertion, pinned import
+  smoke, `pip check`, agent boot, Docker health, and authenticated health passed; published
+  RunPod GPU boot, vulnerability scan/SBOM, and clean desktop integration remain blocked.
 
 ### Gates 6–8: LoRA and regions
 
