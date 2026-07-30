@@ -286,4 +286,4 @@ in the focused guides under `docs/`.
 
 K2Lab is licensed under the Apache License 2.0. Krea, Qwen, LoRA, detector, and
 upscaler weights are not included and retain their own terms; see
-`THIRD_PARTY_NOTICES.md`.
+`THIRD_PARTY_NOTICES.md` and `MODEL_USE_POLICY.md`.

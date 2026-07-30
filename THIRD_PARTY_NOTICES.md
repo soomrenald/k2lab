@@ -1,6 +1,6 @@
 # Third-party notices
 
-Last reviewed: 2026-07-29
+Last reviewed: 2026-07-30
 
 This file records the third-party software boundaries used by the K2Lab desktop
 application. It is an engineering inventory, not a legal opinion or a replacement for
@@ -26,9 +26,9 @@ The optional native-model environment additionally installs:
 | PyTorch | <https://github.com/pytorch/pytorch> | BSD-3-Clause; its distribution includes additional third-party notices |
 | Transformers | <https://github.com/huggingface/transformers> | Apache-2.0 |
 
-The separately pinned `k2core` repository is maintained with K2Lab, but it currently
-has no declared project license. That is a release blocker and must be resolved by the
-copyright owner before either repository is distributed under a public license.
+The K2Lab source and the separately pinned `k2core` source are licensed under
+Apache-2.0. Their `LICENSE` files cover first-party software only and do not grant
+rights to separately supplied models or user assets.
 
 ## ComfyUI compatibility boundary
 
@@ -59,15 +59,18 @@ The FantasyPortrait detector's source and file identity are therefore resolved f
 currently tested hash. It remains externally supplied; if a future package bundles it,
 that package must include the Apache-2.0 license and required notices.
 
-The Krea agreement is a release decision, not a notice-only dependency. Among other
-conditions, it limits community-license commercial use to entities below its stated
-company-wide annual-revenue threshold, requires an enterprise license above that
-threshold, imposes terms when the model or a containing product/service is distributed,
-and requires reasonable content-filter measures for deployments. K2Lab currently
-neither bundles the weights nor has a release-approved Krea license-acceptance,
-content-filtering, and public-mirror policy. User-supplied paths do not by themselves
-resolve obligations that attach to model use or deployment. Owner/legal/product review
-of that policy remains a release blocker.
+The Krea agreement is a model-use boundary, not a notice-only dependency. The approved
+project policy is recorded in `MODEL_USE_POLICY.md`: K2Lab is a noncommercial
+open-source project; it does not bundle, download, mirror, or redistribute weights;
+operators obtain and configure models themselves and must accept the applicable
+upstream terms; and public/shared deployments require content filtering or an
+equivalent review process appropriate to their use case. The tested desktop and RunPod
+configurations are private, single-operator workspaces with operator review.
+
+Because the project does not redistribute the reviewed converted Qwen FP8 encoder, its
+incomplete conversion/notice chain is not a blocker for source-only distribution. It
+remains a blocker for any future release that would bundle, mirror, or download that
+artifact.
 
 ## Distribution checklist
 
@@ -75,8 +78,8 @@ Before publishing a binary, installer, or container:
 
 1. generate a complete bill of materials from the final lockfile and image;
 2. include every dependency's license and required notice files;
-3. resolve the K2Lab and `k2core` first-party licenses;
-4. implement and approve the Krea license-acceptance, content-filtering, and
-   mirror/distribution policy before enabling Krea 2 in a release;
+3. include the K2Lab and `k2core` Apache-2.0 licenses;
+4. enforce `MODEL_USE_POLICY.md`; do not include model weights, and do not expose
+   public/shared inference without appropriate filtering or equivalent review;
 5. record licenses for every bundled model and detector asset;
 6. repeat review whenever a dependency, base image, or model hash changes.

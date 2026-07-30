@@ -4,6 +4,12 @@ K2Lab is a local desktop workspace for Krea 2 image generation, regional prompti
 regional LoRA routing, image editing, and face refinement. It uses the models and
 GPU-enabled Python environment from an existing ComfyUI installation.
 
+K2Lab does not include or download model weights. Before configuring Krea or Qwen
+assets, review the [model-use policy](../MODEL_USE_POLICY.md) and its linked upstream
+terms. The desktop and RunPod configurations are intended as private,
+operator-reviewed workspaces; do not expose them as public/shared inference services
+without safeguards appropriate to the current Krea license and Acceptable Use Policy.
+
 This guide covers the default Qt Quick interface. The older interface is still
 available with `k2lab --legacy-widgets`, but its layout differs from the screenshots
 and control names described here.
