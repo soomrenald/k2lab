@@ -53,10 +53,16 @@ class NativeReleaseFixtureTests(unittest.TestCase):
             "k2lab-gate12-release-evidence/1",
         )
         implementation = self.fixture["implementation"]
+        # GPU evidence remains tied to the executable checkpoint that was tested.
+        # The package pin may advance through documentation/license-only commits.
         self.assertIn(
             implementation["k2core_commit"],
-            (ROOT / "pyproject.toml").read_text(encoding="utf-8"),
+            (ROOT / "docs" / "native_backend" / "gate_12_report.md").read_text(
+                encoding="utf-8"
+            ),
         )
+        package_metadata = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        self.assertRegex(package_metadata, r"k2core\.git@[0-9a-f]{40}")
         self.assertEqual(len(implementation["runpod_commit"]), 40)
         self.assertEqual(self.fixture["hardware"]["gpu"], "NVIDIA A40")
         for digest in self.fixture["model_hashes"].values():

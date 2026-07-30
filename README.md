@@ -281,3 +281,9 @@ The original local stack uses PyTorch 2.9.1 with ROCm 6.4. Because scaled FP8 ex
 
 The current desktop product behavior and engineering constraints are documented here and
 in the focused guides under `docs/`.
+
+## License
+
+K2Lab is licensed under the Apache License 2.0. Krea, Qwen, LoRA, detector, and
+upscaler weights are not included and retain their own terms; see
+`THIRD_PARTY_NOTICES.md`.

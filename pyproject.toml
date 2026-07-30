@@ -7,9 +7,10 @@ name = "k2-region-lab"
 version = "0.1.0"
 description = "Local pixel-space regional prompting, LoRA, and attention research for Krea 2"
 readme = "README.md"
+license = "Apache-2.0"
 requires-python = ">=3.12,<3.13"
 dependencies = [
-    "k2core @ git+https://github.com/soomrenald/k2core.git@237fd23dc4a578e9d1a095fac0587d4d6bdf88e4",
+    "k2core @ git+https://github.com/soomrenald/k2core.git@903166f756614b13c0add0196fb5705206370dc3",
     "numpy>=2.1",
     "onnxruntime>=1.20",
     "pillow>=12.3.0",
