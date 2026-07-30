@@ -10,16 +10,15 @@ The release-workload native soak passed on one NVIDIA A40. A clean native-only i
 also built and booted locally from the approved immutable CUDA base. The native backend
 remains developer-only, `comfyui` remains the default, and the existing ComfyUI path
 remains available. This report does not approve a release: the clean image has not been
-published or booted on a RunPod GPU, its vulnerability scan and SBOM workflow have not
-run, first-party and model licensing decisions remain open, and representative output
-still requires human approval.
+published or booted on a RunPod GPU, first-party and model licensing decisions remain
+open, and representative output still requires human approval.
 
 ## Pinned implementation and evidence
 
 - k2core: `237fd23dc4a578e9d1a095fac0587d4d6bdf88e4`
 - desktop checkpoint before this evidence update: `65782bc`
 - RunPod soak source: `79837482e458ef216ba3d990b134fd9a0a4d6ab9`
-- RunPod clean-image source: `ef555b37b9781b93f1985e6b46baaf582cffad99`
+- RunPod clean-image source: `8aff7822a61526222b77adbc482edb2c429bfaa6`
 - canonical request fixture SHA-256:
   `472aa82fc8bbbd6ef65d2d5601e8ed0da9ce0d7652d7243e0acee706840a12c1`
 - full resumable state SHA-256:
@@ -98,11 +97,12 @@ restart continues to use `K2LAB_BACKEND`, whose unset default is ComfyUI.
 
 The clean Dockerfile was built locally from
 `docker.io/nvidia/cuda@sha256:ac55d124da4882b497f732d8dfd9a702d5447a5f29d08d56da6f64f0a1eb34bc`.
-Its local image ID and manifest-list digest are
-`sha256:14f3cb49bf08ce1a342115b9e0083d15bac1a117b9232850d6a37f66ec6d1d3d`;
-the image is 7,279,066,599 bytes. The build uses one Python environment, installs the
+Its final local image ID and manifest-list digest are
+`sha256:2364e8ed1d75a66a951d35797b6dd80afb2c4ec86370e31471c678eeb3e0a094`;
+the image is 7,252,176,589 bytes. The build uses one Python environment, installs the
 web dependency closure from the checked-in `uv.lock` export with hash enforcement, and
-installs the local package with `--no-deps`.
+installs the local package with `--no-deps`. It runs `pip check`, then removes pip,
+setuptools, and wheel because they are not runtime dependencies.
 
 Local clean-image validation confirmed:
 
@@ -111,12 +111,27 @@ Local clean-image validation confirmed:
 - pinned Torch, Diffusers, Transformers, Safetensors, FastAPI, Uvicorn, and k2core
   imports succeed;
 - `pip check` reports no broken requirements;
+- development `node_modules` and runtime pip/setuptools/wheel are absent;
 - the agent boots from an empty temporary `/workspace`, passes Docker health, and returns
   authenticated status `ready` with container, agent, and storage readiness true.
 
 Model and worker readiness were false as expected because the temporary smoke workspace
-contained no model weights. The image was not published, scanned, promoted, or executed
-on the RunPod GPU, so this closes only the local clean-image build/boot portion.
+contained no model weights.
+
+The first pinned Trivy 0.70.0 scan correctly failed with four fixed HIGH findings: two
+from an accidentally copied development TypeScript binary and two from pip's embedded
+package inventory. The image was narrowed to runtime sources, entrypoint, and notices;
+`node_modules` was excluded; and pip/setuptools/wheel were removed only after the
+successful dependency check. The rebuilt digest passed the same policy with zero HIGH,
+zero CRITICAL, and zero secrets. The 731,482-byte Trivy JSON has SHA-256
+`a893fe202d19319278d2fc22d01f9d6c512079d5bb50f95f55daa2b8033a4a5c`.
+
+Pinned Syft 1.42.3 emitted a 5,467,463-byte SPDX 2.3 JSON with 243 packages, 6,041
+files, and 7,107 relationships. Its SHA-256 is
+`5397252aeeec5e98a2c563f845229e48b85a2dc192f730d3ed7c83bea5595c2c`.
+Both raw local artifacts remain in `/tmp/k2lab-gate12-native-evidence`; the checked-in
+compact fixture records their hashes and summary. The image was not published, promoted,
+or executed on the RunPod GPU.
 
 ## Automated verification
 
@@ -130,9 +145,8 @@ on the RunPod GPU, so this closes only the local clean-image build/boot portion.
 
 ## Remaining release blockers
 
-- Publish the content-addressed native-only candidate, run its Trivy/SBOM workflow, and
-  boot it on a RunPod GPU for clean-install desktop/RunPod smoke, failure recovery, and
-  rollback checks.
+- Publish the content-addressed native-only candidate and boot it on a RunPod GPU for
+  clean-install desktop/RunPod smoke, failure recovery, and rollback checks.
 - Capture an identical-workload ComfyUI A40 peak-VRAM baseline or explicitly revise the
   15% memory threshold.
 - Obtain human approval for representative native outputs.
@@ -153,7 +167,6 @@ removed.
 
 ## Recommended next step
 
-Run the existing non-publishing image-validation workflow to produce the vulnerability
-scan and SBOM, then publish the exact reviewed candidate through an approved release
-process. Boot that digest on a RunPod GPU, run the clean-install validation matrix, and
-perform the rollback drill. Keep native opt-in until the remaining blockers are closed.
+Publish the exact reviewed candidate through an approved release process. Boot that
+digest on a RunPod GPU, run the clean-install validation matrix, and perform the rollback
+drill. Keep native opt-in until the remaining blockers are closed.

@@ -476,6 +476,10 @@ Completed:
 - received authenticated `ready` health with container, agent, and storage stages true;
 - passed 315 RunPod tests, 15 intentional skips, 16 subtests, and Ruff.
 
-The local image is not a published release candidate. GPU boot, vulnerability scanning,
-SBOM output, clean desktop integration, rollback drill, human output approval, and
-licensing decisions remain release blockers.
+The initial pinned scan found four fixed HIGH issues in development artifacts and pip's
+embedded inventory. RunPod checkpoint `8aff782` narrowed the runtime copy and removed
+unneeded packaging tools after a successful `pip check`. The rebuilt digest then passed
+with zero HIGH, zero CRITICAL, and zero secrets, and pinned Syft emitted an SPDX 2.3
+SBOM. The local image is not a published release candidate. GPU boot, clean desktop
+integration, rollback drill, human output approval, and licensing decisions remain
+release blockers.

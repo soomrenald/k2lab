@@ -135,8 +135,9 @@ selection, scheduler choice, denoise strength, seed, or metadata.
   Euler/simple steps, with pixel-exact output, zero median GPU/RSS growth, and terminal
   cleanup to 0 MiB; see the Gate 12 report.
 - clean native-only image: local immutable-base build, no-ComfyUI assertion, pinned import
-  smoke, `pip check`, agent boot, Docker health, and authenticated health passed; published
-  RunPod GPU boot, vulnerability scan/SBOM, and clean desktop integration remain blocked.
+  smoke, `pip check`, agent boot, Docker health, authenticated health, remediated
+  HIGH/CRITICAL scan, and SPDX SBOM passed; published RunPod GPU boot and clean desktop
+  integration remain blocked.
 
 ### Gates 6–8: LoRA and regions
 

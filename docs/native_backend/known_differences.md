@@ -99,8 +99,9 @@ Future entries must include:
 - The available identical-job timing evidence is inside the release threshold, but an
   identical-workload ComfyUI A40 peak-memory baseline has not been captured.
 - A clean native-only image has been built and its agent booted locally from the approved
-  immutable CUDA base. It has not been published, scanned, or booted on a RunPod GPU, and
-  the full clean desktop integration has not run.
+  immutable CUDA base. Its remediated digest passes the pinned HIGH/CRITICAL scan and has
+  an SPDX SBOM. It has not been published or booted on a RunPod GPU, and the full clean
+  desktop integration has not run.
 - Dependency notices are recorded. First-party licenses, model/face-detector provenance,
   redistribution review, and representative-output human approval remain unresolved.
 - Native remains developer-only and `comfyui` remains the product default.

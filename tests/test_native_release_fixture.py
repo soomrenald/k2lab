@@ -124,6 +124,8 @@ class NativeReleaseFixtureTests(unittest.TestCase):
             "native_import_smoke_passed",
             "pip_check_passed",
             "agent_boot_passed",
+            "runtime_pip_setuptools_wheel_absent",
+            "development_node_modules_absent",
             "ruff_passed",
         ):
             self.assertTrue(validation[check])
@@ -131,8 +133,21 @@ class NativeReleaseFixtureTests(unittest.TestCase):
         self.assertTrue(validation["models_and_worker_expected_false_without_weights"])
 
         boundaries = evidence["release_boundaries"]
-        self.assertFalse(boundaries["vulnerability_scan_complete"])
-        self.assertFalse(boundaries["sbom_emitted"])
+        security = evidence["security"]
+        self.assertFalse(security["initial_scan"]["passed"])
+        self.assertEqual(security["initial_scan"]["high"], 4)
+        self.assertTrue(security["trivy"]["passed"])
+        self.assertEqual(security["trivy"]["high"], 0)
+        self.assertEqual(security["trivy"]["critical"], 0)
+        self.assertEqual(security["trivy"]["secrets"], 0)
+        self.assertTrue(security["sbom"]["emitted"])
+        self.assertEqual(security["sbom"]["format"], "SPDX-2.3 JSON")
+        for report in (security["trivy"], security["sbom"]):
+            self.assertRegex(report["report_sha256"], r"^[0-9a-f]{64}$")
+            self.assertGreater(report["report_bytes"], 0)
+
+        self.assertTrue(boundaries["vulnerability_scan_complete"])
+        self.assertTrue(boundaries["sbom_emitted"])
         self.assertFalse(boundaries["published_candidate_booted_on_runpod_gpu"])
         self.assertFalse(boundaries["clean_desktop_install_tested"])
         self.assertFalse(boundaries["rollback_drill_complete"])
