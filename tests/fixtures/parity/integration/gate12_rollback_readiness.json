@@ -1,6 +1,6 @@
 {
   "schema_version": "k2lab-gate12-rollback-readiness/1",
-  "captured_at": "2026-07-30T03:49:08Z",
+  "captured_at": "2026-07-30T05:28:21Z",
   "desktop": {
     "unset_backend_selects": "comfyui",
     "explicit_fallback_environment": "K2LAB_BACKEND=comfyui",
@@ -18,9 +18,30 @@
     "preserved_manifest_resolves": true
   },
   "native_candidate": {
-    "runpod_source_commit": "8aff7822a61526222b77adbc482edb2c429bfaa6",
-    "local_image_id": "sha256:2364e8ed1d75a66a951d35797b6dd80afb2c4ec86370e31471c678eeb3e0a094",
-    "published": false
+    "runpod_source_commit": "4b091c54162fc689833b5115f78e47b1955525cb",
+    "runpod_evidence_commit": "59de1c5",
+    "tag": "native-v0.4.0-rc.2",
+    "image": "ghcr.io/soomrenald/k2lab-runpod-workspace@sha256:7662f6440bd4e2a1f6059876c042df98a1e00284c89c35e6aaec3aa446be856f",
+    "published": true,
+    "signed": true
+  },
+  "acceptance": {
+    "gpu": "NVIDIA A40",
+    "hourly_usd": 0.44,
+    "pod_id_suffix": "186ppe",
+    "same_pod_image_swap": true,
+    "candidate_authenticated_health": "ready",
+    "structured_failure_recovery": "native_feature_unsupported",
+    "native_generation_backend": "native",
+    "native_output_sha256": "f50c865a3a5d9d70fb13317c8dbb554f81da6b0f52ca6ed17a81c24af5e5c7b5",
+    "rollback_authenticated_health": "ready",
+    "rollback_inventory": "hash_verified",
+    "rollback_generation_backend": "comfyui",
+    "rollback_output_sha256": "695744d1adb6dfa5f8af258d6d4f184deff4ea2eee47c060f9a60a985765d391",
+    "pod_deleted": true,
+    "pod_volume_deleted": true,
+    "elapsed_seconds": 791.4214903200045,
+    "estimated_compute_cost_usd": 0.09672929326133388
   },
   "gate_tags": {
     "coordination_repository": "soomrenald/k2lab",
@@ -30,10 +51,16 @@
   },
   "result": {
     "prerequisites_passed": true,
-    "image_swap_to_native_completed": false,
-    "image_swap_back_to_comfyui_completed": false,
-    "rollback_drill_complete": false,
-    "status": "blocked",
-    "blocker": "The reviewed native candidate is intentionally not published to an immutable registry digest."
+    "image_swap_to_native_completed": true,
+    "image_swap_back_to_comfyui_completed": true,
+    "rollback_drill_complete": true,
+    "status": "passed",
+    "release_approved": false,
+    "remaining_release_blockers": [
+      "representative native output human approval",
+      "K2Lab and k2core first-party license decisions",
+      "model redistribution and face-detector provenance decisions",
+      "clean desktop release-candidate selector and fallback exercise"
+    ]
   }
 }

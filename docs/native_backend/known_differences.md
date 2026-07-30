@@ -100,8 +100,10 @@ Future entries must include:
   72.28% of the ComfyUI lifecycle peak against a 115% ceiling.
 - A clean native-only image has been built and its agent booted locally from the approved
   immutable CUDA base. Its remediated digest passes the pinned HIGH/CRITICAL scan and has
-  an SPDX SBOM. It has not been published or booted on a RunPod GPU, and the full clean
-  desktop integration has not run.
+  an SPDX SBOM. Signed RC2 was published, booted on a fresh RunPod A40, generated
+  natively after a structured failure-recovery check, and swapped in place to the
+  preserved ComfyUI image; rollback health, retained inventory, ComfyUI generation, and
+  destructive cleanup passed. The full clean desktop integration has not run.
 - Dependency notices are recorded. First-party licenses, model/face-detector provenance,
   redistribution review, and representative-output human approval remain unresolved.
 - Native remains developer-only and `comfyui` remains the product default.

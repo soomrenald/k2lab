@@ -137,7 +137,12 @@ selection, scheduler choice, denoise strength, seed, or metadata.
 - clean native-only image: local immutable-base build and signed RC2 publication passed
   no-ComfyUI assertion, pinned import smoke, `pip check`, agent boot, Docker health,
   authenticated health, remediated HIGH/CRITICAL scan, SPDX SBOM, and independent Cosign
-  verification; fresh RunPod GPU boot and clean desktop integration remain blocked.
+  verification.
+- signed RC2 fresh-GPU acceptance: passed on a disposable NVIDIA A40 with authenticated
+  clean boot, exact tokenizer/model hashes, structured unsupported-feature rejection,
+  successful native generation, in-place swap to the preserved ComfyUI digest,
+  hash-verified retained inventory, successful rollback generation, and permanent Pod
+  and Pod-volume cleanup. Clean desktop integration remains blocked.
 - paired identical-workload A40 peak memory: ComfyUI 18,889 MiB, native 13,653 MiB,
   native-to-ComfyUI ratio 0.7228 against the 1.15 ceiling, with both workers returning to
   0 MiB.

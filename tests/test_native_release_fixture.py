@@ -204,7 +204,7 @@ class NativeReleaseFixtureTests(unittest.TestCase):
             r"^[0-9a-f]{64}$",
         )
 
-    def test_rollback_prerequisites_pass_without_claiming_full_drill(self) -> None:
+    def test_rollback_drill_passes_without_claiming_release_approval(self) -> None:
         evidence = json.loads(ROLLBACK_FIXTURE.read_text(encoding="utf-8"))
         self.assertEqual(
             evidence["schema_version"],
@@ -217,14 +217,30 @@ class NativeReleaseFixtureTests(unittest.TestCase):
             evidence["runpod"]["preserved_image"],
             r"@sha256:[0-9a-f]{64}$",
         )
-        self.assertFalse(evidence["native_candidate"]["published"])
+        self.assertTrue(evidence["native_candidate"]["published"])
+        self.assertTrue(evidence["native_candidate"]["signed"])
+        self.assertRegex(
+            evidence["native_candidate"]["image"],
+            r"@sha256:[0-9a-f]{64}$",
+        )
+        acceptance = evidence["acceptance"]
+        self.assertRegex(acceptance["pod_id_suffix"], r"^[a-z0-9]{6}$")
+        self.assertEqual(acceptance["native_generation_backend"], "native")
+        self.assertEqual(acceptance["rollback_generation_backend"], "comfyui")
+        self.assertTrue(acceptance["same_pod_image_swap"])
+        self.assertTrue(acceptance["pod_deleted"])
+        self.assertTrue(acceptance["pod_volume_deleted"])
+        serialized = json.dumps(evidence).lower()
+        for forbidden in ("api_key", "agent_secret", "session_token", '"prompt"'):
+            self.assertNotIn(forbidden, serialized)
 
         result = evidence["result"]
         self.assertTrue(result["prerequisites_passed"])
-        self.assertFalse(result["image_swap_to_native_completed"])
-        self.assertFalse(result["image_swap_back_to_comfyui_completed"])
-        self.assertFalse(result["rollback_drill_complete"])
-        self.assertEqual(result["status"], "blocked")
+        self.assertTrue(result["image_swap_to_native_completed"])
+        self.assertTrue(result["image_swap_back_to_comfyui_completed"])
+        self.assertTrue(result["rollback_drill_complete"])
+        self.assertEqual(result["status"], "passed")
+        self.assertFalse(result["release_approved"])
 
 
 if __name__ == "__main__":

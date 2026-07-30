@@ -32,9 +32,12 @@ Gate 12 update: R12's required 100-job native A40 soak passed with zero median G
 worker-RSS growth and terminal cleanup to 0 MiB. The clean native-only image also built
 and booted locally without ComfyUI; its remediated digest passes the pinned vulnerability
 policy and has a hashed SPDX SBOM. The paired identical-workload A40 comparison also
-passes at a 0.7228 native-to-ComfyUI peak ratio. R12 remains open only for a
-published-candidate RunPod GPU boot and release rollback drill. R17–R19 also remain open:
-notice inventories do not replace first-party, dependency, or model-license decisions.
+passes at a 0.7228 native-to-ComfyUI peak ratio. The signed candidate clean-boot,
+structured failure recovery, native generation, in-place image rollback, post-rollback
+ComfyUI generation, and cleanup drill pass on a fresh disposable A40. R12's bounded
+runtime and cleanup mitigations now have release-candidate evidence. R17–R19 remain
+open: notice inventories do not replace first-party, dependency, or model-license
+decisions.
 
 ## Highest-priority Gate 1 decisions
 

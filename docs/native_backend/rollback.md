@@ -54,9 +54,10 @@ report at that commit records the exact coupled k2core and RunPod checkpoints.
 | 10 | `native-backend-gate-10` | `1e31c4f` |
 | 11 | `native-backend-gate-11` | `58ec367` |
 
-Gate 12 is not tagged as passed. Its current later checkpoints include desktop `85cd0d2`,
-RunPod release source `4b091c5`, and RunPod publication evidence `3b13c46`; the original
-clean-image source is `8aff782`. Overall release readiness remains blocked.
+Gate 12 is not tagged as passed. Its current later checkpoints include desktop `13a9fff`,
+RunPod release source `4b091c5`, and RunPod publication/GPU-acceptance evidence
+`59de1c5`; the original clean-image source is `8aff782`. Overall release readiness
+remains blocked.
 
 To return to an earlier passed gate without rewriting history, create a branch from its
 tag. To remove later feature-branch changes while retaining history, revert later
@@ -72,7 +73,16 @@ ComfyUI routing and the session fallback pass their targeted tests.
 
 The reviewed candidate is published and signed at immutable digest
 `ghcr.io/soomrenald/k2lab-runpod-workspace@sha256:7662f6440bd4e2a1f6059876c042df98a1e00284c89c35e6aaec3aa446be856f`.
-The full drill remains blocked because that digest has not yet been booted on a fresh
-RunPod workspace and switched back to the preserved ComfyUI image. Do not mark rollback
-verified until both RunPod image transitions and post-transition authenticated
-health/generation checks pass.
+The full drill passed on a fresh disposable NVIDIA A40. RC2 booted with authenticated
+health, recovered from the expected structured native rejection, and generated
+successfully. The same Pod was then reset in place to the preserved ComfyUI image while
+retaining `/workspace`; authenticated rollback health, hash-verified model inventory,
+and ComfyUI generation passed. The cleanup guard permanently deleted the Pod and its
+volume. Compact prompt-safe evidence is recorded in
+`tests/fixtures/parity/integration/gate12_rollback_readiness.json` and at RunPod
+checkpoint `59de1c5`.
+
+This verifies image rollback; it does not approve the release or change the product
+default. Until the remaining Gate 12 blockers close, keep desktop
+`K2LAB_BACKEND=comfyui` and RunPod `K2LAB_INFERENCE_BACKEND=comfyui` available as the
+immediate runtime rollback.

@@ -526,3 +526,31 @@ Actions issuer, certificate chain, claims, and transparency-log entry.
 Publication and signing now pass. Fresh RunPod GPU boot, native generation, failure
 recovery, swap-back generation on the preserved ComfyUI digest, human output approval,
 and licensing/provenance decisions remain release blockers.
+
+## 2026-07-29 — Gate 12 fresh GPU candidate and rollback acceptance
+
+RunPod acceptance-evidence checkpoint:
+`59de1c5`
+
+The signed RC2 digest booted on a fresh disposable secure-cloud NVIDIA A40 at $0.44/hour.
+Authenticated health reported `ready`; the approved tokenizer and exact transformer,
+text-encoder, and VAE hashes were installed. A deliberately unsupported post-upscale
+request returned `native_feature_unsupported` with HTTP 409, and the following valid
+256×256 two-step native request completed with output SHA-256
+`f50c865a3a5d9d70fb13317c8dbb554f81da6b0f52ca6ed17a81c24af5e5c7b5`.
+
+The same Pod was reset in place to preserved ComfyUI version `0.3.0`, immutable index
+digest
+`ghcr.io/soomrenald/k2lab-runpod-workspace@sha256:19652733039379d1ef47cd3279e6b266b802c7a68a1c380173221a2d8ace6435`.
+Its 50 GB `/workspace` volume retained the hash-verified inventory, authenticated health
+returned `ready`, and a ComfyUI generation completed with output SHA-256
+`695744d1adb6dfa5f8af258d6d4f184deff4ea2eee47c060f9a60a985765d391`.
+The cleanup guard permanently deleted the disposable Pod and Pod volume. The passing
+drill took 791.42 seconds and approximately $0.0967 compute cost.
+
+The fresh candidate boot, structured failure recovery, native generation, image-swap
+rollback, post-rollback generation, and destructive cleanup checks now pass. Gate 12
+overall remains blocked by representative-output human approval, K2Lab/k2core license
+decisions, model redistribution and face-detector provenance decisions, and the clean
+desktop selector/fallback/report exercise. Native remains opt-in and `comfyui` remains
+the default.
