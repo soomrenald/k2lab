@@ -303,7 +303,7 @@ class NativeReleaseFixtureTests(unittest.TestCase):
 
         self.assertIn("Overall release readiness: **PASS FOR THE APPROVED", report)
         self.assertIn("Gate 12 passes for the distribution scope above", report)
-        self.assertIn("Do not bundle, download, cache, mirror, or redistribute", report)
+        self.assertIn("Do not bundle or redistribute model weights", report)
         self.assertIn("Native remains opt-in and ComfyUI", report)
 
 

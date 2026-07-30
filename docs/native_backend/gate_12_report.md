@@ -18,10 +18,12 @@ tested deployment scope to private, single-operator workspaces with operator rev
 Human review has approved clean generation, regional LoRA, a real ordinary-LoRA
 comparison, and a visibly successful full-object image edit.
 
-Gate 12 does not approve bundling, downloading, mirroring, or redistributing weights,
-nor exposing a public/shared inference service without appropriate content filtering
-or equivalent review. Those changes require a new model-license and deployment review
-under `MODEL_USE_POLICY.md`.
+Gate 12 does not approve bundling or redistributing weights, project-operated mirrors,
+unattended model acquisition, or exposing a public/shared inference service without
+appropriate content filtering or equivalent review. Explicit operator-requested
+downloads directly from authorized upstream providers into a private workspace remain
+supported. The broader changes require a new model-license and deployment review under
+`MODEL_USE_POLICY.md`.
 
 ## Human representative-output review
 
@@ -70,6 +72,7 @@ reasoning above.
 - RunPod clean-image source: `8aff7822a61526222b77adbc482edb2c429bfaa6`
 - RunPod release-workflow source: `4b091c54162fc689833b5115f78e47b1955525cb`
 - RunPod publication and GPU-acceptance evidence checkpoint: `59de1c5`
+- RunPod licensed-source and image-packaging checkpoint: `cc905bb`
 - canonical request fixture SHA-256:
   `472aa82fc8bbbd6ef65d2d5601e8ed0da9ce0d7652d7243e0acee706840a12c1`
 - full resumable state SHA-256:
@@ -269,15 +272,18 @@ gates.
   skips, 6 subtests;
 - RunPod after recording GPU acceptance: 317 passed, 15 intentional
   environment/live-test skips, 16 subtests;
+- RunPod license/image-policy closure: 7 targeted tests passed, with Ruff and
+  `git diff --check` clean;
 - RunPod frontend typecheck, contract tests, and production build passed;
 - Ruff and `git diff --check` passed in all changed repositories.
 
 ## Approved release conditions
 
 - Distribute K2Lab and k2core source under their Apache-2.0 licenses.
-- Do not bundle, download, cache, mirror, or redistribute model weights. Operators
-  obtain models from authorized sources, configure paths, and accept upstream terms
-  directly.
+- Do not bundle or redistribute model weights, ship prepopulated caches, operate a
+  project mirror, or acquire models unattended. Operators obtain models from authorized
+  sources, configure paths, and accept upstream terms directly; explicit private
+  RunPod downloads from an authorized provider remain supported.
 - Keep the tested desktop and RunPod configurations private and operator-reviewed.
   Public/shared deployments require safeguards appropriate to the current Krea terms.
 - Preserve prior image tags and dependency locks. Native remains opt-in and ComfyUI
@@ -309,7 +315,9 @@ and GPU-acceptance record is
 
 ## Gate decision
 
-Gate 12 passes for the distribution scope above. Tag this coordination checkpoint as
-`native-backend-gate-12`. Any future expansion to model redistribution, automatic model
-downloads, commercial operation, or public/shared inference reopens the corresponding
+Gate 12 passes for the distribution scope above. The initial coordination checkpoint is
+tagged `native-backend-gate-12`; the cross-repository packaging closure is tagged
+`native-backend-gate-12-final` and records RunPod checkpoint `cc905bb`. Any future
+expansion to model redistribution, project-operated mirrors, unattended model
+acquisition, commercial operation, or public/shared inference reopens the corresponding
 license and deployment review.

@@ -7,8 +7,9 @@ license does not license any model, LoRA, detector, or upscaler weights.
 
 ## No model distribution
 
-K2Lab source releases, wheels, installers, and container images must not bundle,
-download, cache, mirror, or redistribute model weights. This includes:
+K2Lab source releases, wheels, installers, and container images must not bundle or
+redistribute model weights, ship a prepopulated model cache, or automatically acquire
+weights during installation or startup. This includes:
 
 - Krea 2 Raw or Turbo transformers and conversions;
 - Qwen text encoders, including the reviewed FP8 conversion;
@@ -17,9 +18,11 @@ download, cache, mirror, or redistribute model weights. This includes:
 - face detectors; and
 - neural upscalers.
 
-Users and deployment operators must obtain these assets from their authorized source
-and configure local paths. Registry hashes identify compatible files but do not grant
-permission to obtain or use them.
+Users and deployment operators must obtain these assets from an authorized source and
+configure local paths. The RunPod workspace may perform an explicit, operator-requested
+download directly from an authorized upstream provider into that operator's private
+workspace; K2Lab does not operate a model mirror. Registry hashes identify compatible
+files but do not grant permission to obtain or use them.
 
 The converted Qwen FP8 text encoder has no separately documented conversion and notice
 chain in the reviewed mirror. It must not be redistributed by this project unless that
@@ -54,7 +57,8 @@ and compliance with applicable law and all upstream terms.
 
 Repeat the model-license review before:
 
-- distributing or automatically downloading any weight;
+- bundling or redistributing any weight;
+- adding a project-operated mirror or unattended model acquisition;
 - changing a reviewed model source or hash;
 - enabling public or multi-user inference;
 - removing operator review or adding unattended generation; or

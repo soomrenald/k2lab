@@ -54,11 +54,13 @@ report at that commit records the exact coupled k2core and RunPod checkpoints.
 | 10 | `native-backend-gate-10` | `1e31c4f` |
 | 11 | `native-backend-gate-11` | `58ec367` |
 | 12 | `native-backend-gate-12` | See the immutable tag target |
+| 12 final packaging | `native-backend-gate-12-final` | See the immutable tag target |
 
 Gate 12 passes for the source-only, no-model-distribution, private-operator scope.
 Its evidence includes desktop `13a9fff`, RunPod release source `4b091c5`, RunPod
-publication/GPU-acceptance evidence `59de1c5`, and original clean-image source
-`8aff782`.
+publication/GPU-acceptance evidence `59de1c5`, RunPod license/image closure `cc905bb`,
+and original clean-image source `8aff782`. The initial Gate 12 tag records the desktop
+approval checkpoint; the final tag records the cross-repository packaging closure.
 
 To return to an earlier passed gate without rewriting history, create a branch from its
 tag. To remove later feature-branch changes while retaining history, revert later

@@ -61,11 +61,12 @@ that package must include the Apache-2.0 license and required notices.
 
 The Krea agreement is a model-use boundary, not a notice-only dependency. The approved
 project policy is recorded in `MODEL_USE_POLICY.md`: K2Lab is a noncommercial
-open-source project; it does not bundle, download, mirror, or redistribute weights;
-operators obtain and configure models themselves and must accept the applicable
-upstream terms; and public/shared deployments require content filtering or an
-equivalent review process appropriate to their use case. The tested desktop and RunPod
-configurations are private, single-operator workspaces with operator review.
+open-source project; its releases do not bundle or redistribute weights or ship
+prepopulated model caches; explicit RunPod downloads go directly from an authorized
+upstream provider into the operator's private workspace; operators accept the
+applicable upstream terms; and public/shared deployments require content filtering or
+an equivalent review process appropriate to their use case. The tested desktop and
+RunPod configurations are private, single-operator workspaces with operator review.
 
 Because the project does not redistribute the reviewed converted Qwen FP8 encoder, its
 incomplete conversion/notice chain is not a blocker for source-only distribution. It

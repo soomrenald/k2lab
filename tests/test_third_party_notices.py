@@ -40,7 +40,8 @@ class ThirdPartyNoticeTests(unittest.TestCase):
     def test_model_policy_requires_user_supplied_assets_and_deployment_review(self) -> None:
         policy = (ROOT / "MODEL_USE_POLICY.md").read_text(encoding="utf-8")
 
-        self.assertIn("must not bundle", policy)
+        self.assertIn("must not bundle or", policy)
+        self.assertIn("operator-requested\ndownload directly", policy)
         self.assertIn("configure local paths", policy)
         self.assertIn("does not accept them on the operator's behalf", policy)
         self.assertIn("must not be exposed as public or shared", policy)

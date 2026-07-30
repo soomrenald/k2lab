@@ -594,13 +594,17 @@ reason the acceptance evidence was replaced.
 Current licensed k2core checkpoint:
 `903166f756614b13c0add0196fb5705206370dc3`
 
+RunPod licensed-source and image-packaging checkpoint:
+`cc905bb`
+
 Completed:
 
 - licensed K2Lab and k2core first-party source under Apache-2.0;
 - pinned the desktop package to the licensed k2core checkpoint without changing the
   executable GPU evidence checkpoint;
-- approved noncommercial open-source distribution with no bundled, downloaded,
-  mirrored, cached, or redistributed model weights;
+- approved noncommercial open-source distribution with no bundled or redistributed
+  model weights, prepopulated cache, project-operated mirror, or unattended model
+  acquisition, while retaining explicit operator-requested upstream downloads;
 - made model acquisition and upstream-term acceptance the deployment operator's
   responsibility;
 - limited the tested deployment scope to private, single-operator workspaces with
@@ -609,7 +613,13 @@ Completed:
   redistribution, not for source-only distribution; and
 - kept native opt-in, ComfyUI as the default, and the existing rollback path intact.
 
+The RunPod closure adds its Apache-2.0 license and model-use policy to source and the
+native image, advances both workspace Dockerfiles and the lockfile to the licensed
+k2core checkpoint, and preserves explicit operator-requested downloads from authorized
+providers without bundling weights or operating a project mirror.
+
 All Gate 12 functional, representative-output, clean-build, security, signing,
 fresh-GPU, rollback, licensing, and approved-scope policy requirements are complete.
-Gate 12 passes for this scope. Public/shared inference, commercial operation, automatic
-model acquisition, or model redistribution requires a new review.
+Gate 12 passes for this scope. Public/shared inference, commercial operation,
+project-operated mirrors, unattended model acquisition, or model redistribution
+requires a new review.
