@@ -28,6 +28,12 @@ assignments.
 | R21 | Existing QML/hidden-Widgets architecture causes duplicate backend business logic | High / High | Add one application service behind `MainWindow`; do not reimplement in QML or RunPod | Gate 2/11 / application |
 | R22 | Error conversion hides actionable ComfyUI/native failure causes | Medium / High | Typed categories with original detail/cause, retry/GPU-started fields, category tests | Gate 2 onward / service |
 
+Gate 12 update: R12's required 100-job native A40 soak passed with zero median GPU and
+worker-RSS growth and terminal cleanup to 0 MiB. R12 remains open for a clean native-only
+image boot and an identical-workload ComfyUI A40 peak-memory comparison. R17–R19 also
+remain open: notice inventories do not replace first-party, dependency, or model-license
+decisions.
+
 ## Highest-priority Gate 1 decisions
 
 1. Establish the exact production reference environment and hashes.

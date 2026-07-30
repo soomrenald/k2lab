@@ -430,3 +430,30 @@ Completed:
 
 Gate 11 passes. The updated container has not yet been built/published as a clean release
 candidate, and native remains developer-only with `comfyui` as the product default.
+
+## 2026-07-29 — Gate 12 release-readiness evidence
+
+Pinned shared core checkpoint: `237fd23dc4a578e9d1a095fac0587d4d6bdf88e4`
+
+RunPod source checkpoint:
+`79837482e458ef216ba3d990b134fd9a0a4d6ab9`
+
+Completed:
+
+- added a resumable, workload-validated native soak probe and ran 100 sequential
+  512×512 eight-step Euler/simple jobs on one NVIDIA A40;
+- produced one exact RGB pixel hash across all 100 jobs while keeping the model resident;
+- measured zero first-to-last window median growth for both NVIDIA used memory and
+  worker RSS;
+- shut down the worker in 1.52 seconds and returned the GPU from 379 MiB to 0 MiB;
+- measured 9.69-second mean, 9.32-second p50, and 11.60-second p95 generation time;
+- completed the 999.25-second session for approximately $0.1221 at $0.44/hour;
+- added workspace-owned tokenizer handling, third-party notice inventories, and a
+  native-only container/workflow candidate that contains no ComfyUI install;
+- retained `comfyui` as the product default and preserved both rollback environment
+  variables.
+
+The 100-job soak passes. Overall release readiness remains blocked until the native-only
+image is built and booted from an approved immutable base, the cross-backend A40
+peak-memory threshold is resolved, licensing/provenance decisions are recorded,
+representative outputs receive human approval, and the release rollback drill passes.

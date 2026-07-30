@@ -77,7 +77,7 @@ Future entries must include:
   explicit CPU VAE, OOM classification, cancellation, recovery, and cleanup pass.
 - NVIDIA A40 CUDA correctness, memory telemetry, determinism, tiling, FP16, OOM,
   cancellation, recovery, repeated loading, and exact terminal cleanup pass.
-- No 80 GB device was available. The release-level 100-job soak also remains pending.
+- No 80 GB device was available.
 
 ## Gate 11 validation boundary
 
@@ -91,3 +91,15 @@ Future entries must include:
   still required for release readiness.
 - Durable idempotency, event cursor reconnect, completed-output retention, correlation
   metadata, cancellation, and precise timeout/disconnect classification pass.
+
+## Gate 12 release-readiness boundary
+
+- The release-workload 100-job native A40 soak passes with pixel-exact output, zero
+  median GPU/RSS growth, and terminal cleanup to 0 MiB.
+- The available identical-job timing evidence is inside the release threshold, but an
+  identical-workload ComfyUI A40 peak-memory baseline has not been captured.
+- A clean native-only Dockerfile and non-publishing validation workflow exist, but the
+  image has not been built or booted from an approved immutable base digest.
+- Dependency notices are recorded. First-party licenses, model/face-detector provenance,
+  redistribution review, and representative-output human approval remain unresolved.
+- Native remains developer-only and `comfyui` remains the product default.

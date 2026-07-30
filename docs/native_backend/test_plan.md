@@ -130,7 +130,10 @@ selection, scheduler choice, denoise strength, seed, or metadata.
 - repeated load/unload and VRAM leak;
 - token/embedding/noise/sigma/transformer/scheduler/VAE checkpoints;
 - seeds, dimensions, malformed request, progress and cancellation;
-- ten sequential generations, 100-job supported-RunPod soak, desktop smoke.
+- ten sequential generations and desktop smoke;
+- 100-job supported-RunPod release soak: passed on NVIDIA A40 at 512×512, eight
+  Euler/simple steps, with pixel-exact output, zero median GPU/RSS growth, and terminal
+  cleanup to 0 MiB; see the Gate 12 report.
 
 ### Gates 6–8: LoRA and regions
 
