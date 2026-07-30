@@ -19,6 +19,7 @@ open, and representative output still requires human approval.
 - desktop checkpoint before this evidence update: `65782bc`
 - RunPod soak source: `79837482e458ef216ba3d990b134fd9a0a4d6ab9`
 - RunPod clean-image source: `8aff7822a61526222b77adbc482edb2c429bfaa6`
+- RunPod release-workflow source: `84e23282dda3c3cb28e06c49edc1e68f4b209267`
 - canonical request fixture SHA-256:
   `472aa82fc8bbbd6ef65d2d5601e8ed0da9ce0d7652d7243e0acee706840a12c1`
 - full resumable state SHA-256:
@@ -91,9 +92,11 @@ The paired RunPod branch now includes:
 - workspace-owned tokenizer uploads and readiness checks;
 - a clean native-only Dockerfile candidate with one native Python environment and no
   ComfyUI clone or install;
-- a pull-request/manual validation workflow that never publishes an image, requires an
-  immutable base digest, asserts that ComfyUI is absent, runs imports/tests, scans with
-  Trivy, and emits an SPDX bill of materials;
+- a pull-request/manual validation workflow that never publishes an image, plus an
+  explicit `native-v*` release-candidate path that publishes the content-addressed
+  native image to GHCR and signs its digest with GitHub OIDC;
+- immutable-base, no-ComfyUI, import, dependency, authenticated boot, Trivy, and SPDX
+  checks that validate the local or pushed digest before release completion;
 - third-party notices for desktop, k2core, and RunPod, plus automated drift checks.
 
 The desktop branch now also includes a session-only **Native K2 (experimental)**
@@ -144,15 +147,16 @@ or executed on the RunPod GPU.
 - k2core: 202 passed, 2 intentional environment skips;
 - desktop K2Lab after this evidence update: 205 passed, 2 intentional environment
   skips, 6 subtests;
-- RunPod after the clean-image lock: 315 passed, 15 intentional
+- RunPod after the release-candidate workflow: 316 passed, 15 intentional
   environment/live-test skips, 16 subtests;
 - RunPod frontend typecheck, contract tests, and production build passed;
 - Ruff and `git diff --check` passed in all changed repositories.
 
 ## Remaining release blockers
 
-- Publish the content-addressed native-only candidate and boot it on a RunPod GPU for
-  clean-install desktop/RunPod smoke, failure recovery, and rollback checks.
+- Create an approved `native-v*` release-candidate tag, allow its workflow to publish and
+  sign the content-addressed native-only candidate, and boot that digest on a RunPod GPU
+  for clean-install desktop/RunPod smoke, failure recovery, and rollback checks.
 - Obtain human approval for representative native outputs.
 - Decide and record K2Lab and k2core first-party licenses, model redistribution terms,
   and face-detector provenance. The notice inventory is evidence, not legal approval.
@@ -183,6 +187,6 @@ digest and then back to the preserved ComfyUI digest. The compact blocked record
 
 ## Recommended next step
 
-Publish the exact reviewed candidate through an approved release process. Boot that
-digest on a RunPod GPU, run the clean-install validation matrix, and perform the rollback
-drill. Keep native opt-in until the remaining blockers are closed.
+Create an approved `native-v*` tag to publish and sign the exact reviewed candidate. Boot
+that digest on a RunPod GPU, run the clean-install validation matrix, and perform the
+rollback drill. Keep native opt-in until the remaining blockers are closed.
