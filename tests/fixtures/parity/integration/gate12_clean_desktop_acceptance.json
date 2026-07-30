@@ -1,0 +1,46 @@
+{
+  "schema_version": "k2lab-gate12-clean-desktop-acceptance/1",
+  "captured_at": "2026-07-30T05:36:43Z",
+  "source": {
+    "commit": "c2b157c",
+    "wheel": "k2_region_lab-0.1.0-py3-none-any.whl",
+    "wheel_sha256": "e0009d3a1635548b3f103cae3b548218e05513437fadf8cd4c25ec51348ce233",
+    "wheel_size_bytes": 133266
+  },
+  "environment": {
+    "python": "3.12.13",
+    "k2lab": "0.1.0",
+    "k2core": "0.1.0",
+    "pyside6": "6.11.1",
+    "fresh_virtual_environment": true,
+    "repository_venv_used": false,
+    "comfyui_python_package_visible": false,
+    "model_directories_empty": true
+  },
+  "checks": {
+    "installed_qml_loaded": true,
+    "experimental_selector_present": true,
+    "unset_backend_selected_comfyui": true,
+    "native_session_selection_passed": true,
+    "native_capability_gating_passed": true,
+    "one_click_comfyui_fallback_passed": true,
+    "backend_environment_persisted": false
+  },
+  "issue_report": {
+    "sha256": "bf8633e9dd1cf88c53b71914d8cb8170e776f67c6f7302af1fdf5d178ddf6d76",
+    "size_bytes": 1104,
+    "selected_backend": "native",
+    "private_prompt_included": false,
+    "environment_variables_included": false,
+    "debug_logs_included": false,
+    "user_file_paths_included": false,
+    "lora_names_included": false
+  },
+  "result": {
+    "status": "passed",
+    "clean_desktop_selector_fallback_report_complete": true,
+    "native_gpu_generation_in_this_environment": "not_run",
+    "native_gpu_generation_evidence": "signed RC2 fresh RunPod acceptance and prior desktop native GPU gates",
+    "release_approved": false
+  }
+}

@@ -13,8 +13,8 @@ Pod was reset to the preserved ComfyUI image, retained its model inventory, gene
 successfully through the rollback backend, and was deleted with its volume. The native
 backend remains developer-only, `comfyui` remains the default, and the existing ComfyUI
 path remains available. This report does not approve a release: first-party and model
-licensing decisions remain open, representative output still requires human approval,
-and the clean desktop release-candidate selector/fallback exercise remains incomplete.
+licensing decisions remain open, and representative output still requires human
+approval.
 
 ## Pinned implementation and evidence
 
@@ -32,6 +32,8 @@ and the clean desktop release-candidate selector/fallback exercise remains incom
   `tests/fixtures/parity/device/gate12_a40_100_job_soak.json`
 - clean-image build/boot evidence:
   `tests/fixtures/parity/integration/gate12_clean_native_image.json`
+- clean desktop selector/fallback evidence:
+  `tests/fixtures/parity/integration/gate12_clean_desktop_acceptance.json`
 - published-candidate evidence:
   `tests/fixtures/parity/integration/gate12_published_native_rc.json` in the RunPod
   repository
@@ -193,6 +195,27 @@ write timeout, and one exposed a legacy-route readiness race. Those harness expe
 were corrected without changing product code. The final compact evidence is committed
 at RunPod checkpoint `59de1c5`.
 
+## Clean desktop wheel acceptance
+
+A wheel built from desktop checkpoint `c2b157c` was installed into a new Python 3.12
+virtual environment outside the repository `.venv`, with empty model directories and no
+visible ComfyUI Python package. The installed Qt Quick workspace and Setup panel loaded
+from site-packages. With `K2LAB_BACKEND` unset, the default remained ComfyUI; selecting
+**Native K2 (experimental)** changed only the session, disabled unsupported native
+capabilities with explicit reasons, and exposed no automatic job fallback.
+
+The installed **Create issue report** action produced a 1,104-byte ZIP while native was
+selected. Its SHA-256 is
+`bf8633e9dd1cf88c53b71914d8cb8170e776f67c6f7302af1fdf5d178ddf6d76`;
+an injected private prompt, environment variables, logs, user paths, and LoRA names were
+absent. **Use ComfyUI fallback** restored the reference backend without setting or
+persisting `K2LAB_BACKEND`.
+
+This clean desktop exercise validates installed UI packaging and release-candidate
+controls; it did not repeat GPU generation inside the temporary environment. Native GPU
+execution is covered by the signed clean RunPod candidate and the prior desktop GPU
+gates.
+
 ## Automated verification
 
 - k2core: 202 passed, 2 intentional environment skips;
@@ -208,8 +231,6 @@ at RunPod checkpoint `59de1c5`.
 - Obtain human approval for representative native outputs.
 - Decide and record K2Lab and k2core first-party licenses, model redistribution terms,
   and face-detector provenance. The notice inventory is evidence, not legal approval.
-- Exercise the experimental selector, one-click fallback, and issue-report bundle in
-  the clean release-candidate image.
 - Preserve prior image tags and dependency locks. Do not make native the default during
   this work.
 
@@ -239,7 +260,6 @@ and GPU-acceptance record is
 
 ## Recommended next step
 
-Collect human approval for representative native outputs, resolve the first-party/model
-licensing and face-detector provenance decisions, and exercise the desktop selector,
-one-click fallback, and issue-report bundle in a clean release-candidate setup. Keep
+Collect human approval for representative native outputs and resolve the first-party
+licenses, model redistribution terms, and face-detector provenance decisions. Keep
 native opt-in until those remaining blockers are complete.

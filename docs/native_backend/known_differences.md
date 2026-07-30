@@ -103,7 +103,10 @@ Future entries must include:
   an SPDX SBOM. Signed RC2 was published, booted on a fresh RunPod A40, generated
   natively after a structured failure-recovery check, and swapped in place to the
   preserved ComfyUI image; rollback health, retained inventory, ComfyUI generation, and
-  destructive cleanup passed. The full clean desktop integration has not run.
+  destructive cleanup passed. A clean installed desktop wheel also passed QML packaging,
+  session-only native selection, capability gating, prompt-safe reporting, and
+  non-persistent ComfyUI fallback. GPU generation was not repeated in that temporary
+  desktop environment.
 - Dependency notices are recorded. First-party licenses, model/face-detector provenance,
   redistribution review, and representative-output human approval remain unresolved.
 - Native remains developer-only and `comfyui` remains the product default.

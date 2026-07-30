@@ -59,8 +59,7 @@
     "remaining_release_blockers": [
       "representative native output human approval",
       "K2Lab and k2core first-party license decisions",
-      "model redistribution and face-detector provenance decisions",
-      "clean desktop release-candidate selector and fallback exercise"
+      "model redistribution and face-detector provenance decisions"
     ]
   }
 }

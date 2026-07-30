@@ -34,6 +34,13 @@ ROLLBACK_FIXTURE = (
     / "integration"
     / "gate12_rollback_readiness.json"
 )
+CLEAN_DESKTOP_FIXTURE = (
+    Path(__file__).parent
+    / "fixtures"
+    / "parity"
+    / "integration"
+    / "gate12_clean_desktop_acceptance.json"
+)
 
 
 class NativeReleaseFixtureTests(unittest.TestCase):
@@ -241,6 +248,45 @@ class NativeReleaseFixtureTests(unittest.TestCase):
         self.assertTrue(result["rollback_drill_complete"])
         self.assertEqual(result["status"], "passed")
         self.assertFalse(result["release_approved"])
+
+    def test_clean_desktop_acceptance_is_prompt_safe_and_non_persistent(self) -> None:
+        evidence = json.loads(CLEAN_DESKTOP_FIXTURE.read_text(encoding="utf-8"))
+        self.assertEqual(
+            evidence["schema_version"],
+            "k2lab-gate12-clean-desktop-acceptance/1",
+        )
+        self.assertRegex(evidence["source"]["wheel_sha256"], r"^[0-9a-f]{64}$")
+        self.assertTrue(evidence["environment"]["fresh_virtual_environment"])
+        self.assertFalse(evidence["environment"]["repository_venv_used"])
+        self.assertFalse(evidence["environment"]["comfyui_python_package_visible"])
+        self.assertTrue(evidence["environment"]["model_directories_empty"])
+
+        checks = evidence["checks"]
+        for check in (
+            "installed_qml_loaded",
+            "experimental_selector_present",
+            "unset_backend_selected_comfyui",
+            "native_session_selection_passed",
+            "native_capability_gating_passed",
+            "one_click_comfyui_fallback_passed",
+        ):
+            self.assertTrue(checks[check])
+        self.assertFalse(checks["backend_environment_persisted"])
+
+        report = evidence["issue_report"]
+        self.assertRegex(report["sha256"], r"^[0-9a-f]{64}$")
+        for field in (
+            "private_prompt_included",
+            "environment_variables_included",
+            "debug_logs_included",
+            "user_file_paths_included",
+            "lora_names_included",
+        ):
+            self.assertFalse(report[field])
+        self.assertTrue(
+            evidence["result"]["clean_desktop_selector_fallback_report_complete"]
+        )
+        self.assertFalse(evidence["result"]["release_approved"])
 
 
 if __name__ == "__main__":

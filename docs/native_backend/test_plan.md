@@ -142,7 +142,13 @@ selection, scheduler choice, denoise strength, seed, or metadata.
   clean boot, exact tokenizer/model hashes, structured unsupported-feature rejection,
   successful native generation, in-place swap to the preserved ComfyUI digest,
   hash-verified retained inventory, successful rollback generation, and permanent Pod
-  and Pod-volume cleanup. Clean desktop integration remains blocked.
+  and Pod-volume cleanup.
+- clean desktop wheel acceptance: passed in a fresh Python 3.12 environment outside the
+  repository `.venv`, with no visible ComfyUI Python package and empty model
+  directories; installed QML, session-only native selection, capability gating,
+  prompt-safe issue reporting, and one-click non-persistent ComfyUI fallback passed.
+  GPU generation was not repeated in this temporary environment and remains covered by
+  the clean RunPod candidate and prior desktop GPU gates.
 - paired identical-workload A40 peak memory: ComfyUI 18,889 MiB, native 13,653 MiB,
   native-to-ComfyUI ratio 0.7228 against the 1.15 ceiling, with both workers returning to
   0 MiB.

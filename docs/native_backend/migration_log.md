@@ -548,9 +548,16 @@ returned `ready`, and a ComfyUI generation completed with output SHA-256
 The cleanup guard permanently deleted the disposable Pod and Pod volume. The passing
 drill took 791.42 seconds and approximately $0.0967 compute cost.
 
+Desktop checkpoint `c2b157c` was built as a wheel and installed into a new Python 3.12
+virtual environment outside the repository `.venv`, with empty model directories and no
+visible ComfyUI Python package. The installed QML loaded; unset backend selection,
+session-only native selection, unsupported-capability gating, prompt-safe issue-report
+creation, and one-click non-persistent ComfyUI fallback all passed. This exercise did not
+repeat native GPU generation in the temporary desktop environment; the signed clean
+RunPod candidate and prior desktop GPU gates provide that execution evidence.
+
 The fresh candidate boot, structured failure recovery, native generation, image-swap
 rollback, post-rollback generation, and destructive cleanup checks now pass. Gate 12
 overall remains blocked by representative-output human approval, K2Lab/k2core license
-decisions, model redistribution and face-detector provenance decisions, and the clean
-desktop selector/fallback/report exercise. Native remains opt-in and `comfyui` remains
-the default.
+decisions, and model redistribution and face-detector provenance decisions. Native
+remains opt-in and `comfyui` remains the default.
