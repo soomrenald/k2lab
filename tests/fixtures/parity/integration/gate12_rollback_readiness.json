@@ -1,0 +1,39 @@
+{
+  "schema_version": "k2lab-gate12-rollback-readiness/1",
+  "captured_at": "2026-07-30T03:49:08Z",
+  "desktop": {
+    "unset_backend_selects": "comfyui",
+    "explicit_fallback_environment": "K2LAB_BACKEND=comfyui",
+    "session_fallback_present": true,
+    "fallback_does_not_persist_settings": true,
+    "targeted_tests_passed": 28
+  },
+  "runpod": {
+    "explicit_fallback_environment": "K2LAB_INFERENCE_BACKEND=comfyui",
+    "preserved_image_version": "0.3.0",
+    "preserved_image": "ghcr.io/soomrenald/k2lab-runpod-workspace@sha256:19652733039379d1ef47cd3279e6b266b802c7a68a1c380173221a2d8ace6435",
+    "preserved_index_sha256": "19652733039379d1ef47cd3279e6b266b802c7a68a1c380173221a2d8ace6435",
+    "preserved_amd64_manifest_sha256": "340766c81650bb76452440812a11111998265cb265cb8ddc7c5fe864d66ef5d1",
+    "preserved_attestation_manifest_sha256": "0fad52187ed888fbe3323789327e627e615e6fb426b184119c8d275f5f6e9bf0",
+    "preserved_manifest_resolves": true
+  },
+  "native_candidate": {
+    "runpod_source_commit": "8aff7822a61526222b77adbc482edb2c429bfaa6",
+    "local_image_id": "sha256:2364e8ed1d75a66a951d35797b6dd80afb2c4ec86370e31471c678eeb3e0a094",
+    "published": false
+  },
+  "gate_tags": {
+    "coordination_repository": "soomrenald/k2lab",
+    "first": "native-backend-gate-01",
+    "last_passed": "native-backend-gate-11",
+    "remote_resolution_verified": true
+  },
+  "result": {
+    "prerequisites_passed": true,
+    "image_swap_to_native_completed": false,
+    "image_swap_back_to_comfyui_completed": false,
+    "rollback_drill_complete": false,
+    "status": "blocked",
+    "blocker": "The reviewed native candidate is intentionally not published to an immutable registry digest."
+  }
+}

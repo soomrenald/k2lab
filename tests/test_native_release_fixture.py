@@ -27,6 +27,13 @@ BACKEND_VRAM_FIXTURE = (
     / "device"
     / "gate12_a40_backend_vram.json"
 )
+ROLLBACK_FIXTURE = (
+    Path(__file__).parent
+    / "fixtures"
+    / "parity"
+    / "integration"
+    / "gate12_rollback_readiness.json"
+)
 
 
 class NativeReleaseFixtureTests(unittest.TestCase):
@@ -196,6 +203,28 @@ class NativeReleaseFixtureTests(unittest.TestCase):
             evidence["source"]["full_state_sha256"],
             r"^[0-9a-f]{64}$",
         )
+
+    def test_rollback_prerequisites_pass_without_claiming_full_drill(self) -> None:
+        evidence = json.loads(ROLLBACK_FIXTURE.read_text(encoding="utf-8"))
+        self.assertEqual(
+            evidence["schema_version"],
+            "k2lab-gate12-rollback-readiness/1",
+        )
+        self.assertEqual(evidence["desktop"]["unset_backend_selects"], "comfyui")
+        self.assertTrue(evidence["desktop"]["session_fallback_present"])
+        self.assertTrue(evidence["runpod"]["preserved_manifest_resolves"])
+        self.assertRegex(
+            evidence["runpod"]["preserved_image"],
+            r"@sha256:[0-9a-f]{64}$",
+        )
+        self.assertFalse(evidence["native_candidate"]["published"])
+
+        result = evidence["result"]
+        self.assertTrue(result["prerequisites_passed"])
+        self.assertFalse(result["image_swap_to_native_completed"])
+        self.assertFalse(result["image_swap_back_to_comfyui_completed"])
+        self.assertFalse(result["rollback_drill_complete"])
+        self.assertEqual(result["status"], "blocked")
 
 
 if __name__ == "__main__":

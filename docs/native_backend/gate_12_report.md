@@ -142,7 +142,7 @@ or executed on the RunPod GPU.
 ## Automated verification
 
 - k2core: 202 passed, 2 intentional environment skips;
-- desktop K2Lab after this evidence update: 204 passed, 2 intentional environment
+- desktop K2Lab after this evidence update: 205 passed, 2 intentional environment
   skips, 6 subtests;
 - RunPod after the clean-image lock: 315 passed, 15 intentional
   environment/live-test skips, 16 subtests;
@@ -168,6 +168,18 @@ Set `K2LAB_BACKEND=comfyui` on desktop and
 reverse order if source rollback is required. No database migration, user setting,
 model path, or output schema was changed irreversibly, and no ComfyUI support was
 removed.
+
+The current production rollback target remains available at immutable version `0.3.0`,
+index digest
+`ghcr.io/soomrenald/k2lab-runpod-workspace@sha256:19652733039379d1ef47cd3279e6b266b802c7a68a1c380173221a2d8ace6435`.
+Its linux/amd64 manifest and attestation resolve in GHCR. The unset/explicit ComfyUI
+selection and session fallback matrix passes 28 targeted tests, and the Gate 1–11
+coordination tags resolve remotely.
+
+These are rollback prerequisites, not a completed image-swap drill. The reviewed native
+image is intentionally local-only, so RunPod cannot switch to its immutable registry
+digest and then back to the preserved ComfyUI digest. The compact blocked record is
+`tests/fixtures/parity/integration/gate12_rollback_readiness.json`.
 
 ## Recommended next step
 
