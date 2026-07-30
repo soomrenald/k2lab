@@ -457,9 +457,9 @@ Completed:
   variables.
 
 The 100-job soak passes. Overall release readiness remains blocked until the native-only
-image is built and booted from an approved immutable base, the cross-backend A40
-peak-memory threshold is resolved, licensing/provenance decisions are recorded,
-representative outputs receive human approval, and the release rollback drill passes.
+image is published and booted on a RunPod GPU, licensing/provenance decisions are
+recorded, representative outputs receive human approval, and the release rollback drill
+passes.
 
 ## 2026-07-29 — Gate 12 clean native image checkpoint
 
@@ -483,3 +483,14 @@ with zero HIGH, zero CRITICAL, and zero secrets, and pinned Syft emitted an SPDX
 SBOM. The local image is not a published release candidate. GPU boot, clean desktop
 integration, rollback drill, human output approval, and licensing decisions remain
 release blockers.
+
+## 2026-07-29 — Gate 12 paired A40 memory checkpoint
+
+RunPod source checkpoint:
+`f8b2184045247902ad11be6cf4c2f4feee6431c0`
+
+The bounded paired-backend probe ran the identical canonical 512×512, eight-step request
+and model hashes through ComfyUI and native on the same A40 and Python/Torch environment.
+At 100 ms sampling, ComfyUI peaked at 18,889 MiB and native at 13,653 MiB. The 0.7228
+ratio passes the 1.15 release ceiling, and both workers cleaned up to 0 MiB. Total probe
+time was 58.76 seconds for approximately $0.0072.

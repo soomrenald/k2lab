@@ -72,10 +72,16 @@ Each PNG has different embedded job metadata and therefore a distinct file hash,
 decoded RGB pixels are exact across all 100 outputs.
 
 The earlier controlled local clean-generation fixture measured native warm generation at
-11.87 seconds versus 78.27 seconds for ComfyUI, so the available identical-job evidence
-does not show a severe total-time regression. The A40 run did not capture a matching
-ComfyUI peak-memory baseline; the specification's 15% cross-backend VRAM threshold
-therefore remains unresolved rather than being inferred from unlike measurements.
+11.87 seconds versus 78.27 seconds for ComfyUI. A later paired A40 probe used the same
+canonical request, model hashes, Python/Torch environment, and 100 ms NVIDIA memory
+sampling for both backends. ComfyUI peaked at 18,889 MiB and native at 13,653 MiB, a
+native-to-ComfyUI ratio of 0.7228. This passes the specification's maximum ratio of 1.15.
+Both workers returned the GPU from an initial 0 MiB to terminal 0 MiB.
+
+The paired probe took 58.76 seconds and approximately $0.0072. Its compact evidence is
+`tests/fixtures/parity/device/gate12_a40_backend_vram.json`; the 4,660-byte full state
+remains at `/workspace/k2lab/state/gate12-backend-vram-a40-rerun.json` with SHA-256
+`f5539db28a1473ba7a0a29df6f1bc1d28bb5d60ec42b6928835bf94cae8198c6`.
 
 ## Additional implementation completed
 
@@ -136,7 +142,7 @@ or executed on the RunPod GPU.
 ## Automated verification
 
 - k2core: 202 passed, 2 intentional environment skips;
-- desktop K2Lab after this evidence update: 203 passed, 2 intentional environment
+- desktop K2Lab after this evidence update: 204 passed, 2 intentional environment
   skips, 6 subtests;
 - RunPod after the clean-image lock: 315 passed, 15 intentional
   environment/live-test skips, 16 subtests;
@@ -147,8 +153,6 @@ or executed on the RunPod GPU.
 
 - Publish the content-addressed native-only candidate and boot it on a RunPod GPU for
   clean-install desktop/RunPod smoke, failure recovery, and rollback checks.
-- Capture an identical-workload ComfyUI A40 peak-VRAM baseline or explicitly revise the
-  15% memory threshold.
 - Obtain human approval for representative native outputs.
 - Decide and record K2Lab and k2core first-party licenses, model redistribution terms,
   and face-detector provenance. The notice inventory is evidence, not legal approval.

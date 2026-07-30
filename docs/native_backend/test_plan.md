@@ -138,6 +138,9 @@ selection, scheduler choice, denoise strength, seed, or metadata.
   smoke, `pip check`, agent boot, Docker health, authenticated health, remediated
   HIGH/CRITICAL scan, and SPDX SBOM passed; published RunPod GPU boot and clean desktop
   integration remain blocked.
+- paired identical-workload A40 peak memory: ComfyUI 18,889 MiB, native 13,653 MiB,
+  native-to-ComfyUI ratio 0.7228 against the 1.15 ceiling, with both workers returning to
+  0 MiB.
 
 ### Gates 6–8: LoRA and regions
 

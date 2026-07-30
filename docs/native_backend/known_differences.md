@@ -96,8 +96,8 @@ Future entries must include:
 
 - The release-workload 100-job native A40 soak passes with pixel-exact output, zero
   median GPU/RSS growth, and terminal cleanup to 0 MiB.
-- The available identical-job timing evidence is inside the release threshold, but an
-  identical-workload ComfyUI A40 peak-memory baseline has not been captured.
+- Paired identical-workload A40 sampling passes the peak-memory threshold: native used
+  72.28% of the ComfyUI lifecycle peak against a 115% ceiling.
 - A clean native-only image has been built and its agent booted locally from the approved
   immutable CUDA base. Its remediated digest passes the pinned HIGH/CRITICAL scan and has
   an SPDX SBOM. It has not been published or booted on a RunPod GPU, and the full clean

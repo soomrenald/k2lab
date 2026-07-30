@@ -20,6 +20,13 @@ CLEAN_IMAGE_FIXTURE = (
     / "integration"
     / "gate12_clean_native_image.json"
 )
+BACKEND_VRAM_FIXTURE = (
+    Path(__file__).parent
+    / "fixtures"
+    / "parity"
+    / "device"
+    / "gate12_a40_backend_vram.json"
+)
 
 
 class NativeReleaseFixtureTests(unittest.TestCase):
@@ -89,6 +96,10 @@ class NativeReleaseFixtureTests(unittest.TestCase):
         self.assertFalse(
             readiness["clean_native_image_built_and_booted_on_runpod_gpu"]
         )
+        self.assertTrue(
+            readiness["identical_comfyui_a40_peak_memory_baseline_complete"]
+        )
+        self.assertTrue(readiness["peak_memory_ratio_threshold_passed"])
         self.assertFalse(readiness["first_party_and_model_license_review_complete"])
         self.assertFalse(readiness["representative_output_human_approval_complete"])
 
@@ -152,6 +163,39 @@ class NativeReleaseFixtureTests(unittest.TestCase):
         self.assertFalse(boundaries["clean_desktop_install_tested"])
         self.assertFalse(boundaries["rollback_drill_complete"])
         self.assertFalse(boundaries["release_approved"])
+
+    def test_paired_a40_vram_evidence_passes_release_threshold_and_cleanup(self) -> None:
+        evidence = json.loads(BACKEND_VRAM_FIXTURE.read_text(encoding="utf-8"))
+        self.assertEqual(
+            evidence["schema_version"],
+            "k2lab-gate12-backend-vram-evidence/1",
+        )
+        self.assertEqual(evidence["hardware"]["gpu"], "NVIDIA A40")
+        self.assertEqual(
+            evidence["workload"]["fixture_sha256"],
+            self.fixture["test_scope"]["fixture_sha256"],
+        )
+        self.assertEqual(evidence["model_hashes"], self.fixture["model_hashes"])
+
+        comfy = evidence["backends"]["comfyui"]
+        native = evidence["backends"]["native"]
+        comparison = evidence["comparison"]
+        recomputed_ratio = (
+            native["lifecycle_peak_used_mib"] / comfy["lifecycle_peak_used_mib"]
+        )
+        self.assertAlmostEqual(
+            recomputed_ratio,
+            comparison["native_to_comfyui_peak_ratio"],
+        )
+        self.assertLessEqual(recomputed_ratio, comparison["limit"])
+        self.assertTrue(comparison["passed"])
+        self.assertTrue(evidence["execution"]["cleanup_passed"])
+        self.assertEqual(evidence["execution"]["initial_gpu_used_mib"], 0)
+        self.assertEqual(evidence["execution"]["terminal_gpu_used_mib"], 0)
+        self.assertRegex(
+            evidence["source"]["full_state_sha256"],
+            r"^[0-9a-f]{64}$",
+        )
 
 
 if __name__ == "__main__":

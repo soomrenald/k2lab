@@ -115,6 +115,8 @@
     "clean_native_image_built_and_booted": false,
     "clean_native_image_built_and_booted_locally": true,
     "clean_native_image_built_and_booted_on_runpod_gpu": false,
+    "identical_comfyui_a40_peak_memory_baseline_complete": true,
+    "peak_memory_ratio_threshold_passed": true,
     "dependency_license_inventory_present": true,
     "first_party_and_model_license_review_complete": false,
     "representative_output_human_approval_complete": false

@@ -1,0 +1,88 @@
+{
+  "schema_version": "k2lab-gate12-backend-vram-evidence/1",
+  "captured_at": "2026-07-30T03:49:08Z",
+  "source": {
+    "runpod_commit": "f8b2184045247902ad11be6cf4c2f4feee6431c0",
+    "k2core_commit": "237fd23dc4a578e9d1a095fac0587d4d6bdf88e4",
+    "full_state_path": "/workspace/k2lab/state/gate12-backend-vram-a40-rerun.json",
+    "full_state_bytes": 4660,
+    "full_state_sha256": "f5539db28a1473ba7a0a29df6f1bc1d28bb5d60ec42b6928835bf94cae8198c6"
+  },
+  "hardware": {
+    "provider": "RunPod",
+    "gpu": "NVIDIA A40",
+    "gpu_total_mib": 46068
+  },
+  "software": {
+    "python": "3.12.3",
+    "torch": "2.9.1+cu128",
+    "cuda": "12.8",
+    "diffusers": "0.39.0",
+    "transformers": "5.14.1",
+    "safetensors": "0.8.0"
+  },
+  "workload": {
+    "fixture_sha256": "472aa82fc8bbbd6ef65d2d5601e8ed0da9ce0d7652d7243e0acee706840a12c1",
+    "width": 512,
+    "height": 512,
+    "steps": 8,
+    "sampler": "euler",
+    "scheduler": "simple",
+    "seed": 424242,
+    "sample_interval_seconds": 0.1
+  },
+  "model_hashes": {
+    "transformer": "eb4dd8c612cfd10f64f25b057e6e6bbcb5737c94a7372177e456dbf7579502f1",
+    "text_encoder": "54bd5144df0bbc25dd6ccadfcb826b521445a1b06ae5a42570bdd2974ca87094",
+    "vae": "a70580f0213e67967ee9c95f05bb400e8fb08307e017a924bf3441223e023d1f",
+    "tokenizer": "9362730d7f1fe82e277f363f2294f30edb2bb81b5c67b0d1b83813a5ac21f34d"
+  },
+  "backends": {
+    "comfyui": {
+      "cold_start_seconds": 1.7619090719381347,
+      "load_seconds": 4.828431244008243,
+      "load_samples": 35,
+      "load_peak_used_mib": 275,
+      "generation_seconds": 15.331765290931799,
+      "generation_samples": 120,
+      "generation_peak_used_mib": 18889,
+      "lifecycle_peak_used_mib": 18889,
+      "result_allocated_bytes": 13410206208,
+      "result_reserved_bytes": 14002683904,
+      "pixel_sha256": "e00b10b6a77417fb121499103f5802afd2fbf95af3ebbbb5753120f9d1029db4",
+      "output_bytes": 248715,
+      "cleanup_seconds": 1.2229493419872597,
+      "terminal_gpu_used_mib": 0
+    },
+    "native": {
+      "cold_start_seconds": 1.9262420369777828,
+      "load_seconds": 18.462548989919014,
+      "load_samples": 148,
+      "load_peak_used_mib": 271,
+      "generation_seconds": 13.437384788063355,
+      "generation_samples": 107,
+      "generation_peak_used_mib": 13653,
+      "lifecycle_peak_used_mib": 13653,
+      "result_peak_allocated_bytes": 13687754240,
+      "result_peak_reserved_bytes": 13967032320,
+      "pixel_sha256": "351a407e207cf64a6831772a8941b94bfea08d2abe351b7f8faaf6fc13fe8bb7",
+      "output_bytes": 250593,
+      "cleanup_seconds": 1.3188051400939003,
+      "terminal_gpu_used_mib": 0
+    }
+  },
+  "comparison": {
+    "native_to_comfyui_peak_ratio": 0.7228016305786437,
+    "limit": 1.15,
+    "headroom_percentage_points": 42.71983694213563,
+    "passed": true
+  },
+  "execution": {
+    "initial_gpu_used_mib": 0,
+    "terminal_gpu_used_mib": 0,
+    "cleanup_passed": true,
+    "session_seconds": 58.75815475801937,
+    "published_a40_rate_usd_per_hour": 0.44,
+    "estimated_session_cost_usd": 0.007181552248202367
+  }
+}
