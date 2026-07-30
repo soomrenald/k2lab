@@ -35,7 +35,7 @@ Reference baseline:
 | PNG/project metadata | Supported by current runtime | PASS | Source text/project retention and explicit request replacement in native and Comfy image edits; Gate 9 |
 | Model registry independent of ComfyUI | Versioned TOML accepts arbitrary paths; legacy discovery is opt-in | PASS | Eight required registry cases, full suites, and read-only validation of both installed Krea2 sets; Gate 3 |
 | Strict component loading | ComfyUI loader plus K2 header manifest | PASS | Exact approved hashes, 2,097/2,097 mapped tensors, parameter/dtype/device reports, and three stable ROCm unload cycles; Gate 4 |
-| CUDA | Supported through selected ComfyUI environment | BLOCKED | Native device planning is implemented; mandatory A40 validation has no available or authorized target; Gate 10 |
+| CUDA | Supported through selected ComfyUI environment | PASS | NVIDIA A40 exact-artifact stress, soak, OOM, recovery, cancellation, tiling, FP16, and exact cleanup matrix; Gate 10 |
 | ROCm | Supported through selected ComfyUI environment | PASS | Local 16 GiB BF16/FP16, scaled-FP8, tiling, CPU-VAE, OOM, cancellation, repeated-load, soak, recovery, and exact cleanup evidence; Gate 10 |
 | Desktop entry point | Supported | NOT IMPLEMENTED | Identical shared-schema fixture through UI service; Gate 11 |
 | RunPod entry point | No implementation in this repository | BLOCKED | Scope/repository, job service, persistence/reconnect tests; Gate 11 |

@@ -1,0 +1,123 @@
+{
+  "schema_version": "k2lab-gate10-device-evidence/1",
+  "captured_at": "2026-07-30T00:32:40Z",
+  "implementation": {
+    "k2core_commit": "237fd23dc4a578e9d1a095fac0587d4d6bdf88e4",
+    "k2lab_commit_before_evidence_update": "b12e5eba3f861e9862807776e79ead88ff733916",
+    "runpod_image_version": "0.3.0"
+  },
+  "hardware": {
+    "provider": "RunPod",
+    "gpu": "NVIDIA A40",
+    "gpu_count": 1,
+    "gpu_total_bytes": 47697690624,
+    "cuda": "12.8",
+    "driver": "580.159.04"
+  },
+  "software": {
+    "python": "3.12.3",
+    "torch": "2.9.1+cu128",
+    "diffusers": "0.39.0",
+    "transformers": "5.14.1",
+    "safetensors": "0.8.0"
+  },
+  "model_hashes": {
+    "transformer": "eb4dd8c612cfd10f64f25b057e6e6bbcb5737c94a7372177e456dbf7579502f1",
+    "text_encoder": "54bd5144df0bbc25dd6ccadfcb826b521445a1b06ae5a42570bdd2974ca87094",
+    "vae": "a70580f0213e67967ee9c95f05bb400e8fb08307e017a924bf3441223e023d1f",
+    "tokenizer": "9362730d7f1fe82e277f363f2294f30edb2bb81b5c67b0d1b83813a5ac21f34d"
+  },
+  "test_scope": {
+    "load_unload_cycles": 10,
+    "sequential_generation_jobs": 5,
+    "generation_width": 256,
+    "generation_height": 256,
+    "generation_steps": 2,
+    "seed": 10010,
+    "cancellation_width": 512,
+    "cancellation_height": 512,
+    "cancellation_requested_steps": 8,
+    "intentional_oom_reserve_bytes": 64424509440
+  },
+  "results": {
+    "load_unload": {
+      "passed": true,
+      "all_load_allocated_bytes": 0,
+      "all_load_reserved_bytes": 0,
+      "all_post_unload_allocated_bytes": 0,
+      "all_post_unload_reserved_bytes": 0
+    },
+    "sequential_soak": {
+      "passed": true,
+      "pixel_exact": true,
+      "pixel_sha256": "f8f38f76571947fdc7422e499b03cb8c143d35dcda7250472e530534f775c69e",
+      "completion_allocated_bytes": 10027008,
+      "completion_reserved_bytes": 27262976,
+      "peak_allocated_bytes": 13591729152,
+      "peak_reserved_bytes": 13910409216,
+      "post_unload_allocated_bytes": 0,
+      "post_unload_reserved_bytes": 0,
+      "oom_retry_used": false
+    },
+    "intentional_oom": {
+      "passed": true,
+      "category": "OutOfMemoryError",
+      "retry_safe": true,
+      "gpu_work_started": false,
+      "observed_free_bytes": 47347269632,
+      "post_failure_allocated_bytes": 0,
+      "post_failure_reserved_bytes": 0
+    },
+    "recovery": {
+      "passed": true,
+      "pixel_sha256": "0a8f894fc2a2b2e9672912fd0e66189b846475049827c7ea1b2bb297b7c8363e",
+      "peak_allocated_bytes": 13591630848,
+      "peak_reserved_bytes": 13910409216,
+      "post_unload_allocated_bytes": 0,
+      "post_unload_reserved_bytes": 0
+    },
+    "cancellation": {
+      "passed": true,
+      "steps_seen": [
+        1
+      ],
+      "category": "CancellationError",
+      "retry_safe": true,
+      "gpu_work_started": true,
+      "peak_allocated_bytes": 13669488640,
+      "peak_reserved_bytes": 13983809536,
+      "after_failure_allocated_bytes": 0,
+      "after_failure_reserved_bytes": 6291456,
+      "post_unload_allocated_bytes": 0,
+      "post_unload_reserved_bytes": 0
+    },
+    "vae_tiling": {
+      "passed": true,
+      "enabled_in_device_plan": true,
+      "pixel_sha256": "0a8f894fc2a2b2e9672912fd0e66189b846475049827c7ea1b2bb297b7c8363e",
+      "oom_retry_used": false,
+      "post_unload_allocated_bytes": 0,
+      "post_unload_reserved_bytes": 0
+    },
+    "fp16_compute_fp8_weight": {
+      "passed": true,
+      "compute_dtype": "float16",
+      "weight_dtype": "float8_e4m3fn",
+      "pixel_sha256": "2243e2cd038e553891b749fb58fccb1afd1d718f851cb2b9decbbd1c9c5079f7",
+      "peak_allocated_bytes": 13591630848,
+      "peak_reserved_bytes": 13910409216,
+      "oom_retry_used": false,
+      "post_unload_allocated_bytes": 0,
+      "post_unload_reserved_bytes": 0
+    }
+  },
+  "execution": {
+    "matrix_elapsed_seconds": 374.83557695604395,
+    "terminal_nvidia_smi_memory_used_mib": 0,
+    "raw_jsonl_line_count": 24,
+    "raw_jsonl_bytes": 13615,
+    "raw_jsonl_sha256": "8e5b86a20c8a87380a4cdcac6637af56f067f8213a789f2a50b343563d9cdaa3",
+    "approved_cost_ceiling_usd": 0.33,
+    "published_a40_rate_usd_per_hour": 0.44
+  }
+}

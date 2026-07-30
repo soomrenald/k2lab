@@ -75,7 +75,6 @@ Future entries must include:
 
 - Local ROCm device ownership, BF16/FP16 compute, mixed FP8 weight loading, tiling,
   explicit CPU VAE, OOM classification, cancellation, recovery, and cleanup pass.
-- CUDA correctness and the A40 48 GB memory envelope remain unverified because no
-  approved target is available. This is a blocked validation item, not an approved
-  behavioral difference.
+- NVIDIA A40 CUDA correctness, memory telemetry, determinism, tiling, FP16, OOM,
+  cancellation, recovery, repeated loading, and exact terminal cleanup pass.
 - No 80 GB device was available. The release-level 100-job soak also remains pending.

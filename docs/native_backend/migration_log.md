@@ -394,9 +394,11 @@ Completed:
   consistently reaches zero allocated and reserved bytes;
 - completed local ROCm BF16, explicit FP16, mixed-lane FP8 weight, tiled VAE, CPU VAE,
   clean-generation, and image-edit smoke tests;
+- passed the required NVIDIA A40 matrix with ten exact-cleanup load cycles, five
+  deterministic sequential generations, preflight OOM, immediate recovery, one-step
+  cancellation, explicit VAE tiling, and explicit FP16 compute;
 - passed 200 core tests, 2 intentional skips, and 14 subtests.
 
-Gate 10 is blocked because its mandatory A40 48 GB validation has no available or
-authorized execution target. No 80 GB device is available, and the release-level
-100-job soak remains outstanding. Phase 9 has not begun. Native stays developer-only
-and `comfyui` remains the product default.
+Gate 10 passes. No 80 GB device was available, and the release-level 100-job soak
+remains outstanding. Native stays developer-only and `comfyui` remains the product
+default while Phase 9 integration begins.
