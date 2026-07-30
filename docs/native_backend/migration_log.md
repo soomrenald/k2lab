@@ -495,7 +495,8 @@ At 100 ms sampling, ComfyUI peaked at 18,889 MiB and native at 13,653 MiB. The 0
 ratio passes the 1.15 release ceiling, and both workers cleaned up to 0 MiB. Total probe
 time was 58.76 seconds for approximately $0.0072.
 
-RunPod checkpoint `84e2328` adds the explicit release-candidate mechanism: ordinary
+RunPod checkpoint `ff569c4` adds the explicit release-candidate mechanism: ordinary
 pull-request/manual image validation remains non-publishing, while an approved
-`native-v*` tag publishes the native image to GHCR, validates the pushed digest, emits
-the SBOM, and signs the digest with GitHub OIDC.
+`native-v*` tag publishes the native image under a distinct tag in the preserved public
+GHCR workspace package, validates the pushed digest, emits the SBOM, and signs the digest
+with GitHub OIDC.

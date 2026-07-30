@@ -19,7 +19,7 @@ open, and representative output still requires human approval.
 - desktop checkpoint before this evidence update: `65782bc`
 - RunPod soak source: `79837482e458ef216ba3d990b134fd9a0a4d6ab9`
 - RunPod clean-image source: `8aff7822a61526222b77adbc482edb2c429bfaa6`
-- RunPod release-workflow source: `84e23282dda3c3cb28e06c49edc1e68f4b209267`
+- RunPod release-workflow source: `ff569c4189acf14ba7da60128953ad9091f379d6`
 - canonical request fixture SHA-256:
   `472aa82fc8bbbd6ef65d2d5601e8ed0da9ce0d7652d7243e0acee706840a12c1`
 - full resumable state SHA-256:
@@ -94,7 +94,8 @@ The paired RunPod branch now includes:
   ComfyUI clone or install;
 - a pull-request/manual validation workflow that never publishes an image, plus an
   explicit `native-v*` release-candidate path that publishes the content-addressed
-  native image to GHCR and signs its digest with GitHub OIDC;
+  native image under a distinct tag in the preserved public GHCR workspace package and
+  signs its digest with GitHub OIDC;
 - immutable-base, no-ComfyUI, import, dependency, authenticated boot, Trivy, and SPDX
   checks that validate the local or pushed digest before release completion;
 - third-party notices for desktop, k2core, and RunPod, plus automated drift checks.
