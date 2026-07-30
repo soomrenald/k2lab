@@ -78,3 +78,16 @@ Future entries must include:
 - NVIDIA A40 CUDA correctness, memory telemetry, determinism, tiling, FP16, OOM,
   cancellation, recovery, repeated loading, and exact terminal cleanup pass.
 - No 80 GB device was available. The release-level 100-job soak also remains pending.
+
+## Gate 11 validation boundary
+
+- Desktop and RunPod worker entrypoints parse the same byte-identical fixture into the
+  shared k2core schema. Live RunPod direct-worker and persistent job-service runs produce
+  pixel-exact RGB output.
+- RunPod native selection is server-only and developer-only. Unsupported pose,
+  projector, post-upscale, and face-refinement controls fail explicitly before GPU work.
+- The feature branch was tested against the pinned current RunPod image through an
+  ephemeral checkout. A clean build, publication, and boot of the updated container is
+  still required for release readiness.
+- Durable idempotency, event cursor reconnect, completed-output retention, correlation
+  metadata, cancellation, and precise timeout/disconnect classification pass.

@@ -1,0 +1,101 @@
+{
+  "schema_version": "k2lab-gate11-integration-evidence/1",
+  "recorded_at": "2026-07-29T18:23:00-07:00",
+  "implementation": {
+    "k2core_commit": "237fd23dc4a578e9d1a095fac0587d4d6bdf88e4",
+    "desktop_commit": "9f459dd",
+    "runpod_commit": "87e1c72e8e9138b28b87a9f716e5262d2111812d"
+  },
+  "request_fixture": {
+    "desktop_path": "tests/fixtures/gate11/native_clean_generation.json",
+    "runpod_path": "tests/fixtures/gate11/native_clean_generation.json",
+    "sha256": "472aa82fc8bbbd6ef65d2d5601e8ed0da9ce0d7652d7243e0acee706840a12c1",
+    "correlation_ids": {
+      "desktop_test": "gate11-generation",
+      "runpod_worker": "gate11-runpod-generation",
+      "runpod_agent": "gate11-agent-native-generation"
+    }
+  },
+  "runpod_environment": {
+    "gpu": "NVIDIA A40",
+    "gpu_total_bytes": 47697690624,
+    "cuda": "12.8",
+    "python": "3.12.3",
+    "torch": "2.9.1+cu128",
+    "diffusers": "0.39.0",
+    "transformers": "5.14.1",
+    "safetensors": "0.8.0"
+  },
+  "entrypoints": {
+    "desktop": {
+      "passed": true,
+      "test": "WorkerBackendSelectionTests.test_gate11_fixture_uses_shared_generation_schema_at_desktop_entrypoint",
+      "shared_request_type": "GenerationRequest",
+      "verified_fields": [
+        "correlation_id",
+        "prompt",
+        "seed",
+        "sampler",
+        "scheduler",
+        "regions",
+        "prompt_emphases"
+      ]
+    },
+    "runpod_worker": {
+      "passed": true,
+      "probe": "scripts/gate11_native_worker_probe.py",
+      "duration_seconds": 60.97510067594703,
+      "event_count": 18,
+      "terminal_states": [
+        "running",
+        "ready",
+        "complete"
+      ],
+      "png_sha256": "bebdc2f89160a56e7ba4103cd6a02b922cce9a964494efd669ca4efdf1c5a1b7",
+      "rgb_sha256": "eab1f3d13a3684716671777e1e560ee8b23d44d59a62d0f4fcd584f2fe908434"
+    },
+    "runpod_agent": {
+      "passed": true,
+      "probe": "scripts/gate11_native_agent_probe.py",
+      "duration_seconds": 31.879248759010807,
+      "job_id": "cc87d03ede534d4da36b7e87d87ea9ba",
+      "duplicate_job_id": "cc87d03ede534d4da36b7e87d87ea9ba",
+      "state": "completed",
+      "reconnected_state": "completed",
+      "event_count": 20,
+      "reconnected_event_count": 20,
+      "resumed_event_count": 0,
+      "output_file_id": "2f66f914cff444d887b568ccebb9632f",
+      "png_sha256": "2736776becf93a4e348d8a454905d33e825d4130ae6b6404214db21f3b860293",
+      "rgb_sha256": "eab1f3d13a3684716671777e1e560ee8b23d44d59a62d0f4fcd584f2fe908434",
+      "post_reconnect_replay_seconds": 0.21137990802526474,
+      "post_reconnect_replay_job_id": "cc87d03ede534d4da36b7e87d87ea9ba",
+      "post_reconnect_replay_output_file_id": "2f66f914cff444d887b568ccebb9632f"
+    }
+  },
+  "resilience": {
+    "idempotent_submission": true,
+    "reconnectable_event_cursor": true,
+    "completed_output_retained": true,
+    "post_reconnect_replay_avoided_gpu_work": true,
+    "worker_startup_timeout_classified": true,
+    "generation_timeout_classified": true,
+    "worker_disconnect_classified": true,
+    "agent_proxy_timeout_classes_preserved": true,
+    "provider_timeout_and_failure_classes_preserved": true,
+    "cancellation_stops_isolated_worker": true
+  },
+  "execution": {
+    "published_a40_rate_usd_per_hour": 0.44,
+    "billable_probe_seconds": 92.85434943495784,
+    "estimated_incremental_compute_usd": 0.011348864930939291,
+    "terminal_nvidia_smi_memory_used_mib": 0
+  },
+  "automated_verification": {
+    "k2core": "200 passed, 2 skipped, 14 subtests passed",
+    "desktop": "191 passed, 2 skipped, 6 subtests passed",
+    "runpod": "305 passed, 15 skipped, 16 subtests passed",
+    "ruff": "passed",
+    "diff_check": "passed"
+  }
+}

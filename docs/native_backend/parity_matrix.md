@@ -37,10 +37,10 @@ Reference baseline:
 | Strict component loading | ComfyUI loader plus K2 header manifest | PASS | Exact approved hashes, 2,097/2,097 mapped tensors, parameter/dtype/device reports, and three stable ROCm unload cycles; Gate 4 |
 | CUDA | Supported through selected ComfyUI environment | PASS | NVIDIA A40 exact-artifact stress, soak, OOM, recovery, cancellation, tiling, FP16, and exact cleanup matrix; Gate 10 |
 | ROCm | Supported through selected ComfyUI environment | PASS | Local 16 GiB BF16/FP16, scaled-FP8, tiling, CPU-VAE, OOM, cancellation, repeated-load, soak, recovery, and exact cleanup evidence; Gate 10 |
-| Desktop entry point | Supported | NOT IMPLEMENTED | Identical shared-schema fixture through UI service; Gate 11 |
-| RunPod entry point | No implementation in this repository | BLOCKED | Scope/repository, job service, persistence/reconnect tests; Gate 11 |
+| Desktop entry point | Supported | PASS | Byte-identical Gate 11 fixture parsed into the shared request by the desktop worker entrypoint |
+| RunPod entry point | Implemented in the paired RunPod repository | PASS | Same fixture through worker and live persistent job service; exact RGB, reconnect/idempotency/output evidence; Gate 11 |
 | Structured error taxonomy | Legacy fields retained with additive structured error payload | PASS | Category conversion and explicit unsupported-native worker evidence; Gate 2 |
-| Durable correlation ID | Per-command UUID only | NOT IMPLEMENTED | Same ID across UI/service/worker/output; Gate 2/11 |
+| Durable correlation ID | Per-command ID persists in job/event state | PASS | Same command ID recovered after manager reconstruction and stored in output metadata; Gate 11 |
 
 No row may move from `NOT IMPLEMENTED` to `PASS` without a stored report linked to the
 exact fixture, component hashes, software versions, hardware, and comparison thresholds.

@@ -402,3 +402,31 @@ Completed:
 Gate 10 passes. No 80 GB device was available, and the release-level 100-job soak
 remains outstanding. Native stays developer-only and `comfyui` remains the product
 default while Phase 9 integration begins.
+
+## 2026-07-29 — Gate 11 desktop and RunPod integration
+
+Pinned shared core checkpoint: `237fd23dc4a578e9d1a095fac0587d4d6bdf88e4`
+
+Completed:
+
+- added server-configured RunPod backend selection, capabilities, job/event metadata,
+  explicit native model bindings, pre-GPU capability rejection, and container startup
+  validation while retaining ComfyUI as the default;
+- routed native RunPod generation and image editing through the same k2core schemas and
+  backend used by desktop, with exact tested runtime pins and structured errors;
+- added persistent prompt-safe agent/worker diagnostics and distinct startup,
+  generation, worker-disconnect, proxy, provider-timeout, and pod-failure classes;
+- passed a byte-identical canonical request fixture through desktop and RunPod worker
+  entrypoints;
+- completed a live A40 direct-worker run and persistent job-service run with pixel-exact
+  RGB output;
+- proved immediate and post-reconnect duplicate submissions return the same durable job
+  and output IDs without new GPU work;
+- recovered completed state, all 20 events, an empty resumed cursor page, output
+  inventory, and PNG backend/correlation metadata after manager reconstruction;
+- ended both live probes at 0 MiB GPU memory and an estimated incremental compute cost
+  below $0.02;
+- passed 305 RunPod tests, 15 intentional skips, and 16 subtests.
+
+Gate 11 passes. The updated container has not yet been built/published as a clean release
+candidate, and native remains developer-only with `comfyui` as the product default.
